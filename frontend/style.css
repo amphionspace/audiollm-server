@@ -31,8 +31,11 @@ body {
     radial-gradient(circle at 25% 35%, rgba(255, 245, 230, 0.055), transparent 42%),
     radial-gradient(circle at 78% 62%, rgba(170, 205, 255, 0.06), transparent 48%),
     radial-gradient(circle at 50% 100%, rgba(140, 130, 190, 0.05), transparent 50%);
-  animation: ambient-drift 22s ease-in-out infinite alternate;
+  animation:
+    ambient-drift 22s ease-in-out infinite alternate,
+    ambient-breathe 9.5s ease-in-out infinite;
   opacity: 0.95;
+  transform-origin: 50% 50%;
 }
 
 @keyframes ambient-drift {
@@ -47,6 +50,24 @@ body {
   }
 }
 
+@keyframes ambient-breathe {
+  0% {
+    opacity: 0.84;
+    transform: scale(0.985);
+    filter: saturate(0.95);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.02);
+    filter: saturate(1.08);
+  }
+  100% {
+    opacity: 0.88;
+    transform: scale(0.99);
+    filter: saturate(0.97);
+  }
+}
+
 /* subtle floating orbs in background */
 .bg-orb {
   position: fixed;
@@ -56,6 +77,7 @@ body {
   pointer-events: none;
   z-index: 0;
   mix-blend-mode: screen;
+  will-change: transform, opacity, filter;
 }
 
 .bg-orb-1 {
@@ -64,7 +86,9 @@ body {
   background: radial-gradient(circle, rgba(190, 175, 255, 0.45) 0%, rgba(45, 40, 60, 0.2) 55%, transparent 70%);
   top: -220px;
   left: -120px;
-  animation: float-orb 20s ease-in-out infinite;
+  animation:
+    float-orb 18s ease-in-out infinite,
+    orb-breathe 8.5s ease-in-out infinite;
 }
 
 .bg-orb-2 {
@@ -73,7 +97,9 @@ body {
   background: radial-gradient(circle, rgba(120, 185, 230, 0.35) 0%, rgba(30, 45, 58, 0.18) 55%, transparent 70%);
   bottom: -160px;
   right: -110px;
-  animation: float-orb 25s ease-in-out infinite reverse;
+  animation:
+    float-orb 23s ease-in-out infinite reverse,
+    orb-breathe 10.5s ease-in-out infinite reverse;
 }
 
 .bg-orb-3 {
@@ -83,7 +109,9 @@ body {
   top: 38%;
   left: 50%;
   transform: translate(-50%, -50%);
-  animation: float-orb-soft 28s ease-in-out infinite;
+  animation:
+    float-orb-soft 24s ease-in-out infinite,
+    orb-breathe-soft 12s ease-in-out infinite;
   opacity: 0.18;
   mix-blend-mode: soft-light;
 }
@@ -108,6 +136,36 @@ body {
   }
   66% {
     transform: translate(-20px, 20px) scale(0.95);
+  }
+}
+
+@keyframes orb-breathe {
+  0% {
+    opacity: 0.16;
+    filter: blur(102px);
+  }
+  50% {
+    opacity: 0.28;
+    filter: blur(92px);
+  }
+  100% {
+    opacity: 0.18;
+    filter: blur(100px);
+  }
+}
+
+@keyframes orb-breathe-soft {
+  0% {
+    opacity: 0.12;
+    filter: blur(108px);
+  }
+  50% {
+    opacity: 0.24;
+    filter: blur(96px);
+  }
+  100% {
+    opacity: 0.14;
+    filter: blur(104px);
   }
 }
 
@@ -402,6 +460,17 @@ body {
   }
 }
 
+.hotword-hit {
+  display: inline-block;
+  padding: 0 4px;
+  margin: 0 1px;
+  border-radius: 6px;
+  color: rgba(245, 250, 255, 0.98);
+  background: linear-gradient(130deg, rgba(110, 190, 255, 0.33), rgba(191, 142, 255, 0.28));
+  border: 1px solid rgba(170, 210, 255, 0.3);
+  box-shadow: 0 0 14px rgba(110, 190, 255, 0.14);
+}
+
 .chat-avatar {
   width: 30px;
   height: 30px;
@@ -432,6 +501,14 @@ body {
 }
 
 /* --- Hotword panel --- */
+.hotword-card {
+  border-color: rgba(190, 215, 255, 0.2);
+  box-shadow:
+    0 14px 40px rgba(0, 0, 0, 0.38),
+    0 0 56px -24px rgba(130, 180, 255, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
 .hotword-input {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -457,6 +534,78 @@ body {
   color: rgba(255, 255, 255, 0.3);
 }
 
+.hotword-textarea {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  color: white;
+  padding: 10px 14px;
+  outline: none;
+  font-size: 13px;
+  line-height: 1.45;
+  resize: vertical;
+  min-height: 84px;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.hotword-textarea:focus {
+  border-color: rgba(195, 215, 255, 0.45);
+  box-shadow:
+    0 0 0 3px rgba(170, 205, 255, 0.12),
+    0 0 26px rgba(150, 180, 255, 0.18),
+    inset 0 0 18px rgba(140, 170, 245, 0.08);
+}
+
+.hotword-textarea::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.hotword-extract-status {
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 2px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.hotword-extract-status.is-loading {
+  color: rgba(186, 230, 253, 0.95);
+  border-color: rgba(125, 211, 252, 0.35);
+  background: rgba(14, 116, 144, 0.2);
+}
+
+.hotword-extract-status.is-success {
+  color: rgba(209, 250, 229, 0.95);
+  border-color: rgba(110, 231, 183, 0.35);
+  background: rgba(6, 95, 70, 0.22);
+}
+
+.hotword-extract-status.is-error {
+  color: rgba(254, 205, 211, 0.95);
+  border-color: rgba(251, 113, 133, 0.35);
+  background: rgba(136, 19, 55, 0.26);
+}
+
+#hotword-extract-btn.is-attention {
+  animation: extract-btn-slow-pulse 2.6s ease-in-out infinite;
+}
+
+@keyframes extract-btn-slow-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.18);
+    filter: brightness(1);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(125, 211, 252, 0.06);
+    filter: brightness(1.08);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.18);
+    filter: brightness(1);
+  }
+}
+
 @keyframes hotword-caret-gradient-blink {
   0% {
     caret-color: rgba(140, 210, 255, 0.95);
@@ -470,6 +619,58 @@ body {
   100% {
     caret-color: rgba(140, 210, 255, 0.95);
   }
+}
+
+.hotword-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.hotword-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.hotword-switch-track {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  transition: all 0.24s ease;
+}
+
+.hotword-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  transition: transform 0.24s ease, background-color 0.24s ease;
+}
+
+.hotword-switch input:checked + .hotword-switch-track {
+  border-color: rgba(146, 208, 255, 0.5);
+  background: linear-gradient(140deg, rgba(95, 185, 255, 0.38), rgba(173, 140, 255, 0.34));
+}
+
+.hotword-switch input:checked + .hotword-switch-track::after {
+  transform: translateX(18px);
+  background: rgba(245, 250, 255, 0.95);
+}
+
+.hotword-switch-label {
+  letter-spacing: 0.4px;
 }
 
 /* --- Toggle arrow --- */

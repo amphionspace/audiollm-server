@@ -1,4 +1,5 @@
 import logging
+import math
 
 import numpy as np
 
@@ -9,8 +10,11 @@ except Exception:  # pragma: no cover - depends on optional native runtime
 
 from .config import (
     HOP_SIZE,
+    SAMPLE_RATE,
     SILENCE_DURATION_MS,
     VAD_END_FRAMES,
+    VAD_KEEP_TAIL_MS,
+    VAD_PRE_SPEECH_MS,
     VAD_SMOOTHING_ALPHA,
     VAD_START_FRAMES,
     VAD_THRESHOLD,
@@ -63,15 +67,26 @@ class VADProcessor:
         hop_size: int = HOP_SIZE,
         threshold: float = VAD_THRESHOLD,
         silence_duration_ms: int = SILENCE_DURATION_MS,
+        sample_rate: int = SAMPLE_RATE,
         smoothing_alpha: float = VAD_SMOOTHING_ALPHA,
         start_frames: int = VAD_START_FRAMES,
+        pre_speech_ms: int = VAD_PRE_SPEECH_MS,
         end_frames: int = VAD_END_FRAMES,
+        keep_tail_ms: int = VAD_KEEP_TAIL_MS,
     ):
         self.vad = self._create_vad_backend()
-        self.hop_size = hop_size
+        backend_hop = getattr(self.vad, "hop_size", None)
+        if isinstance(backend_hop, int) and backend_hop > 0:
+            self.hop_size = backend_hop
+        else:
+            self.hop_size = hop_size
+        self.sample_rate = max(1, sample_rate)
+        self.frame_ms = (self.hop_size / self.sample_rate) * 1000.0
         self.threshold = threshold
-        self.silence_frames = silence_duration_ms // 10
+        self.silence_frames = max(1, math.ceil(silence_duration_ms / self.frame_ms))
         self.end_frames = max(1, end_frames)
+        self.pre_speech_frames = max(1, math.ceil(pre_speech_ms / self.frame_ms))
+        self.keep_tail_frames = max(0, math.ceil(keep_tail_ms / self.frame_ms))
         self.start_frames = max(1, start_frames)
         self.smoothing_alpha = min(1.0, max(0.0, smoothing_alpha))
         self.audio_buffer: list[np.ndarray] = []
@@ -80,6 +95,28 @@ class VADProcessor:
         self.speech_count = 0
         self.is_speaking = False
         self.smoothed_prob: float | None = None
+        logger.info(
+            "VAD backend=%s hop_size=%s frame_ms=%.1f pre_speech_frames=%s silence_frames=%s keep_tail_frames=%s",
+            type(self.vad).__name__,
+            self.hop_size,
+            self.frame_ms,
+            self.pre_speech_frames,
+            self.silence_frames,
+            self.keep_tail_frames,
+        )
+
+    def _prepare_vad_input(self, pcm_frame: np.ndarray) -> np.ndarray:
+        """Adapt frame dtype for backend-specific requirements."""
+        if TenVad is not None and isinstance(self.vad, TenVad):
+            # ten-vad requires int16 PCM.
+            if pcm_frame.dtype == np.int16:
+                return pcm_frame
+            clipped = np.clip(pcm_frame, -1.0, 1.0)
+            return (clipped * 32767.0).astype(np.int16, copy=False)
+        # Energy fallback expects float-like input.
+        if pcm_frame.dtype == np.float32:
+            return pcm_frame
+        return pcm_frame.astype(np.float32, copy=False)
 
     def _create_vad_backend(self):
         if TenVad is None:
@@ -100,12 +137,30 @@ class VADProcessor:
             )
             return _EnergyVad()
 
+    def _extract_prob(self, value) -> float:
+        """Normalize backend outputs to a single probability float in [0, 1]."""
+        if isinstance(value, (tuple, list)):
+            if not value:
+                return 0.0
+            # ten-vad may return tuples like (prob, state, ...)
+            return self._extract_prob(value[0])
+        if isinstance(value, np.ndarray):
+            if value.size == 0:
+                return 0.0
+            return self._extract_prob(float(value.reshape(-1)[0]))
+        try:
+            prob = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return min(1.0, max(0.0, prob))
+
     def process(self, pcm_frame: np.ndarray) -> np.ndarray | None:
         """Feed one frame (hop_size samples, float32).
         Returns the full speech segment when speech-to-silence transition
         is detected, otherwise None.
         """
-        raw_prob = self.vad.process(pcm_frame)
+        vad_input = self._prepare_vad_input(pcm_frame)
+        raw_prob = self._extract_prob(self.vad.process(vad_input))
         if self.smoothed_prob is None:
             self.smoothed_prob = raw_prob
         else:
@@ -117,7 +172,7 @@ class VADProcessor:
 
         if not self.is_speaking:
             self.pre_speech_buffer.append(frame_copy)
-            if len(self.pre_speech_buffer) > self.start_frames:
+            if len(self.pre_speech_buffer) > self.pre_speech_frames:
                 del self.pre_speech_buffer[0]
 
             if is_speech:
@@ -141,7 +196,7 @@ class VADProcessor:
             end_threshold = max(self.silence_frames, self.end_frames)
             if self.silent_count >= end_threshold:
                 # Trim trailing silence (keep a small tail for natural sound)
-                keep_tail = min(10, end_threshold)
+                keep_tail = min(self.keep_tail_frames, end_threshold)
                 trim = end_threshold - keep_tail
                 if trim > 0:
                     del self.audio_buffer[-trim:]

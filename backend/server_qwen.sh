@@ -2,22 +2,20 @@
 set -euo pipefail
 
 # Fill values directly here.
-MODEL_PATH="/home/ubuntu/models/hf/Amphion-3B"
-MODEL_NAME="Amphion/Amphion-3B"
+MODEL_PATH="/home/ubuntu/models/hf/Qwen/Qwen3-ASR-1.7B"
+MODEL_NAME="Qwen/Qwen3-ASR-1.7B"
 HOST="0.0.0.0"
-PORT="8000"
+PORT="8001"
 DTYPE="bfloat16"
-# Must be <= current free_ratio from nvidia-smi.
-# Your log shows free memory is about 38.75 / 95.08 ~= 0.41,
-# so keep this below 0.41 unless other GPU processes are released.
-GPU_MEMORY_UTILIZATION="0.25"
+# Adjust this with current free GPU ratio from nvidia-smi.
+GPU_MEMORY_UTILIZATION="0.10"
 TENSOR_PARALLEL_SIZE="1"
 MAX_MODEL_LEN="4096"
 MAX_NUM_SEQS="8"
 TRUST_REMOTE_CODE="1"
 ENFORCE_EAGER="0"
 
-echo "Starting vLLM server..."
+echo "Starting Qwen vLLM server..."
 echo "MODEL_PATH: ${MODEL_PATH}"
 echo "MODEL_NAME: ${MODEL_NAME}"
 echo "HOST:  ${HOST}"
@@ -28,8 +26,7 @@ echo "TENSOR_PARALLEL_SIZE: ${TENSOR_PARALLEL_SIZE}"
 echo "MAX_MODEL_LEN: ${MAX_MODEL_LEN}"
 echo "MAX_NUM_SEQS: ${MAX_NUM_SEQS}"
 
-VLLM_ARGS=(
-  serve "${MODEL_PATH}"
+COMMON_ARGS=(
   --served-model-name "${MODEL_NAME}"
   --host "${HOST}"
   --port "${PORT}"
@@ -41,11 +38,18 @@ VLLM_ARGS=(
 )
 
 if [[ "${TRUST_REMOTE_CODE}" == "1" ]]; then
-  VLLM_ARGS+=(--trust-remote-code)
+  COMMON_ARGS+=(--trust-remote-code)
 fi
 
 if [[ "${ENFORCE_EAGER}" == "1" ]]; then
-  VLLM_ARGS+=(--enforce-eager)
+  COMMON_ARGS+=(--enforce-eager)
 fi
 
-exec vllm "${VLLM_ARGS[@]}"
+if command -v qwen-asr-serve >/dev/null 2>&1; then
+  echo "Launching with qwen-asr-serve (recommended for Qwen3-ASR)..."
+  exec qwen-asr-serve "${MODEL_PATH}" "${COMMON_ARGS[@]}"
+fi
+
+echo "qwen-asr-serve not found, falling back to plain vllm serve."
+echo "If startup fails with qwen3_asr architecture error, install qwen-asr[vllm]."
+exec vllm serve "${MODEL_PATH}" "${COMMON_ARGS[@]}"
