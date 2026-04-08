@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -7,14 +8,15 @@ from .asr_client import _content_to_text
 from .http_client import get_client
 from .prompt import EXTRACT_HOTWORD
 
-HOTWORD_LIMIT = 30
+logger = logging.getLogger(__name__)
+
 EXTRACTED_HOTWORD_MAX_LEN = 10
 
 _extractor_config_cache: dict[str, str] | None = None
 
 
 def sanitize_hotwords(words: Any) -> list[str]:
-    """Deduplicate and cap a hotword list to HOTWORD_LIMIT entries."""
+    """Deduplicate a hotword list."""
     if not isinstance(words, list):
         return []
     cleaned: list[str] = []
@@ -25,8 +27,6 @@ def sanitize_hotwords(words: Any) -> list[str]:
         if not value or value in cleaned:
             continue
         cleaned.append(value)
-        if len(cleaned) >= HOTWORD_LIMIT:
-            break
     return cleaned
 
 
@@ -94,13 +94,41 @@ def _parse_hotword_json(raw_text: str) -> list[str]:
     if not raw:
         return []
     normalized = _strip_json_fence(raw)
+
+    # 1) Direct JSON object parse
     try:
         return _normalize_hotwords_payload(json.loads(normalized))
-    except json.JSONDecodeError:
-        json_match = re.search(r"\{[\s\S]*\}", normalized)
-        if not json_match:
-            raise ValueError("Could not parse JSON hotword output from model.") from None
-        return _normalize_hotwords_payload(json.loads(json_match.group(0)))
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # 2) Extract first {...} block
+    json_match = re.search(r"\{[\s\S]*\}", normalized)
+    if json_match:
+        try:
+            return _normalize_hotwords_payload(json.loads(json_match.group(0)))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # 3) Bare JSON array: ["term1", "term2"]
+    arr_match = re.search(r"\[[\s\S]*\]", normalized)
+    if arr_match:
+        try:
+            parsed = json.loads(arr_match.group(0))
+            if isinstance(parsed, list):
+                return [s.strip() for s in parsed if isinstance(s, str) and s.strip()]
+        except json.JSONDecodeError:
+            pass
+
+    # 4) Comma / newline separated plain text
+    items = re.split(r"[,，\n;；]+", normalized)
+    plain = [s.strip().strip('"\'') for s in items]
+    plain = [s for s in plain if s and not s.startswith("{")]
+    if plain:
+        logger.warning("Hotword extraction fell back to plain-text parse: %s", plain)
+        return list(dict.fromkeys(plain))
+
+    logger.warning("Could not parse hotword output, returning empty: %.200s", raw)
+    return []
 
 
 def _filter_extracted_hotwords(words: list[str]) -> list[str]:

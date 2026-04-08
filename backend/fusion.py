@@ -99,6 +99,19 @@ def _hotword_hit_count(text: str, hotwords: list[str]) -> int:
     return hits
 
 
+def _filter_reported_hotwords(
+    reported: list[str], original: list[str]
+) -> list[str]:
+    """Keep only reported hotwords that exactly match an original hotword.
+
+    ASR models sometimes report homophones (e.g. 执音 vs 挚音) in their
+    Hotwords output field.  Passing those through to the frontend would cause
+    incorrect highlighting, so we intersect with the canonical list.
+    """
+    orig_set = {normalize_text(w) for w in original if w}
+    return [w for w in reported if normalize_text(w) in orig_set]
+
+
 def _quality_score(text: str, hotwords: list[str], hotword_boost: float) -> dict[str, float]:
     normalized = normalize_text(text)
     if not normalized:
@@ -151,8 +164,12 @@ def choose_fused_result(
 ) -> FusionResult:
     primary_text = str((primary_result or {}).get("transcription") or "")
     secondary_text = str((secondary_result or {}).get("transcription") or "")
-    primary_hotwords = list((primary_result or {}).get("reported_hotwords") or [])
-    secondary_hotwords = list((secondary_result or {}).get("reported_hotwords") or [])
+    primary_hotwords = _filter_reported_hotwords(
+        list((primary_result or {}).get("reported_hotwords") or []), hotwords
+    )
+    secondary_hotwords = _filter_reported_hotwords(
+        list((secondary_result or {}).get("reported_hotwords") or []), hotwords
+    )
     normalized_primary = normalize_text(primary_text)
     normalized_secondary = normalize_text(secondary_text)
 

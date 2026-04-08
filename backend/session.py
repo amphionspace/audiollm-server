@@ -7,7 +7,7 @@ import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .asr_client import query_audio_model, query_audio_model_secondary
-from .audio_utils import pcm_to_wav_base64
+from .audio_utils import Resampler48to16, pcm_to_wav_base64
 from .config import (
     DEBUG_SHOW_DUAL_ASR,
     ENABLE_PRIMARY_ASR,
@@ -36,6 +36,8 @@ class AudioSession:
         self.ws = websocket
         self.segment_queue: asyncio.Queue[tuple | None] = asyncio.Queue(maxsize=20)
         self.vad = VADProcessor()
+        self.resampler = Resampler48to16()
+        self._pcm_carry = np.empty(0, dtype=np.float32)
         self.hotwords: list[str] = []
         self.stop_event = asyncio.Event()
         self.extract_tasks: set[asyncio.Task] = set()
@@ -81,15 +83,19 @@ class AudioSession:
             await self.segment_queue.put(None)
 
     def _ingest_audio(self, raw_bytes: bytes) -> None:
-        pcm = (
+        pcm_48k = (
             np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         )
+        pcm = self.resampler.process(pcm_48k)
+        if pcm.size == 0:
+            return
+        if self._pcm_carry.size > 0:
+            pcm = np.concatenate([self._pcm_carry, pcm])
         hop = self.vad.hop_size
-        for i in range(0, len(pcm), hop):
-            frame = pcm[i : i + hop]
-            if len(frame) < hop:
-                break
-            segment = self.vad.process(frame)
+        used = (len(pcm) // hop) * hop
+        self._pcm_carry = pcm[used:].copy() if used < len(pcm) else np.empty(0, dtype=np.float32)
+        for i in range(0, used, hop):
+            segment = self.vad.process(pcm[i : i + hop])
             if segment is not None:
                 self._enqueue_segment(segment)
 
@@ -103,23 +109,9 @@ class AudioSession:
             return
         seg_id = _generate_segment_id()
         try:
-            asyncio.get_event_loop().create_task(self._notify_and_enqueue(seg_id, segment))
-        except RuntimeError:
-            pass
-
-    async def _notify_and_enqueue(self, seg_id: str, segment: np.ndarray) -> None:
-        try:
-            await self.ws.send_json(
-                {
-                    "type": "vad_event",
-                    "event": "segment_detected",
-                    "id": seg_id,
-                    "duration": f"{len(segment) / SAMPLE_RATE:.1f}s",
-                }
-            )
-        except Exception:
-            return
-        await self.segment_queue.put((seg_id, segment, list(self.hotwords)))
+            self.segment_queue.put_nowait((seg_id, segment, list(self.hotwords)))
+        except asyncio.QueueFull:
+            logger.warning("Segment queue full, dropping %s", seg_id)
 
     def _handle_control_message(self, text: str) -> None:
         try:
@@ -186,19 +178,13 @@ class AudioSession:
             )
 
             try:
-                await self.ws.send_json(
-                    {"type": "status", "id": seg_id, "status": "processing"}
-                )
-            except Exception:
-                break
-
-            try:
                 await self._process_segment(seg_id, segment, hw_snapshot)
             except WebSocketDisconnect:
                 break
             except Exception as e:
                 logger.exception("LLM query failed for %s", seg_id)
                 try:
+                    await self._send_vad_event(seg_id, segment)
                     await self.ws.send_json(
                         {"type": "error", "id": seg_id, "message": str(e)}
                     )
@@ -242,18 +228,9 @@ class AudioSession:
 
         if not str(fused.get("text") or "").strip():
             logger.info("Skip empty response for %s (silence)", seg_id)
-            await self.ws.send_json(
-                {"type": "discard", "id": seg_id, "reason": "silence"}
-            )
             return
 
-        if (
-            ENABLE_SECONDARY_ASR
-            and not DEBUG_SHOW_DUAL_ASR
-            and str(fused["text"]).strip()
-            == str((secondary_result or {}).get("transcription") or "").strip()
-        ):
-            return
+        await self._send_vad_event(seg_id, segment, wav_b64)
 
         payload: dict = {
             "type": "response",
@@ -271,16 +248,34 @@ class AudioSession:
             )
         await self.ws.send_json(payload)
 
+    async def _send_vad_event(
+        self,
+        seg_id: str,
+        segment: np.ndarray,
+        wav_b64: str | None = None,
+    ) -> None:
+        if wav_b64 is None:
+            wav_b64 = pcm_to_wav_base64(segment)
+        await self.ws.send_json(
+            {
+                "type": "vad_event",
+                "event": "segment_detected",
+                "id": seg_id,
+                "duration": f"{len(segment) / SAMPLE_RATE:.1f}s",
+                "audio_b64": wav_b64,
+            }
+        )
+
     async def _dual_asr_pipeline(
         self,
         seg_id: str,
         wav_b64: str,
         hw_snapshot: list[str],
     ) -> tuple:
-        """Run secondary-first fast path with optional primary refinement.
+        """Run both ASR models in parallel, wait for both, return results.
 
         Returns (secondary_res, primary_res).  Returns (None, None) when the
-        segment was discarded as silence (discard message already sent).
+        segment is silence.
         """
         secondary_task = asyncio.create_task(
             query_audio_model_secondary(wav_b64, hotwords=hw_snapshot)
@@ -294,7 +289,6 @@ class AudioSession:
                 )
             )
 
-        # Stage 1: fast path -- respond with secondary first.
         secondary_res = await secondary_task
         primary_res: object = None
 
@@ -318,33 +312,8 @@ class AudioSession:
             logger.info("Skip empty response for %s (secondary silence)", seg_id)
             if primary_task is not None:
                 primary_task.cancel()
-            await self.ws.send_json(
-                {"type": "discard", "id": seg_id, "reason": "silence"}
-            )
             return None, None
 
-        early_payload: dict = {
-            "type": "response",
-            "id": seg_id,
-            "text": secondary_text,
-            "model_hotwords": list(
-                (secondary_res or {}).get("reported_hotwords") or []
-            ),
-        }
-        if DEBUG_SHOW_DUAL_ASR:
-            early_payload.update(
-                {
-                    "text_primary": "",
-                    "text_secondary": secondary_text,
-                    "fusion_meta": {
-                        "selected": "secondary_early",
-                        "reason": "low_latency_first_response",
-                    },
-                }
-            )
-        await self.ws.send_json(early_payload)
-
-        # Stage 2: wait for primary refinement.
         if primary_task is not None:
             try:
                 primary_res = await primary_task

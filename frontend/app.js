@@ -11,8 +11,16 @@
   let hotwordEnabled = localStorage.getItem('hotword_enabled') !== '0';
   let sessionHitCount = 0;
   let extractRequestId = null;
-  const MAX_HOTWORDS = 30;
+  let activeReplayAudio = null;
+  const segmentAudio = new Map();
   const MAX_EXTRACTED_HOTWORD_LENGTH = 10;
+
+  function b64ToWavBlobUrl(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+  }
 
   // --- DOM refs ---
   const micBtn = document.getElementById('mic-btn');
@@ -40,7 +48,6 @@
     (Array.isArray(sourceWords) ? sourceWords : []).forEach((item) => {
       const value = String(item || '').trim();
       if (!value || result.includes(value)) return;
-      if (result.length >= MAX_HOTWORDS) return;
       result.push(value);
     });
     return result;
@@ -147,12 +154,10 @@
           .map((w) => String(w || '').trim())
           .filter((w) => w && w.length < MAX_EXTRACTED_HOTWORD_LENGTH)
       : [];
-    if (normalized.length === 0) return { added: 0, total: 0, atLimit: hotwords.length >= MAX_HOTWORDS };
-    const beforeCount = hotwords.length;
+    if (normalized.length === 0) return { added: 0, total: 0 };
     let added = 0;
     normalized.forEach((word) => {
       if (!hotwords.includes(word)) {
-        if (hotwords.length >= MAX_HOTWORDS) return;
         hotwords.push(word);
         added += 1;
       }
@@ -162,11 +167,7 @@
     } else {
       renderHotwords();
     }
-    return {
-      added,
-      total: normalized.length,
-      atLimit: beforeCount + added >= MAX_HOTWORDS,
-    };
+    return { added, total: normalized.length };
   }
 
   function requestHotwordExtraction(text) {
@@ -197,13 +198,10 @@
   }
 
   function addHotword(text) {
-    const slotsLeft = Math.max(0, MAX_HOTWORDS - hotwords.length);
-    if (slotsLeft === 0) return;
     const words = text
       .split(/[,，\n]/)
       .map((w) => w.trim())
-      .filter((w) => w && !hotwords.includes(w))
-      .slice(0, slotsLeft);
+      .filter((w) => w && !hotwords.includes(w));
     if (words.length === 0) return;
     hotwords.push(...words);
     saveAndSyncHotwords();
@@ -311,6 +309,9 @@
     switch (data.type) {
       case 'vad_event':
         if (data.event === 'segment_detected') {
+          if (data.audio_b64) {
+            segmentAudio.set(data.id, b64ToWavBlobUrl(data.audio_b64));
+          }
           addUserBubble(data.id, data.duration || '');
           addAIBubble(data.id);
         }
@@ -339,8 +340,7 @@
         setExtractBusy(false);
         {
           const merged = mergeExtractedHotwords(data.hotwords || []);
-          const suffix = merged.atLimit ? ' (max 30)' : '';
-          setExtractStatus('success', `Added ${merged.added}/${merged.total}${suffix}`);
+          setExtractStatus('success', `Added ${merged.added}/${merged.total}`);
         }
         break;
       case 'extract_hotwords_error':
@@ -355,11 +355,38 @@
   }
 
   // --- Chat bubbles ---
+  function replaySegment(segId, btn) {
+    if (activeReplayAudio) {
+      activeReplayAudio.pause();
+      const prevBtn = document.querySelector('.replay-btn.is-playing');
+      if (prevBtn) prevBtn.classList.remove('is-playing');
+      if (activeReplayAudio._segId === segId) {
+        activeReplayAudio = null;
+        return;
+      }
+      activeReplayAudio = null;
+    }
+    const url = segmentAudio.get(segId);
+    if (!url) return;
+    const audio = new Audio(url);
+    audio._segId = segId;
+    if (btn) btn.classList.add('is-playing');
+    audio.addEventListener('ended', () => {
+      if (btn) btn.classList.remove('is-playing');
+      if (activeReplayAudio === audio) activeReplayAudio = null;
+    });
+    audio.play().catch(() => {
+      if (btn) btn.classList.remove('is-playing');
+    });
+    activeReplayAudio = audio;
+  }
+
   function addUserBubble(segId, duration) {
     const wrapper = document.createElement('div');
     wrapper.className = 'chat-row chat-row-user chat-bubble-float';
     wrapper.id = `user-${segId}`;
 
+    const hasAudio = segmentAudio.has(segId);
     wrapper.innerHTML = `
       <div class="chat-bubble chat-bubble-user text-white">
         <div class="flex items-center gap-2">
@@ -368,6 +395,11 @@
                   d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
           </svg>
           <span class="text-sm font-medium tracking-wide">Voice ${duration}</span>
+          ${hasAudio ? `<button class="replay-btn" data-seg="${segId}" title="Replay audio">
+            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
+            </svg>
+          </button>` : ''}
         </div>
         <div class="mt-2 flex gap-0.5 items-end h-4">
           ${generateWaveformBars()}
@@ -375,8 +407,15 @@
       </div>
     `;
 
+    if (hasAudio) {
+      wrapper.querySelector('.replay-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        replaySegment(segId, e.currentTarget);
+      });
+    }
+
     chatArea.appendChild(wrapper);
-    chatArea.scrollTop = chatArea.scrollHeight;
+    scrollChatToBottom();
   }
 
   function generateWaveformBars() {
@@ -412,14 +451,32 @@
     `;
 
     chatArea.appendChild(wrapper);
-    chatArea.scrollTop = chatArea.scrollHeight;
+    scrollChatToBottom();
   }
 
   function removeSegmentBubbles(segId) {
     const user = document.getElementById(`user-${segId}`);
     const ai = document.getElementById(`ai-${segId}`);
-    if (user && user.parentNode) user.parentNode.removeChild(user);
-    if (ai && ai.parentNode) ai.parentNode.removeChild(ai);
+    const targets = [user, ai].filter((el) => el && el.parentNode);
+    if (targets.length === 0) {
+      const url = segmentAudio.get(segId);
+      if (url) URL.revokeObjectURL(url);
+      segmentAudio.delete(segId);
+      return;
+    }
+    let removed = 0;
+    targets.forEach((el) => {
+      el.classList.add('chat-bubble-discard');
+      el.addEventListener('animationend', () => {
+        if (el.parentNode) el.parentNode.removeChild(el);
+        removed++;
+        if (removed >= targets.length) {
+          const url = segmentAudio.get(segId);
+          if (url) URL.revokeObjectURL(url);
+          segmentAudio.delete(segId);
+        }
+      }, { once: true });
+    });
   }
 
   function renderDualAsrDebug(debugInfo) {
@@ -442,6 +499,34 @@
         <div><span class="text-white/50">Selected:</span> ${selected} | <span class="text-white/50">Reason:</span> ${reason} | <span class="text-white/50">Sim:</span> ${similarity}</div>
       </div>
     `;
+  }
+
+  function streamRevealContent(container, htmlString, charDelayMs = 12) {
+    const temp = document.createElement('div');
+    temp.innerHTML = htmlString;
+    let idx = 0;
+
+    function wrapTextNodes(node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent;
+        if (!text) return;
+        const frag = document.createDocumentFragment();
+        for (const ch of text) {
+          const span = document.createElement('span');
+          span.className = 'stream-char';
+          span.style.animationDelay = `${idx * charDelayMs}ms`;
+          span.textContent = ch;
+          frag.appendChild(span);
+          if (ch.trim()) idx++;
+        }
+        node.parentNode.replaceChild(frag, node);
+      } else if (node.nodeType === Node.ELEMENT_NODE) {
+        [...node.childNodes].forEach(wrapTextNodes);
+      }
+    }
+
+    wrapTextNodes(temp);
+    container.innerHTML = temp.innerHTML;
   }
 
   function updateAIBubble(segId, text, status, modelHotwords = null, debugInfo = null) {
@@ -475,16 +560,32 @@
       }
       const hitMeta =
         highlighted.count > 0
-          ? `<div class="text-[11px] text-sky-200/85 mt-2">Hotword hits: ${highlighted.count}</div>`
+          ? `<div class="text-[11px] text-sky-200/85 mt-2 stream-meta">Hotword hits: ${highlighted.count}</div>`
           : '';
       const debugBlock = renderDualAsrDebug(debugInfo);
-      content.innerHTML = `<p class="text-sm leading-relaxed typewriter">${highlighted.html}</p>${hitMeta}${debugBlock}`;
+
+      const textP = document.createElement('p');
+      textP.className = 'text-sm leading-relaxed';
+      streamRevealContent(textP, highlighted.html);
+      content.innerHTML = '';
+      content.appendChild(textP);
+      if (hitMeta || debugBlock) {
+        const extra = document.createElement('div');
+        extra.innerHTML = hitMeta + debugBlock;
+        content.appendChild(extra);
+      }
     } else if (status === 'error') {
       content.classList.remove('ai-processing');
       content.innerHTML = `<p class="text-sm text-red-400">${escapeHtml(text)}</p>`;
     }
 
-    chatArea.scrollTop = chatArea.scrollHeight;
+    scrollChatToBottom();
+  }
+
+  function scrollChatToBottom() {
+    requestAnimationFrame(() => {
+      chatArea.scrollTo({ top: chatArea.scrollHeight, behavior: 'smooth' });
+    });
   }
 
   // --- Audio capture ---
@@ -506,7 +607,7 @@
     }
 
     audioCtx = new AudioContext({ sampleRate: 48000 });
-    await audioCtx.audioWorklet.addModule('audio-processor.js');
+    await audioCtx.audioWorklet.addModule('audio-processor.js?v=' + Date.now());
 
     const source = audioCtx.createMediaStreamSource(mediaStream);
     workletNode = new AudioWorkletNode(audioCtx, 'audio-capture-processor');

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "ui-ux-pro-max-2": {
+      "name": "Ui Ux Pro Max",
+      "zip_url": "https://lightmake.site/api/v1/download?slug=ui-ux-pro-max-2",
+      "source": "skillhub",
+      "version": "0.1.0"
+    }
+  }
+}

@@ -1,38 +1,35 @@
 /**
- * AudioWorklet processor: captures raw PCM from the browser's audio input,
- * downsamples from the native sample rate (usually 48kHz) to 16kHz,
- * and posts Int16 PCM buffers to the main thread.
+ * AudioWorklet processor – forwards raw 48 kHz PCM to the main thread
+ * without any client-side downsampling.  The server handles high-quality
+ * resampling to 16 kHz using a Kaiser-windowed sinc FIR filter.
  */
 class AudioCaptureProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this._buffer = [];
-    this._targetRate = 16000;
-    this._ratio = sampleRate / this._targetRate;
-    this._accumulator = 0;
-    // Send every ~30ms worth of 16kHz samples (480 samples)
-    this._chunkSize = 480;
+    this._size = 1440; // 30 ms at 48 kHz – divisible by 3 for clean server resample
+    this._buf = new Float32Array(this._size + 128); // room for one extra quantum
+    this._pos = 0;
   }
 
   process(inputs) {
     const input = inputs[0];
     if (!input || !input[0]) return true;
+    const samples = input[0]; // 128 Float32 samples at 48 kHz
 
-    const samples = input[0]; // Float32Array, native sample rate
+    this._buf.set(samples, this._pos);
+    this._pos += samples.length;
 
-    // Simple linear-interpolation downsampling
-    for (let i = 0; i < samples.length; i++) {
-      this._accumulator++;
-      if (this._accumulator >= this._ratio) {
-        this._accumulator -= this._ratio;
-        this._buffer.push(samples[i]);
-
-        if (this._buffer.length >= this._chunkSize) {
-          const chunk = new Float32Array(this._buffer);
-          this.port.postMessage({ type: 'audio', samples: chunk });
-          this._buffer = [];
-        }
+    if (this._pos >= this._size) {
+      this.port.postMessage({
+        type: 'audio',
+        samples: new Float32Array(this._buf.subarray(0, this._size)),
+      });
+      // carry leftover into next chunk
+      const leftover = this._pos - this._size;
+      if (leftover > 0) {
+        this._buf.copyWithin(0, this._size, this._pos);
       }
+      this._pos = leftover;
     }
 
     return true;

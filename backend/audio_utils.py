@@ -5,6 +5,50 @@ import struct
 import numpy as np
 
 
+class Resampler48to16:
+    """Streaming 48 kHz -> 16 kHz resampler.
+
+    Uses a Kaiser-windowed sinc FIR low-pass filter (65 taps, beta=6)
+    applied via overlap-save convolution, followed by factor-3 decimation.
+    Maintains internal state so successive `process()` calls are seamless.
+
+    Approximate filter characteristics at fs=48 kHz:
+      passband  < 6.5 kHz  (~0.1 dB ripple)
+      stopband  > 9.5 kHz  (~60 dB attenuation)
+    """
+
+    RATIO = 3  # 48000 / 16000
+
+    def __init__(self, n_taps: int = 65, beta: float = 6.0) -> None:
+        cutoff = 1.0 / self.RATIO
+        half = n_taps // 2
+        t = np.arange(-half, half + 1, dtype=np.float64)
+        h = np.sinc(2.0 * cutoff * t) * (2.0 * cutoff)
+        h *= np.kaiser(n_taps, beta)
+        h /= h.sum()
+        self._kernel = h.astype(np.float32)
+        self._overlap = np.zeros(n_taps - 1, dtype=np.float32)
+        self._tail = np.empty(0, dtype=np.float32)
+
+    def process(self, pcm_48k: np.ndarray) -> np.ndarray:
+        """Feed a chunk of 48 kHz float32 PCM; returns 16 kHz float32 PCM."""
+        buf = (
+            np.concatenate([self._tail, pcm_48k])
+            if self._tail.size
+            else pcm_48k
+        )
+        usable = (buf.size // self.RATIO) * self.RATIO
+        if usable == 0:
+            self._tail = buf.copy()
+            return np.empty(0, dtype=np.float32)
+        self._tail = buf[usable:].copy()
+        seg = buf[:usable]
+        ext = np.concatenate([self._overlap, seg])
+        flt = np.convolve(ext, self._kernel, mode="valid")
+        self._overlap = ext[-(self._kernel.size - 1) :].copy()
+        return flt[:: self.RATIO].astype(np.float32)
+
+
 def pcm_to_wav_bytes(pcm: np.ndarray, sample_rate: int = 16000) -> bytes:
     """Convert float32 PCM array to WAV file bytes (16-bit)."""
     pcm_int16 = np.clip(pcm * 32767, -32768, 32767).astype(np.int16)
