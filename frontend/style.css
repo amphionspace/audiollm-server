@@ -642,6 +642,28 @@ body {
   color: rgba(255, 255, 255, 0.3);
 }
 
+.asr-lang-select {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  color: rgba(255, 255, 255, 0.92);
+  padding: 7px 12px;
+  outline: none;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.asr-lang-select:focus {
+  border-color: rgba(195, 215, 255, 0.45);
+  box-shadow: 0 0 0 2px rgba(170, 205, 255, 0.12);
+}
+
+.asr-lang-select option {
+  background: #1a1f2e;
+  color: #e8ecff;
+}
+
 .hotword-textarea {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.14);

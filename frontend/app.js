@@ -7,13 +7,66 @@
   let workletNode = null;
   let mediaStream = null;
   let isRecording = false;
-  let hotwords = JSON.parse(localStorage.getItem('hotwords') || '[]');
+  let hotwords = [];
   let hotwordEnabled = localStorage.getItem('hotword_enabled') !== '0';
   let sessionHitCount = 0;
   let extractRequestId = null;
   let activeReplayAudio = null;
   const segmentAudio = new Map();
   const MAX_EXTRACTED_HOTWORD_LENGTH = 10;
+
+  const HOTWORD_BUCKETS = ['auto', 'chinese', 'english', 'indonesian', 'thai'];
+  const HOTWORDS_PER_LANG_MIGRATED = 'hotwords_per_lang_migrated';
+  const UI_TO_API_LANG = {
+    auto: 'N/A',
+    chinese: 'Chinese',
+    english: 'English',
+    indonesian: 'Indonesian',
+    thai: 'Thai',
+  };
+
+  function migrateLegacyHotwords() {
+    if (localStorage.getItem(HOTWORDS_PER_LANG_MIGRATED) === '1') return;
+    const legacy = localStorage.getItem('hotwords');
+    if (legacy) {
+      try {
+        const arr = JSON.parse(legacy);
+        if (Array.isArray(arr)) {
+          HOTWORD_BUCKETS.forEach((b) => {
+            if (localStorage.getItem(`hotwords_${b}`) === null) {
+              localStorage.setItem(`hotwords_${b}`, JSON.stringify(arr));
+            }
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    localStorage.setItem(HOTWORDS_PER_LANG_MIGRATED, '1');
+  }
+
+  function readHotwordBucket(langForUi) {
+    const raw = localStorage.getItem(`hotwords_${langForUi}`);
+    if (raw === null) return [];
+    try {
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function writeHotwordBucket(langForUi, words) {
+    localStorage.setItem(`hotwords_${langForUi}`, JSON.stringify(words));
+  }
+
+  function apiLangFromUi(langForUi) {
+    return UI_TO_API_LANG[langForUi] || 'N/A';
+  }
+
+  migrateLegacyHotwords();
+  let srcLangUi = localStorage.getItem('asr_src_lang') || 'auto';
+  if (!HOTWORD_BUCKETS.includes(srcLangUi)) srcLangUi = 'auto';
 
   function b64ToWavBlobUrl(b64) {
     const bin = atob(b64);
@@ -41,6 +94,7 @@
   const hotwordTextarea = document.getElementById('hotword-textarea');
   const hotwordExtractBtn = document.getElementById('hotword-extract-btn');
   const hotwordExtractStatus = document.getElementById('hotword-extract-status');
+  const asrLangSelect = document.getElementById('asr-lang-select');
 
   // --- Hotword management ---
   function sanitizeHotwords(sourceWords) {
@@ -98,7 +152,13 @@
 
   function syncHotwords() {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'update_hotwords', hotwords: getEffectiveHotwords() }));
+      ws.send(
+        JSON.stringify({
+          type: 'update_hotwords',
+          hotwords: getEffectiveHotwords(),
+          src_lang: apiLangFromUi(srcLangUi),
+        })
+      );
       setHotwordSyncStatus('synced');
     } else {
       setHotwordSyncStatus('offline');
@@ -107,6 +167,7 @@
 
   function saveAndSyncHotwords() {
     enforceHotwordLimit();
+    writeHotwordBucket(srcLangUi, hotwords);
     localStorage.setItem('hotwords', JSON.stringify(hotwords));
     renderHotwords();
     syncHotwords();
@@ -243,7 +304,22 @@
     syncHotwords();
   });
 
-  hotwords = sanitizeHotwords(hotwords);
+  if (asrLangSelect) {
+    asrLangSelect.value = srcLangUi;
+    asrLangSelect.addEventListener('change', () => {
+      const next = asrLangSelect.value;
+      if (!HOTWORD_BUCKETS.includes(next)) return;
+      writeHotwordBucket(srcLangUi, sanitizeHotwords(hotwords));
+      srcLangUi = next;
+      localStorage.setItem('asr_src_lang', srcLangUi);
+      hotwords = sanitizeHotwords(readHotwordBucket(srcLangUi));
+      localStorage.setItem('hotwords', JSON.stringify(hotwords));
+      renderHotwords();
+      syncHotwords();
+    });
+  }
+
+  hotwords = sanitizeHotwords(readHotwordBucket(srcLangUi));
   localStorage.setItem('hotwords', JSON.stringify(hotwords));
   renderHotwords();
   updateHitCounter();
@@ -324,6 +400,7 @@
           textPrimary: data.text_primary,
           textSecondary: data.text_secondary,
           fusionMeta: data.fusion_meta,
+          srcLangDetected: data.src_lang_detected,
         });
         break;
       case 'discard':
@@ -562,6 +639,13 @@
         highlighted.count > 0
           ? `<div class="text-[11px] text-sky-200/85 mt-2 stream-meta">Hotword hits: ${highlighted.count}</div>`
           : '';
+      const langDetectedMeta =
+        debugInfo &&
+        debugInfo.srcLangDetected &&
+        srcLangUi === 'auto' &&
+        String(debugInfo.srcLangDetected).trim()
+          ? `<div class="text-[11px] text-violet-200/80 mt-2 stream-meta">Detected language: ${escapeHtml(String(debugInfo.srcLangDetected).trim())}</div>`
+          : '';
       const debugBlock = renderDualAsrDebug(debugInfo);
 
       const textP = document.createElement('p');
@@ -569,9 +653,9 @@
       streamRevealContent(textP, highlighted.html);
       content.innerHTML = '';
       content.appendChild(textP);
-      if (hitMeta || debugBlock) {
+      if (hitMeta || langDetectedMeta || debugBlock) {
         const extra = document.createElement('div');
-        extra.innerHTML = hitMeta + debugBlock;
+        extra.innerHTML = langDetectedMeta + hitMeta + debugBlock;
         content.appendChild(extra);
       }
     } else if (status === 'error') {

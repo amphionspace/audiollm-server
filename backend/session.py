@@ -24,6 +24,18 @@ logger = logging.getLogger(__name__)
 
 MIN_SEGMENT_SAMPLES = int(SAMPLE_RATE * MIN_SEGMENT_DURATION_MS / 1000)
 
+VALID_SRC_LANG = frozenset({"N/A", "Chinese", "English", "Indonesian", "Thai"})
+
+
+def normalize_client_src_lang(value: object) -> str:
+    s = str(value or "").strip()
+    if not s:
+        return "N/A"
+    if s in VALID_SRC_LANG:
+        return s
+    logger.warning("Unknown src_lang %r, using N/A", s)
+    return "N/A"
+
 
 def _generate_segment_id() -> str:
     return f"seg-{int(time.time() * 1000)}"
@@ -39,6 +51,7 @@ class AudioSession:
         self.resampler = Resampler48to16()
         self._pcm_carry = np.empty(0, dtype=np.float32)
         self.hotwords: list[str] = []
+        self.src_lang: str = "N/A"
         self.stop_event = asyncio.Event()
         self.extract_tasks: set[asyncio.Task] = set()
 
@@ -78,7 +91,14 @@ class AudioSession:
             remaining = self.vad.flush()
             if remaining is not None and len(remaining) >= MIN_SEGMENT_SAMPLES:
                 seg_id = _generate_segment_id()
-                await self.segment_queue.put((seg_id, remaining, list(self.hotwords)))
+                await self.segment_queue.put(
+                    (
+                        seg_id,
+                        remaining,
+                        list(self.hotwords),
+                        self.src_lang,
+                    )
+                )
             self.stop_event.set()
             await self.segment_queue.put(None)
 
@@ -109,7 +129,9 @@ class AudioSession:
             return
         seg_id = _generate_segment_id()
         try:
-            self.segment_queue.put_nowait((seg_id, segment, list(self.hotwords)))
+            self.segment_queue.put_nowait(
+                (seg_id, segment, list(self.hotwords), self.src_lang)
+            )
         except asyncio.QueueFull:
             logger.warning("Segment queue full, dropping %s", seg_id)
 
@@ -121,7 +143,11 @@ class AudioSession:
 
         if ctrl.get("type") == "update_hotwords":
             self.hotwords = sanitize_hotwords(ctrl.get("hotwords", []))
-            logger.info("Hotwords updated: %s", self.hotwords)
+            if "src_lang" in ctrl:
+                self.src_lang = normalize_client_src_lang(ctrl.get("src_lang"))
+            logger.info(
+                "Hotwords updated: %s (src_lang=%s)", self.hotwords, self.src_lang
+            )
 
         elif ctrl.get("type") == "extract_hotwords":
             request_id = str(ctrl.get("request_id", "")).strip()
@@ -169,16 +195,19 @@ class AudioSession:
             if item is None:
                 break
 
-            seg_id, segment, hw_snapshot = item
+            seg_id, segment, hw_snapshot, lang_snapshot = item
             logger.info(
-                "Processing segment %s (%.1fs, hotwords=%s)",
+                "Processing segment %s (%.1fs, hotwords=%s, src_lang=%s)",
                 seg_id,
                 len(segment) / SAMPLE_RATE,
                 hw_snapshot,
+                lang_snapshot,
             )
 
             try:
-                await self._process_segment(seg_id, segment, hw_snapshot)
+                await self._process_segment(
+                    seg_id, segment, hw_snapshot, lang_snapshot
+                )
             except WebSocketDisconnect:
                 break
             except Exception as e:
@@ -196,6 +225,7 @@ class AudioSession:
         seg_id: str,
         segment: np.ndarray,
         hw_snapshot: list[str],
+        lang_snapshot: str,
     ) -> None:
         wav_b64 = pcm_to_wav_base64(segment)
         primary_res: object = None
@@ -203,14 +233,18 @@ class AudioSession:
 
         if ENABLE_SECONDARY_ASR:
             secondary_res, primary_res = await self._dual_asr_pipeline(
-                seg_id, wav_b64, hw_snapshot
+                seg_id, wav_b64, hw_snapshot, lang_snapshot
             )
             if secondary_res is None and primary_res is None:
                 return
         else:
             if ENABLE_PRIMARY_ASR:
                 primary_res = await asyncio.wait_for(
-                    query_audio_model(wav_b64, hotwords=hw_snapshot),
+                    query_audio_model(
+                        wav_b64,
+                        hotwords=hw_snapshot,
+                        src_lang=lang_snapshot,
+                    ),
                     timeout=PRIMARY_ASR_TIMEOUT,
                 )
 
@@ -238,6 +272,8 @@ class AudioSession:
             "text": fused["text"],
             "model_hotwords": fused["model_hotwords"],
         }
+        if primary_result and primary_result.get("detected_language"):
+            payload["src_lang_detected"] = primary_result["detected_language"]
         if DEBUG_SHOW_DUAL_ASR:
             payload.update(
                 {
@@ -271,6 +307,7 @@ class AudioSession:
         seg_id: str,
         wav_b64: str,
         hw_snapshot: list[str],
+        lang_snapshot: str,
     ) -> tuple:
         """Run both ASR models in parallel, wait for both, return results.
 
@@ -284,7 +321,11 @@ class AudioSession:
         if ENABLE_PRIMARY_ASR:
             primary_task = asyncio.create_task(
                 asyncio.wait_for(
-                    query_audio_model(wav_b64, hotwords=hw_snapshot),
+                    query_audio_model(
+                        wav_b64,
+                        hotwords=hw_snapshot,
+                        src_lang=lang_snapshot,
+                    ),
                     timeout=PRIMARY_ASR_TIMEOUT,
                 )
             )
