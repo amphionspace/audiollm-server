@@ -11,9 +11,11 @@ from .audio_utils import Resampler48to16, pcm_to_wav_base64
 from .config import (
     DEBUG_SHOW_DUAL_ASR,
     ENABLE_PRIMARY_ASR,
+    ENABLE_PSEUDO_STREAM,
     ENABLE_SECONDARY_ASR,
     MIN_SEGMENT_DURATION_MS,
     PRIMARY_ASR_TIMEOUT,
+    PSEUDO_STREAM_INTERVAL_MS,
     SAMPLE_RATE,
 )
 from .fusion import choose_fused_result
@@ -54,6 +56,26 @@ class AudioSession:
         self.src_lang: str = "N/A"
         self.stop_event = asyncio.Event()
         self.extract_tasks: set[asyncio.Task] = set()
+        self._ws_closed = False
+
+        # Pseudo-streaming state
+        self._utterance_id: str | None = None
+        self._partial_seq: int = 0
+        self._last_partial_time: float = 0.0
+        self._partial_task: asyncio.Task | None = None
+        self._pseudo_stream_interval: float = PSEUDO_STREAM_INTERVAL_MS / 1000.0
+
+    async def _send_json(self, data: dict) -> bool:
+        """Send JSON over WebSocket. Returns False if the connection is gone."""
+        if self._ws_closed:
+            return False
+        try:
+            await self.ws.send_json(data)
+            return True
+        except (WebSocketDisconnect, RuntimeError):
+            self._ws_closed = True
+            self.stop_event.set()
+            return False
 
     async def run(self) -> None:
         try:
@@ -62,6 +84,8 @@ class AudioSession:
             logger.exception("Session error")
 
     async def cleanup(self) -> None:
+        if self._partial_task and not self._partial_task.done():
+            self._partial_task.cancel()
         if self.extract_tasks:
             for task in self.extract_tasks:
                 task.cancel()
@@ -90,7 +114,8 @@ class AudioSession:
         finally:
             remaining = self.vad.flush()
             if remaining is not None and len(remaining) >= MIN_SEGMENT_SAMPLES:
-                seg_id = _generate_segment_id()
+                seg_id = self._utterance_id or _generate_segment_id()
+                self._utterance_id = None
                 await self.segment_queue.put(
                     (
                         seg_id,
@@ -119,6 +144,35 @@ class AudioSession:
             if segment is not None:
                 self._enqueue_segment(segment)
 
+        # --- Pseudo-streaming: manage utterance_id & throttled partial ---
+        if not (ENABLE_PSEUDO_STREAM and ENABLE_SECONDARY_ASR):
+            return
+
+        if self.vad.is_speaking:
+            if self._utterance_id is None:
+                self._utterance_id = _generate_segment_id()
+                self._partial_seq = 0
+                self._last_partial_time = 0.0
+                logger.debug("Utterance started: %s", self._utterance_id)
+
+            now = time.monotonic()
+            if now - self._last_partial_time >= self._pseudo_stream_interval:
+                snapshot = self.vad.snapshot_incomplete_speech()
+                if snapshot is not None and len(snapshot) >= MIN_SEGMENT_SAMPLES:
+                    if self._partial_task is None or self._partial_task.done():
+                        self._last_partial_time = now
+                        self._partial_seq += 1
+                        self._partial_task = asyncio.create_task(
+                            self._emit_partial(
+                                self._utterance_id,
+                                snapshot,
+                                self._partial_seq,
+                            )
+                        )
+        else:
+            if self._utterance_id is not None and not self.vad.is_speaking:
+                self._utterance_id = None
+
     def _enqueue_segment(self, segment: np.ndarray) -> None:
         if len(segment) < MIN_SEGMENT_SAMPLES:
             logger.info(
@@ -126,8 +180,10 @@ class AudioSession:
                 len(segment) / SAMPLE_RATE,
                 MIN_SEGMENT_DURATION_MS / 1000.0,
             )
+            self._utterance_id = None
             return
-        seg_id = _generate_segment_id()
+        seg_id = self._utterance_id or _generate_segment_id()
+        self._utterance_id = None
         try:
             self.segment_queue.put_nowait(
                 (seg_id, segment, list(self.hotwords), self.src_lang)
@@ -161,7 +217,7 @@ class AudioSession:
     async def _extract_hotwords(self, request_id: str, source_text: str) -> None:
         try:
             extracted = await query_text_hotwords(source_text)
-            await self.ws.send_json(
+            await self._send_json(
                 {
                     "type": "extract_hotwords_result",
                     "request_id": request_id,
@@ -174,16 +230,63 @@ class AudioSession:
             logger.exception(
                 "extract_hotwords failed (request_id=%s)", request_id or "n/a"
             )
-            try:
-                await self.ws.send_json(
-                    {
-                        "type": "extract_hotwords_error",
-                        "request_id": request_id,
-                        "message": str(e),
-                    }
+            await self._send_json(
+                {
+                    "type": "extract_hotwords_error",
+                    "request_id": request_id,
+                    "message": str(e),
+                }
+            )
+
+    # ------------------------------------------------------------------
+    # Pseudo-streaming: partial secondary ASR while user is speaking
+    # ------------------------------------------------------------------
+
+    async def _emit_partial(
+        self, utterance_id: str, snapshot: np.ndarray, seq: int
+    ) -> None:
+        """Run both ASR models; use Secondary as silence gate, emit Primary text."""
+        try:
+            wav_b64 = pcm_to_wav_base64(snapshot)
+
+            secondary_task = asyncio.create_task(
+                query_audio_model_secondary(wav_b64)
+            )
+            primary_task = asyncio.create_task(
+                query_audio_model(
+                    wav_b64,
+                    hotwords=list(self.hotwords),
+                    src_lang=self.src_lang,
                 )
-            except Exception:
+            )
+
+            secondary_res = await secondary_task
+            secondary_text = str(
+                (secondary_res or {}).get("transcription") or ""
+            ).strip()
+            if not secondary_text:
+                primary_task.cancel()
                 return
+
+            primary_res = await primary_task
+            text = str(
+                (primary_res or {}).get("transcription") or ""
+            ).strip()
+            if not text:
+                return
+
+            await self._send_json(
+                {
+                    "type": "partial_transcript",
+                    "utterance_id": utterance_id,
+                    "text": text,
+                    "seq": seq,
+                }
+            )
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            logger.debug("Partial ASR failed for %s seq=%s", utterance_id, seq)
 
     # ------------------------------------------------------------------
     # ASR loop: consume segments, query models, send results
@@ -208,16 +311,14 @@ class AudioSession:
                 await self._process_segment(
                     seg_id, segment, hw_snapshot, lang_snapshot
                 )
-            except WebSocketDisconnect:
+            except (WebSocketDisconnect, RuntimeError):
                 break
             except Exception as e:
                 logger.exception("LLM query failed for %s", seg_id)
-                try:
-                    await self._send_vad_event(seg_id, segment)
-                    await self.ws.send_json(
-                        {"type": "error", "id": seg_id, "message": str(e)}
-                    )
-                except Exception:
+                await self._send_vad_event(seg_id, segment)
+                if not await self._send_json(
+                    {"type": "error", "id": seg_id, "message": str(e)}
+                ):
                     break
 
     async def _process_segment(
@@ -282,7 +383,7 @@ class AudioSession:
                     "fusion_meta": fused["fusion"],
                 }
             )
-        await self.ws.send_json(payload)
+        await self._send_json(payload)
 
     async def _send_vad_event(
         self,
@@ -292,7 +393,7 @@ class AudioSession:
     ) -> None:
         if wav_b64 is None:
             wav_b64 = pcm_to_wav_base64(segment)
-        await self.ws.send_json(
+        await self._send_json(
             {
                 "type": "vad_event",
                 "event": "segment_detected",

@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
 
+from .asr_streaming_session import ASRStreamingSession
 from .http_client import close_client
 from .session import AudioSession
 
@@ -25,6 +26,17 @@ async def audio_ws(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket connected")
     session = AudioSession(websocket)
+    try:
+        await session.run()
+    finally:
+        await session.cleanup()
+
+
+@app.websocket("/transcribe-streaming")
+async def transcribe_streaming_ws(websocket: WebSocket, language: str = ""):
+    await websocket.accept()
+    logger.info("Transcribe-streaming connected (language=%s)", language)
+    session = ASRStreamingSession(websocket, language)
     try:
         await session.run()
     finally:

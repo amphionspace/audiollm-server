@@ -14,6 +14,7 @@
   let activeReplayAudio = null;
   const segmentAudio = new Map();
   const MAX_EXTRACTED_HOTWORD_LENGTH = 10;
+  const partialSeqMap = new Map(); // utterance_id -> highest seq seen
 
   const HOTWORD_BUCKETS = ['auto', 'chinese', 'english', 'indonesian', 'thai'];
   const HOTWORDS_PER_LANG_MIGRATED = 'hotwords_per_lang_migrated';
@@ -383,19 +384,43 @@
 
   function handleServerMessage(data) {
     switch (data.type) {
+      case 'partial_transcript': {
+        const uid = data.utterance_id;
+        if (!uid) break;
+        const prevSeq = partialSeqMap.get(uid) || 0;
+        if (typeof data.seq === 'number' && data.seq <= prevSeq) break;
+        partialSeqMap.set(uid, data.seq || 0);
+
+        if (!document.getElementById(`user-${uid}`)) {
+          addUserBubble(uid, '', true);
+        }
+        if (!document.getElementById(`ai-${uid}`)) {
+          addAIBubble(uid);
+        }
+        updateAIBubble(uid, data.text, 'streaming');
+        break;
+      }
       case 'vad_event':
         if (data.event === 'segment_detected') {
           if (data.audio_b64) {
             segmentAudio.set(data.id, b64ToWavBlobUrl(data.audio_b64));
           }
-          addUserBubble(data.id, data.duration || '');
-          addAIBubble(data.id);
+          const existingUser = document.getElementById(`user-${data.id}`);
+          if (existingUser) {
+            refreshUserBubbleAudio(data.id, data.duration || '');
+          } else {
+            addUserBubble(data.id, data.duration || '');
+          }
+          if (!document.getElementById(`ai-${data.id}`)) {
+            addAIBubble(data.id);
+          }
         }
         break;
       case 'status':
         updateAIBubble(data.id, null, 'processing');
         break;
       case 'response':
+        partialSeqMap.delete(data.id);
         updateAIBubble(data.id, data.text, 'done', data.model_hotwords, {
           textPrimary: data.text_primary,
           textSecondary: data.text_secondary,
@@ -404,9 +429,11 @@
         });
         break;
       case 'discard':
+        partialSeqMap.delete(data.id);
         removeSegmentBubbles(data.id);
         break;
       case 'error':
+        partialSeqMap.delete(data.id);
         updateAIBubble(data.id, `Error: ${data.message}`, 'error');
         break;
       case 'extract_hotwords_result':
@@ -458,12 +485,13 @@
     activeReplayAudio = audio;
   }
 
-  function addUserBubble(segId, duration) {
+  function addUserBubble(segId, duration, isPartial) {
     const wrapper = document.createElement('div');
     wrapper.className = 'chat-row chat-row-user chat-bubble-float';
     wrapper.id = `user-${segId}`;
 
     const hasAudio = segmentAudio.has(segId);
+    const label = isPartial ? 'Speaking\u2026' : `Voice ${duration}`;
     wrapper.innerHTML = `
       <div class="chat-bubble chat-bubble-user text-white">
         <div class="flex items-center gap-2">
@@ -471,7 +499,7 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
           </svg>
-          <span class="text-sm font-medium tracking-wide">Voice ${duration}</span>
+          <span class="text-sm font-medium tracking-wide user-voice-label">${label}</span>
           ${hasAudio ? `<button class="replay-btn" data-seg="${segId}" title="Replay audio">
             <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
               <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
@@ -493,6 +521,31 @@
 
     chatArea.appendChild(wrapper);
     scrollChatToBottom();
+  }
+
+  function refreshUserBubbleAudio(segId, duration) {
+    const wrapper = document.getElementById(`user-${segId}`);
+    if (!wrapper) return;
+    const label = wrapper.querySelector('.user-voice-label');
+    if (label) label.textContent = `Voice ${duration}`;
+    if (segmentAudio.has(segId) && !wrapper.querySelector('.replay-btn')) {
+      const btnHtml = `<button class="replay-btn" data-seg="${segId}" title="Replay audio">
+        <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
+        </svg>
+      </button>`;
+      const container = wrapper.querySelector('.flex.items-center');
+      if (container) {
+        container.insertAdjacentHTML('beforeend', btnHtml);
+        const btn = container.querySelector('.replay-btn');
+        if (btn) {
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            replaySegment(segId, e.currentTarget);
+          });
+        }
+      }
+    }
   }
 
   function generateWaveformBars() {
@@ -612,7 +665,13 @@
     const content = bubble.querySelector('.ai-content');
     if (!content) return;
 
-    if (status === 'processing') {
+    if (status === 'streaming') {
+      content.classList.remove('ai-processing');
+      content.innerHTML = `<p class="text-sm leading-relaxed text-white/80">${escapeHtml(text || '')}</p>
+        <div class="text-[11px] text-white/35 mt-1">Listening\u2026</div>`;
+      scrollChatToBottom();
+      return;
+    } else if (status === 'processing') {
       content.classList.add('ai-processing');
       content.innerHTML = `
         <div class="shimmer-lines">

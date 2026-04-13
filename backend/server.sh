@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Fill values directly here.
-MODEL_PATH="/home/ubuntu/models/hf/Amphion-3B"
+MODEL_PATH="/home/ubuntu/models/hf/checkpoint-5500_completed/"
 MODEL_NAME="Amphion/Amphion-3B"
 HOST="0.0.0.0"
 PORT="8000"

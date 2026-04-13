@@ -206,6 +206,17 @@ class VADProcessor:
 
         return None
 
+    def snapshot_incomplete_speech(self) -> np.ndarray | None:
+        """Return a copy of the PCM accumulated so far while speaking.
+
+        Only meaningful when ``is_speaking`` is True and the buffer has
+        accumulated at least *some* audio.  Returns ``None`` otherwise so
+        the caller can skip pointless ASR requests.
+        """
+        if not self.is_speaking or not self.audio_buffer:
+            return None
+        return np.concatenate(self.audio_buffer)
+
     def flush(self) -> np.ndarray | None:
         """Flush any remaining buffered speech (e.g. on disconnect)."""
         if self.audio_buffer and self.is_speaking:
