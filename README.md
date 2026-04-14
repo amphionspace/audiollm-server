@@ -2,110 +2,113 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-Real-time audio transcription demo powered by [Amphion](https://github.com/open-mmlab/Amphion) (vLLM) with TEN VAD speech segmentation.
-Supports dual-ASR parallel inference (Amphion + Qwen) with normalized, risk-aware fusion.
+基于 [Amphion](https://github.com/open-mmlab/Amphion) (vLLM) 的实时语音转写 Demo，集成 TEN VAD 语音端点检测。
+支持双 ASR 模型（Amphion + Qwen）并行推理，带归一化质量评估与风险感知融合策略。
 
-## Prerequisites
+---
+
+## 环境要求
 
 - Python 3.10+
-- A running vLLM server with Amphion (OpenAI-compatible API)
-- OpenSSL (for self-signed certificate generation)
+- 已启动的 vLLM 推理服务（兼容 OpenAI API）
+- OpenSSL（用于生成自签名证书）
 
-## Quick Start
+## 快速开始
 
 ```bash
-# Install dependencies
+# 安装依赖（二选一）
 pip install -e .
-
-# Or using uv
 uv sync
 
-# Copy and edit the environment file
+# 复制并编辑环境配置
 cp .env.example .env
 
-# Set vLLM endpoint (or edit .env)
+# 设置 vLLM 地址（也可直接编辑 .env）
 export VLLM_BASE_URL="http://localhost:8000"
 export VLLM_MODEL_NAME="Amphion/Amphion-3B"
 
-# Start the server
+# 启动服务
 bash start.sh
 ```
 
-Open `https://<your-server-ip>:8443` in your browser.
+浏览器打开 `https://<服务器IP>:8443` 即可使用。
 
-> On first visit, the browser will warn about the self-signed certificate.
-> Click **Advanced** -> **Proceed** to continue.
+> 首次访问时浏览器会提示自签名证书不安全，点击 **高级** → **继续访问** 即可。
 
-## Architecture
+---
+
+## 系统架构
 
 ```mermaid
 graph LR
-    Browser["Browser (Mic)"] -->|WSS| FastAPI
+    Browser["浏览器 (麦克风)"] -->|WSS| FastAPI
     FastAPI -->|HTTP| vLLM1["vLLM #1 (Amphion)"]
     FastAPI -->|HTTP| vLLM2["vLLM #2 (Qwen)"]
     FastAPI --- VAD["TEN VAD"]
-    VAD --- Fusion["Similarity Fusion"]
+    VAD --- Fusion["相似度融合"]
 ```
 
-- **Frontend**: Web Audio API AudioWorklet captures 16 kHz PCM, sends via WebSocket
-- **Backend**: FastAPI with two concurrent async tasks per connection:
-  - VAD Task: processes audio frames, detects speech segments (non-blocking)
-  - LLM Task: consumes segments from asyncio.Queue, calls vLLM API (independent)
-- **Hotwords**: Managed in the browser UI, synced to backend via WebSocket in real-time
-
-## WebSocket API
-
-The server exposes two WebSocket endpoints:
-
-| Endpoint | Purpose |
+| 模块 | 说明 |
 |---|---|
-| `/ws/audio` | Frontend demo — browser microphone capture with UI integration |
-| `/transcribe-streaming` | Service integration — standard ASR streaming protocol for upstream services |
+| **前端** | Web Audio API AudioWorklet 采集 16 kHz PCM，通过 WebSocket 发送 |
+| **后端** | FastAPI，每个连接启动两个并发异步任务：VAD 任务（语音检测）+ LLM 任务（ASR 推理），互不阻塞 |
+| **热词** | 在浏览器 UI 中管理，通过 WebSocket 实时同步到后端 |
 
-### `/transcribe-streaming` Protocol
+---
 
-Connect via WebSocket with optional `language` query parameter:
+## WebSocket 接口
+
+服务暴露两个 WebSocket 端点：
+
+| 端点 | 用途 |
+|---|---|
+| `/ws/audio` | 前端 Demo —— 浏览器麦克风采集 + UI 交互 |
+| `/transcribe-streaming` | 服务对接 —— 标准 ASR 流式协议，供上游服务调用 |
+
+### `/transcribe-streaming` 协议
+
+通过 WebSocket 连接，可选 `language` 查询参数：
 
 ```
 wss://<host>:<port>/transcribe-streaming?language=zh
 ```
 
-**Message flow:**
+**消息流程：**
 
 ```
-Client                                Server
+客户端                                 服务端
   |                                      |
-  |  ---- WebSocket connect -----------> |
-  |  <--------  ready  ---------------   |
-  |  ----  update_hotwords (optional) -> |
-  |  ----  start  ---------------------> |
-  |  ----  binary PCM chunks  ---------> |
-  |  <--------  partial_asr  ----------  |
-  |  ----  binary PCM chunks  ---------> |
-  |  <--------  final_asr  ------------  |
-  |  ----  stop  ----------------------> |
-  |  <--------  final_asr  ------------  |
+  |  ---- WebSocket 连接 -------------> |
+  |  <--------  ready  ---------------  |
+  |  ----  update_hotwords (可选) ----> |
+  |  ----  start  --------------------> |
+  |  ----  PCM 音频数据  -------------> |
+  |  <--------  partial_asr  ---------  |
+  |  ----  PCM 音频数据  -------------> |
+  |  <--------  final_asr  -----------  |
+  |  ----  stop  ---------------------> |
+  |  <--------  final_asr  -----------  |
 ```
 
-**Client -> Server messages:**
+**客户端 → 服务端：**
 
-| Message | Description |
+| 消息 | 说明 |
 |---|---|
-| `{"type": "start", "mode": "asr_only", "format": "pcm_s16le", "sample_rate_hz": 16000, "channels": 1}` | Declare audio format (required before sending PCM) |
-| `{"type": "update_hotwords", "hotwords": ["term1", "term2"]}` | Update hotword list (optional, can be sent anytime) |
-| Binary PCM frames | Raw audio: 16 kHz, mono, s16le. Recommended chunk: 80 ms (2560 bytes) |
-| `{"type": "stop"}` | End audio stream, flush remaining audio |
+| `{"type": "start", "mode": "asr_only", "format": "pcm_s16le", "sample_rate_hz": 16000, "channels": 1}` | 声明音频格式（发送 PCM 前必须先发） |
+| `{"type": "update_hotwords", "hotwords": ["词1", "词2"]}` | 更新热词列表（可选，随时可发） |
+| 二进制 PCM 帧 | 原始音频：16 kHz、单声道、s16le，建议每帧 80 ms（2560 字节） |
+| `{"type": "stop"}` | 结束音频流，刷新剩余音频 |
 
-**Server -> Client messages:**
+**服务端 → 客户端：**
 
-| Message | Description |
+| 消息 | 说明 |
 |---|---|
-| `{"type": "ready"}` | Server ready to receive audio |
-| `{"type": "partial_asr", "text": "...", "language": "zh"}` | Interim transcription (during speech) |
-| `{"type": "final_asr", "text": "...", "language": "zh"}` | Final transcription (after speech segment ends) |
-| `{"type": "error", "message": "..."}` | Error notification |
+| `{"type": "ready"}` | 服务端就绪，可以开始发送音频 |
+| `{"type": "partial_asr", "text": "...", "language": "zh"}` | 中间结果（语音进行中） |
+| `{"type": "final_asr", "text": "...", "language": "zh"}` | 最终结果（语音片段结束后） |
+| `{"type": "error", "message": "..."}` | 错误通知 |
 
-**Quick example (Python):**
+**Python 调用示例：**
 
 ```python
 import asyncio, json, ssl, websockets
@@ -137,7 +140,7 @@ async def transcribe(pcm_bytes: bytes):
             print(f"[{data['type']}] {data.get('text', '')}")
 ```
 
-**Test client:**
+**测试客户端：**
 
 ```bash
 python tests/test_ws_client.py audio.wav
@@ -145,82 +148,110 @@ python tests/test_ws_client.py audio.wav --hotwords "武新华,挚音科技"
 python tests/test_ws_client.py audio.wav --language en --chunk-ms 100
 ```
 
-For the complete protocol specification, see [docs/transcribe-streaming-protocol.md](docs/transcribe-streaming-protocol.md).
+完整协议规范见 [docs/transcribe-streaming-protocol.md](docs/transcribe-streaming-protocol.md)。
 
-## Run Two vLLM Servers
+---
 
-Start Amphion:
+## 启动双 vLLM 推理服务
+
+启动 Amphion（默认端口 8000）：
 
 ```bash
 MODEL_PATH=/path/to/Amphion-3B bash scripts/start_vllm_amphion.sh
 ```
 
-Then start Qwen on port 8001 in another terminal:
+在另一个终端启动 Qwen（端口 8001）：
 
 ```bash
 MODEL_PATH=/path/to/Qwen3-ASR-1.7B bash scripts/start_vllm_qwen.sh
 ```
 
-## Configuration
+---
 
-All configuration is via environment variables (see [.env.example](.env.example) for the full list):
+## 配置说明
 
-| Variable | Default | Description |
+所有配置通过环境变量管理，详见 [.env.example](.env.example)。
+
+### 模型与推理
+
+| 变量 | 默认值 | 说明 |
 |---|---|---|
-| `VLLM_BASE_URL` | `http://localhost:8000` | Primary vLLM server address |
-| `VLLM_MODEL_NAME` | `Amphion/Amphion-3B` | Primary model name |
-| `SECONDARY_VLLM_BASE_URL` | `http://localhost:8001` | Secondary vLLM server address (Qwen) |
-| `SECONDARY_VLLM_MODEL_NAME` | `Qwen/Qwen3-ASR-1.7B` | Secondary model name |
-| `ENABLE_PRIMARY_ASR` | `1` | Enable primary ASR model |
-| `ENABLE_SECONDARY_ASR` | `1` | Enable dual-model parallel ASR |
-| `PRIMARY_ASR_TIMEOUT` | `4.0` | Primary ASR per-request timeout (seconds) |
-| `ASR_REQUEST_TIMEOUT` | `120` | HTTP request timeout (seconds) |
-| `DEBUG_SHOW_DUAL_ASR` | `1` | Include dual-ASR debug info in responses |
-| `ENABLE_PSEUDO_STREAM` | `1` | Enable pseudo-streaming partial output |
-| `PSEUDO_STREAM_INTERVAL_MS` | `500` | Minimum interval between partial outputs (ms) |
-| `FUSION_SIMILARITY_THRESHOLD` | `0.85` | Similarity threshold for fusion logic |
-| `FUSION_MIN_PRIMARY_SCORE` | `0.55` | Minimum primary quality score |
-| `FUSION_MAX_REPETITION_RATIO` | `0.35` | Repetition risk threshold |
-| `FUSION_DISAGREEMENT_THRESHOLD` | `0.55` | Max disagreement before fallback |
-| `FUSION_HOTWORD_BOOST` | `0.12` | Per-hotword boost to primary score |
-| `FUSION_PRIMARY_SCORE_MARGIN` | `0.08` | Required primary score margin over secondary |
-| `VAD_THRESHOLD` | `0.5` | VAD speech probability threshold |
-| `VAD_SMOOTHING_ALPHA` | `0.35` | EMA smoothing for VAD probability |
-| `VAD_START_FRAMES` | `3` | Consecutive speech frames to start segment |
-| `VAD_PRE_SPEECH_MS` | `500` | Pre-roll audio before speech start (ms) |
-| `VAD_END_FRAMES` | `SILENCE_DURATION_MS/10` | Consecutive non-speech frames to end segment |
-| `VAD_KEEP_TAIL_MS` | `40` | Trailing audio to keep after speech end (ms) |
-| `SILENCE_DURATION_MS` | `200` | Silence duration to end speech segment (ms) |
-| `MIN_SEGMENT_DURATION_MS` | `350` | Minimum VAD segment duration (ms) |
-| `PORT` | `8443` | HTTPS server port |
+| `VLLM_BASE_URL` | `http://localhost:8000` | 主模型 vLLM 地址 |
+| `VLLM_MODEL_NAME` | `Amphion/Amphion-3B` | 主模型名称 |
+| `SECONDARY_VLLM_BASE_URL` | `http://localhost:8001` | 副模型 vLLM 地址（Qwen） |
+| `SECONDARY_VLLM_MODEL_NAME` | `Qwen/Qwen3-ASR-1.7B` | 副模型名称 |
+| `ENABLE_PRIMARY_ASR` | `1` | 启用主 ASR 模型 |
+| `ENABLE_SECONDARY_ASR` | `1` | 启用双模型并行 ASR |
+| `PRIMARY_ASR_TIMEOUT` | `4.0` | 主模型单次请求超时（秒） |
+| `ASR_REQUEST_TIMEOUT` | `120` | HTTP 请求超时（秒） |
 
-## Project Structure
+### 输出与调试
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DEBUG_SHOW_DUAL_ASR` | `1` | 在响应中包含双 ASR 调试信息 |
+| `ENABLE_PSEUDO_STREAM` | `1` | 启用伪流式逐步输出 |
+| `PSEUDO_STREAM_INTERVAL_MS` | `500` | 伪流式输出最小间隔（毫秒） |
+
+### 融合策略
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `FUSION_SIMILARITY_THRESHOLD` | `0.85` | 相似度阈值 |
+| `FUSION_MIN_PRIMARY_SCORE` | `0.55` | 主模型最低质量分 |
+| `FUSION_MAX_REPETITION_RATIO` | `0.35` | 重复风险阈值 |
+| `FUSION_DISAGREEMENT_THRESHOLD` | `0.55` | 分歧度上限（超过则回退） |
+| `FUSION_HOTWORD_BOOST` | `0.12` | 每个热词对主模型评分的加成 |
+| `FUSION_PRIMARY_SCORE_MARGIN` | `0.08` | 主模型需超过副模型的最低分差 |
+
+### VAD 参数
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `VAD_THRESHOLD` | `0.5` | 语音概率阈值 |
+| `VAD_SMOOTHING_ALPHA` | `0.35` | 概率 EMA 平滑系数 |
+| `VAD_START_FRAMES` | `3` | 触发语音起始所需连续帧数 |
+| `VAD_PRE_SPEECH_MS` | `500` | 语音起始前的预留音频（毫秒） |
+| `VAD_END_FRAMES` | `SILENCE_DURATION_MS/10` | 触发语音结束所需连续静默帧数 |
+| `VAD_KEEP_TAIL_MS` | `40` | 语音结束后保留的尾部音频（毫秒） |
+| `SILENCE_DURATION_MS` | `200` | 判定语音结束的静默时长（毫秒） |
+| `MIN_SEGMENT_DURATION_MS` | `350` | VAD 最短语音片段时长（毫秒） |
+
+### 服务
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `PORT` | `8443` | HTTPS 服务端口 |
+
+---
+
+## 项目结构
 
 ```
 backend/
-  main.py                    # FastAPI entry point
-  config.py                  # Environment variable configuration
-  http_client.py             # Shared async HTTP client
-  session.py                 # WebSocket session (VAD + ASR pipeline)
-  asr_streaming_session.py   # Streaming ASR session
-  audio/                     # Audio signal processing
-    utils.py                 # 48→16 kHz resampler, PCM/WAV conversion
-    vad.py                   # Voice Activity Detection (TEN VAD + fallback)
-  asr/                       # ASR model interaction
-    client.py                # vLLM API calls and output parsing
-    fusion.py                # Dual-model fusion logic
-    hotword.py               # Hotword extraction service
-    prompt.py                # LLM prompt templates
-frontend/                    # Static web frontend
-scripts/                     # vLLM server launch scripts
-tests/                       # Test utilities
-docs/                        # Protocol documentation
+  main.py                    # FastAPI 入口
+  config.py                  # 环境变量配置
+  http_client.py             # 共享异步 HTTP 客户端
+  session.py                 # WebSocket 会话（VAD + ASR 管线）
+  asr_streaming_session.py   # 流式 ASR 会话
+  audio/                     # 音频信号处理
+    utils.py                 #   48→16 kHz 重采样、PCM/WAV 转换
+    vad.py                   #   语音端点检测（TEN VAD + 备用方案）
+  asr/                       # ASR 模型交互
+    client.py                #   vLLM API 调用与输出解析
+    fusion.py                #   双模型融合逻辑
+    hotword.py               #   热词提取服务
+    prompt.py                #   LLM Prompt 模板
+frontend/                    # 静态 Web 前端
+scripts/                     # vLLM 服务启动脚本
+tests/                       # 测试工具
+docs/                        # 协议文档
 ```
 
-## Contributing
+## 参与贡献
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+请查看 [CONTRIBUTING.md](CONTRIBUTING.md) 了解开发环境搭建与贡献指南。
 
-## License
+## 开源许可
 
-This project is licensed under the [Apache License 2.0](LICENSE).
+本项目采用 [Apache License 2.0](LICENSE) 开源许可协议。
