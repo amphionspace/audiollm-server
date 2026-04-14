@@ -1,14 +1,14 @@
 import re
 from typing import Any, TypedDict
 
-from .config import (
+from ..config import (
     ASR_REQUEST_TIMEOUT,
     SECONDARY_VLLM_BASE_URL,
     SECONDARY_VLLM_MODEL_NAME,
     VLLM_BASE_URL,
     VLLM_MODEL_NAME,
 )
-from .http_client import get_client
+from ..http_client import get_client
 
 
 class ASRResult(TypedDict):

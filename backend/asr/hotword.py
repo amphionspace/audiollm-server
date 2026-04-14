@@ -4,8 +4,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .asr_client import _content_to_text
-from .http_client import get_client
+from ..http_client import get_client
+from .client import _content_to_text
 from .prompt import EXTRACT_HOTWORD
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ def sanitize_hotwords(words: Any) -> list[str]:
 
 
 def _backend_dir() -> Path:
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 def _load_extractor_config() -> dict[str, str]:

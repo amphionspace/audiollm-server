@@ -3,8 +3,7 @@ import re
 import unicodedata
 from typing import Any, TypedDict
 
-from .asr_client import ASRResult
-from .config import (
+from ..config import (
     FUSION_DISAGREEMENT_THRESHOLD,
     FUSION_HOTWORD_BOOST,
     FUSION_MAX_REPETITION_RATIO,
@@ -12,6 +11,7 @@ from .config import (
     FUSION_PRIMARY_SCORE_MARGIN,
     FUSION_SIMILARITY_THRESHOLD,
 )
+from .client import ASRResult
 
 
 class FusionMeta(TypedDict):

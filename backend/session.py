@@ -6,8 +6,11 @@ import time
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
-from .asr_client import query_audio_model, query_audio_model_secondary
-from .audio_utils import Resampler48to16, pcm_to_wav_base64
+from .asr.client import query_audio_model, query_audio_model_secondary
+from .asr.fusion import choose_fused_result
+from .asr.hotword import query_text_hotwords, sanitize_hotwords
+from .audio.utils import Resampler48to16, pcm_to_wav_base64
+from .audio.vad import VADProcessor
 from .config import (
     DEBUG_SHOW_DUAL_ASR,
     ENABLE_PRIMARY_ASR,
@@ -18,9 +21,6 @@ from .config import (
     PSEUDO_STREAM_INTERVAL_MS,
     SAMPLE_RATE,
 )
-from .fusion import choose_fused_result
-from .hotword_service import query_text_hotwords, sanitize_hotwords
-from .vad_processor import VADProcessor
 
 logger = logging.getLogger(__name__)
 

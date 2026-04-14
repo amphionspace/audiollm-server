@@ -48,8 +48,12 @@ htmlcov/
 *.swo
 *~
 
+# IDE / Cursor
+skills/
+
 # OS
 .DS_Store
 Thumbs.db
 
 api.json
+docs/*

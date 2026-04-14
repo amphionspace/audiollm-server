@@ -6,8 +6,11 @@ import time
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 
-from .asr_client import query_audio_model, query_audio_model_secondary
-from .audio_utils import pcm_to_wav_base64
+from .asr.client import query_audio_model, query_audio_model_secondary
+from .asr.fusion import choose_fused_result
+from .asr.hotword import sanitize_hotwords
+from .audio.utils import pcm_to_wav_base64
+from .audio.vad import VADProcessor
 from .config import (
     ENABLE_PRIMARY_ASR,
     ENABLE_PSEUDO_STREAM,
@@ -17,9 +20,6 @@ from .config import (
     PSEUDO_STREAM_INTERVAL_MS,
     SAMPLE_RATE,
 )
-from .fusion import choose_fused_result
-from .hotword_service import sanitize_hotwords
-from .vad_processor import VADProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,8 @@ class ASRStreamingSession:
             if segment is not None:
                 self._enqueue_final(segment)
 
-        if ENABLE_PSEUDO_STREAM and (ENABLE_PRIMARY_ASR or ENABLE_SECONDARY_ASR) and self.vad.is_speaking:
+        pseudo_ok = ENABLE_PSEUDO_STREAM and (ENABLE_PRIMARY_ASR or ENABLE_SECONDARY_ASR)
+        if pseudo_ok and self.vad.is_speaking:
             now = time.monotonic()
             if now - self._last_partial_time >= self._partial_interval:
                 snapshot = self.vad.snapshot_incomplete_speech()

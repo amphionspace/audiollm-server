@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Fill values directly here.
-MODEL_PATH="/home/ubuntu/models/hf/Qwen/Qwen3-ASR-1.7B"
-MODEL_NAME="Qwen/Qwen3-ASR-1.7B"
-HOST="0.0.0.0"
-PORT="8001"
-DTYPE="bfloat16"
-# Adjust this with current free GPU ratio from nvidia-smi.
-GPU_MEMORY_UTILIZATION="0.10"
-TENSOR_PARALLEL_SIZE="1"
-MAX_MODEL_LEN="4096"
-MAX_NUM_SEQS="8"
-TRUST_REMOTE_CODE="1"
-ENFORCE_EAGER="0"
+MODEL_PATH="${MODEL_PATH:?Please set MODEL_PATH (e.g. /path/to/Qwen3-ASR-1.7B)}"
+MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-ASR-1.7B}"
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8001}"
+DTYPE="${DTYPE:-bfloat16}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.10}"
+TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-8}"
+TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-1}"
+ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 
 echo "Starting Qwen vLLM server..."
 echo "MODEL_PATH: ${MODEL_PATH}"

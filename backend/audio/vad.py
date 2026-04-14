@@ -8,7 +8,7 @@ try:
 except Exception:  # pragma: no cover - depends on optional native runtime
     TenVad = None
 
-from .config import (
+from ..config import (
     HOP_SIZE,
     SAMPLE_RATE,
     SILENCE_DURATION_MS,
@@ -19,7 +19,6 @@ from .config import (
     VAD_START_FRAMES,
     VAD_THRESHOLD,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +95,7 @@ class VADProcessor:
         self.is_speaking = False
         self.smoothed_prob: float | None = None
         logger.info(
-            "VAD backend=%s hop_size=%s frame_ms=%.1f pre_speech_frames=%s silence_frames=%s keep_tail_frames=%s",
+            "VAD backend=%s hop_size=%s frame_ms=%.1f pre_speech=%s silence=%s tail=%s",
             type(self.vad).__name__,
             self.hop_size,
             self.frame_ms,

@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
@@ -11,14 +12,16 @@ from .session import AudioSession
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Audio LLM Demo")
-
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 
-@app.on_event("shutdown")
-async def shutdown_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
     await close_client()
+
+
+app = FastAPI(title="Audio LLM Demo", lifespan=lifespan)
 
 
 @app.websocket("/ws/audio")
