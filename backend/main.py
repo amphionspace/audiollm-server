@@ -21,7 +21,7 @@ async def lifespan(app: FastAPI):
     await close_client()
 
 
-app = FastAPI(title="Audio LLM Demo", lifespan=lifespan)
+app = FastAPI(title="AudioLLM Server", lifespan=lifespan)
 
 
 @app.websocket("/ws/audio")

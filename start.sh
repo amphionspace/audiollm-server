@@ -15,7 +15,7 @@ fi
 
 echo ""
 echo "======================================"
-echo "  Audio LLM Demo"
+echo "  AudioLLM Server"
 echo "  https://0.0.0.0:${PORT}"
 echo "======================================"
 echo ""
