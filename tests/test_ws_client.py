@@ -2,13 +2,14 @@
 """WebSocket test client for /transcribe-streaming endpoint.
 
 Usage:
-    python test_ws_client.py <audio_file> [--url URL] [--language LANG] [--chunk-ms MS] [--hotwords HW]
+    python test_ws_client.py <audio_file> [--url URL] [--language LANG] [--chunk-ms MS] [--hotwords HW] [--config K=V ...]
 
 Examples:
     python test_ws_client.py test.wav
     python test_ws_client.py test.wav --language en
     python test_ws_client.py test.wav --hotwords "武新华,挚音科技,张硕"
     python test_ws_client.py raw.pcm --chunk-ms 80
+    python test_ws_client.py test.wav --config vad_threshold=0.3 enable_primary_asr=false
 """
 
 import argparse
@@ -69,8 +70,27 @@ def read_raw_pcm(filepath: str) -> bytes:
     return data
 
 
+def _parse_config_value(v: str) -> object:
+    """Coerce a CLI config value string to the appropriate Python type."""
+    low = v.lower()
+    if low in ("true", "1", "yes"):
+        return True
+    if low in ("false", "0", "no"):
+        return False
+    try:
+        return int(v)
+    except ValueError:
+        pass
+    try:
+        return float(v)
+    except ValueError:
+        pass
+    return v
+
+
 async def run_client(url: str, audio_file: str, language: str, chunk_ms: int,
-                     hotwords: list[str] | None = None):
+                     hotwords: list[str] | None = None,
+                     config_overrides: dict | None = None):
     suffix = Path(audio_file).suffix.lower()
     print(f"Loading audio: {audio_file}")
 
@@ -94,33 +114,33 @@ async def run_client(url: str, audio_file: str, language: str, chunk_ms: int,
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = ssl.CERT_NONE
 
-    print(f"Connecting to {url}?language={language} ...")
-    async with websockets.connect(
-        f"{url}?language={language}",
-        ssl=ssl_ctx,
-    ) as ws:
+    print(f"Connecting to {url} ...")
+    async with websockets.connect(url, ssl=ssl_ctx) as ws:
         recv_task = asyncio.create_task(_receive_messages(ws))
 
         # 1) Wait for ready
         print("Waiting for ready ...")
         await asyncio.sleep(0.1)
 
-        # 2) Send start
-        start_msg = {
+        # 2) Send start (language, hotwords, config all in one message)
+        start_msg: dict = {
             "type": "start",
-            "mode": "asr_only",
             "format": "pcm_s16le",
             "sample_rate_hz": 16000,
             "channels": 1,
+            "language": language,
         }
-        await ws.send(json.dumps(start_msg))
-        print("-> Sent: start")
-
-        # 2.5) Send hotwords if provided
         if hotwords:
-            hw_msg = {"type": "update_hotwords", "hotwords": hotwords}
-            await ws.send(json.dumps(hw_msg))
-            print(f"-> Sent: update_hotwords {hotwords}")
+            start_msg["hotwords"] = hotwords
+        if config_overrides:
+            start_msg["config"] = config_overrides
+        await ws.send(json.dumps(start_msg))
+        parts = [f"language={language}"]
+        if hotwords:
+            parts.append(f"hotwords={len(hotwords)}")
+        if config_overrides:
+            parts.append(f"config={list(config_overrides.keys())}")
+        print(f"-> Sent: start ({', '.join(parts)})")
 
         # 3) Stream PCM chunks, simulating real-time pace
         offset = 0
@@ -160,10 +180,10 @@ async def _receive_messages(ws):
             msg_type = msg.get("type", "?")
             if msg_type == "ready":
                 print("<- ready")
-            elif msg_type == "partial_asr":
-                print(f"<- partial_asr: {msg.get('text', '')}")
-            elif msg_type == "final_asr":
-                print(f"<- FINAL_ASR:   {msg.get('text', '')}  "
+            elif msg_type == "partial":
+                print(f"<- partial: {msg.get('text', '')}")
+            elif msg_type == "final":
+                print(f"<- FINAL:   {msg.get('text', '')}  "
                       f"(language={msg.get('language', '')})")
             elif msg_type == "error":
                 print(f"<- ERROR: {msg.get('message', '')}")
@@ -184,6 +204,9 @@ def main():
                         help="Chunk size in ms (default: 80)")
     parser.add_argument("--hotwords", default="",
                         help="Comma-separated hotwords (e.g. \"武新华,挚音科技\")")
+    parser.add_argument("--config", nargs="*", default=[],
+                        help="Config overrides as key=value pairs "
+                             "(e.g. vad_threshold=0.3 enable_primary_asr=false)")
     args = parser.parse_args()
 
     if not Path(args.audio_file).is_file():
@@ -191,7 +214,19 @@ def main():
         sys.exit(1)
 
     hw_list = [w.strip() for w in args.hotwords.split(",") if w.strip()] if args.hotwords else None
-    asyncio.run(run_client(args.url, args.audio_file, args.language, args.chunk_ms, hw_list))
+
+    cfg_overrides: dict | None = None
+    if args.config:
+        cfg_overrides = {}
+        for item in args.config:
+            if "=" not in item:
+                print(f"Error: config item must be key=value, got: {item}", file=sys.stderr)
+                sys.exit(1)
+            k, v = item.split("=", 1)
+            cfg_overrides[k.strip()] = _parse_config_value(v.strip())
+
+    asyncio.run(run_client(args.url, args.audio_file, args.language, args.chunk_ms,
+                           hw_list, cfg_overrides))
 
 
 if __name__ == "__main__":

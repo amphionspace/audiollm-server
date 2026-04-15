@@ -161,7 +161,21 @@ def choose_fused_result(
     primary_result: ASRResult | None,
     secondary_result: ASRResult | None,
     hotwords: list[str],
+    *,
+    similarity_threshold: float | None = None,
+    min_primary_score: float | None = None,
+    max_repetition_ratio: float | None = None,
+    disagreement_threshold: float | None = None,
+    hotword_boost: float | None = None,
+    primary_score_margin: float | None = None,
 ) -> FusionResult:
+    sim_thresh = similarity_threshold if similarity_threshold is not None else FUSION_SIMILARITY_THRESHOLD
+    min_pri = min_primary_score if min_primary_score is not None else FUSION_MIN_PRIMARY_SCORE
+    max_rep = max_repetition_ratio if max_repetition_ratio is not None else FUSION_MAX_REPETITION_RATIO
+    dis_thresh = disagreement_threshold if disagreement_threshold is not None else FUSION_DISAGREEMENT_THRESHOLD
+    hw_boost = hotword_boost if hotword_boost is not None else FUSION_HOTWORD_BOOST
+    pri_margin = primary_score_margin if primary_score_margin is not None else FUSION_PRIMARY_SCORE_MARGIN
+
     primary_text = str((primary_result or {}).get("transcription") or "")
     secondary_text = str((secondary_result or {}).get("transcription") or "")
     primary_hotwords = _filter_reported_hotwords(
@@ -226,7 +240,7 @@ def choose_fused_result(
         )
 
     similarity = _text_similarity(primary_text, secondary_text)
-    primary_metrics = _quality_score(primary_text, hotwords, FUSION_HOTWORD_BOOST)
+    primary_metrics = _quality_score(primary_text, hotwords, hw_boost)
     secondary_metrics = _quality_score(secondary_text, hotwords, 0.0)
     primary_score = float(primary_metrics["score"])
     secondary_score = float(secondary_metrics["score"])
@@ -235,12 +249,12 @@ def choose_fused_result(
     disagreement = 1.0 - similarity
 
     primary_is_hallucination_risk = (
-        primary_repetition > FUSION_MAX_REPETITION_RATIO
-        or disagreement > FUSION_DISAGREEMENT_THRESHOLD
+        primary_repetition > max_rep
+        or disagreement > dis_thresh
         and primary_metrics["hotword_hits"] <= secondary_metrics["hotword_hits"]
     )
-    primary_meets_bar = primary_score >= FUSION_MIN_PRIMARY_SCORE
-    primary_better = primary_score >= (secondary_score + FUSION_PRIMARY_SCORE_MARGIN)
+    primary_meets_bar = primary_score >= min_pri
+    primary_better = primary_score >= (secondary_score + pri_margin)
 
     if primary_hotword_hits > 0:
         selected = "primary_hotword_hit"
@@ -252,7 +266,7 @@ def choose_fused_result(
         reason = "primary_hallucination_risk"
         selected_text = secondary_text
         selected_hotwords = secondary_hotwords
-    elif similarity >= FUSION_SIMILARITY_THRESHOLD and primary_meets_bar:
+    elif similarity >= sim_thresh and primary_meets_bar:
         selected = "primary_agreement"
         reason = "high_similarity_and_primary_valid"
         selected_text = primary_text
@@ -277,7 +291,7 @@ def choose_fused_result(
             selected,
             reason,
             similarity=round(similarity, 4),
-            threshold=FUSION_SIMILARITY_THRESHOLD,
+            threshold=sim_thresh,
             disagreement=round(disagreement, 4),
             scores={
                 "primary": round(primary_score, 4),
