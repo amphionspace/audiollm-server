@@ -308,16 +308,26 @@ class ASRStreamingSession:
         if primary_result is None and secondary_result is None:
             raise RuntimeError("Both ASR models failed for this segment.")
 
-        fused = choose_fused_result(
-            primary_result, secondary_result, hotwords=hw_snapshot,
-            similarity_threshold=self.cfg.fusion_similarity_threshold,
-            min_primary_score=self.cfg.fusion_min_primary_score,
-            max_repetition_ratio=self.cfg.fusion_max_repetition_ratio,
-            disagreement_threshold=self.cfg.fusion_disagreement_threshold,
-            hotword_boost=self.cfg.fusion_hotword_boost,
-            primary_score_margin=self.cfg.fusion_primary_score_margin,
-        )
-        text = str(fused.get("text") or "").strip()
+        if primary_result and not secondary_result:
+            text = str(primary_result.get("transcription") or "").strip()
+            detected_lang = primary_result.get("detected_language") or self.language
+        elif secondary_result and not primary_result:
+            text = str(secondary_result.get("transcription") or "").strip()
+            detected_lang = self.language
+        else:
+            fused = choose_fused_result(
+                primary_result, secondary_result, hotwords=hw_snapshot,
+                similarity_threshold=self.cfg.fusion_similarity_threshold,
+                min_primary_score=self.cfg.fusion_min_primary_score,
+                max_repetition_ratio=self.cfg.fusion_max_repetition_ratio,
+                disagreement_threshold=self.cfg.fusion_disagreement_threshold,
+                hotword_boost=self.cfg.fusion_hotword_boost,
+                primary_score_margin=self.cfg.fusion_primary_score_margin,
+            )
+            text = str(fused.get("text") or "").strip()
+            detected_lang = self.language
+            if primary_result and primary_result.get("detected_language"):
+                detected_lang = primary_result["detected_language"]
 
         elapsed = time.monotonic() - t0
         rtf = elapsed / audio_duration if audio_duration > 0 else 0.0
@@ -328,10 +338,6 @@ class ASRStreamingSession:
 
         if not text:
             return False
-
-        detected_lang = self.language
-        if primary_result and primary_result.get("detected_language"):
-            detected_lang = primary_result["detected_language"]
 
         await self.ws.send_json({
             "type": "final",
@@ -443,16 +449,21 @@ class ASRStreamingSession:
                     logger.debug("Partial suppressed: secondary output empty (noise gate)")
                     return
 
-            fused = choose_fused_result(
-                primary_result, secondary_result, hotwords=hw_snapshot,
-                similarity_threshold=self.cfg.fusion_similarity_threshold,
-                min_primary_score=self.cfg.fusion_min_primary_score,
-                max_repetition_ratio=self.cfg.fusion_max_repetition_ratio,
-                disagreement_threshold=self.cfg.fusion_disagreement_threshold,
-                hotword_boost=self.cfg.fusion_hotword_boost,
-                primary_score_margin=self.cfg.fusion_primary_score_margin,
-            )
-            text = str(fused.get("text") or "").strip()
+            if primary_result and not secondary_result:
+                text = str(primary_result.get("transcription") or "").strip()
+            elif secondary_result and not primary_result:
+                text = str(secondary_result.get("transcription") or "").strip()
+            else:
+                fused = choose_fused_result(
+                    primary_result, secondary_result, hotwords=hw_snapshot,
+                    similarity_threshold=self.cfg.fusion_similarity_threshold,
+                    min_primary_score=self.cfg.fusion_min_primary_score,
+                    max_repetition_ratio=self.cfg.fusion_max_repetition_ratio,
+                    disagreement_threshold=self.cfg.fusion_disagreement_threshold,
+                    hotword_boost=self.cfg.fusion_hotword_boost,
+                    primary_score_margin=self.cfg.fusion_primary_score_margin,
+                )
+                text = str(fused.get("text") or "").strip()
 
             elapsed = time.monotonic() - t0
             rtf = elapsed / audio_duration if audio_duration > 0 else 0.0
