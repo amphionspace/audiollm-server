@@ -2,8 +2,14 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-基于 [Amphion](https://github.com/open-mmlab/Amphion) (vLLM) 的实时语音转写 Demo，集成 TEN VAD 语音端点检测。
-支持双 ASR 模型（Amphion + Qwen）并行推理，带归一化质量评估与风险感知融合策略。
+基于 [Amphion](https://github.com/open-mmlab/Amphion) (vLLM) 的实时语音多任务 Demo，集成 TEN VAD 语音端点检测。
+支持三类任务：
+
+- 实时语音转写（双 ASR 模型 Amphion + Qwen 并行推理 + 归一化质量评估 + 风险感知融合）
+- 目标说话人识别（TS-ASR，注册音频 + 混合音频双路推理，附带二级语音存在性门控）
+- 情感识别（SER 8 分类 / SEC 自由文本描述，整段语音推理）
+
+前端三个 Demo 页面（ASR / TS-ASR / 情感）共享同一套侧边栏导航与 EN / 中文 实时语言切换。
 
 ---
 
@@ -12,6 +18,7 @@
 - Python 3.10+
 - 已启动的 vLLM 推理服务（兼容 OpenAI API）
 - OpenSSL（用于生成自签名证书）
+- 可选：用于"长文本热词抽取"功能的外部 LLM（OpenAI 兼容接口），配置文件 `backend/api.json`
 
 ## 快速开始
 
@@ -23,11 +30,22 @@ uv sync
 # 编辑服务端配置（vLLM 地址、模型名等）
 vim backend/config.json
 
+# 可选：配置长文本热词抽取使用的 LLM（仅在前端"从文本抽取热词"功能用到）
+cp backend/api.json.example backend/api.json && vim backend/api.json
+
 # 启动服务
 bash start.sh
 ```
 
-浏览器打开 `https://<服务器IP>:8443` 即可使用，或访问 `/tsasr.html` 体验目标说话人识别（TS-ASR）Demo。
+浏览器打开 `https://<服务器IP>:8443` 进入实时 ASR Demo，另两个 Demo 入口：
+
+| 页面 | 路径 | 说明 |
+|---|---|---|
+| 实时语音转写 | / 或 /index.html | 双 ASR 模型并行 + 融合 |
+| 目标说话人识别 | /tsasr.html | 录入注册音频后只识别该说话人 |
+| 情感识别 | /emotion.html | 整段语音 SER / SEC |
+
+页面右上角的 EN / 中 切换会持久化到浏览器 localStorage，下次访问保持上次的选择。
 
 > 首次访问时浏览器会提示自签名证书不安全，点击 **高级** → **继续访问** 即可。
 
@@ -54,7 +72,7 @@ graph LR
 
 ## WebSocket 接口
 
-服务暴露三个 WebSocket 端点，按任务一类一个：
+服务暴露四个 WebSocket 端点，按任务一类一个：
 
 | 端点 | 任务 | VAD | 输出 | 协议文档 |
 |---|---|---|---|---|
@@ -234,10 +252,10 @@ MODEL_PATH=/path/to/Qwen3-ASR-1.7B bash scripts/start_vllm_qwen.sh
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `vad_threshold` | float | `0.5` | 语音判定灵敏度（0-1）。值越低越容易触发，但也更容易误判噪音为语音 |
+| `vad_threshold` | float | `0.65` | 语音判定灵敏度（0-1）。值越低越容易触发，但也更容易误判噪音为语音 |
 | `silence_duration_ms` | int | `200` | 说话停顿多久算"说完了"（毫秒）。值越大越不容易被短暂停顿打断 |
 | `vad_smoothing_alpha` | float | `0.35` | 语音概率的平滑系数（0-1）。值越大波动越小，但响应越慢 |
-| `vad_start_frames` | int | `3` | 连续多少帧检测到语音才算"开始说话"。防止瞬间噪音误触发 |
+| `vad_start_frames` | int | `10` | 连续多少帧检测到语音才算"开始说话"。防止瞬间噪音误触发 |
 | `vad_pre_speech_ms` | int | `500` | 检测到说话后，往前多保留多少毫秒的音频。避免开头被截掉 |
 | `vad_end_frames` | int | `20` | 连续多少帧静默才算"说完了"。和 `silence_duration_ms` 配合使用 |
 | `vad_keep_tail_ms` | int | `40` | 语音结束后多保留多少毫秒的尾巴音频 |
@@ -268,6 +286,9 @@ MODEL_PATH=/path/to/Qwen3-ASR-1.7B bash scripts/start_vllm_qwen.sh
 | `tsasr_max_audio_seconds` | float | `30.0` | 单段混合音频时长上限；超过则保留尾部 |
 | `tsasr_enable_partial` | bool | `false` | 是否开启伪流式 partial；双音频推理 RTF 较高，默认关闭 |
 | `tsasr_enable_hotwords` | bool | `false` | 是否把会话热词注入 Prompt；短期方案未验证，默认关闭 |
+| `tsasr_speech_gate_enabled` | bool | `true` | 二级语音存在性门控开关。TS-ASR 模式下副模型被关闭，对 VAD 漏判的键盘敲击等瞬时噪音再做一次过滤 |
+| `tsasr_speech_gate_prob_threshold` | float | `0.6` | 门控逐帧判帧的概率阈值，比上层 `vad_threshold` 更严格 |
+| `tsasr_speech_gate_min_voiced_ms` | int | `200` | 累计有声时长低于此值的片段会被丢弃，不再下发到 vLLM |
 
 #### 情感识别（仅 `/emotion-streaming` 使用）
 
@@ -326,9 +347,15 @@ backend/
     client.py                #   query_tsasr_model：双音频 vLLM 请求
     prompt.py                #   build_tsasr_content：可扩展的 Prompt 构建器
     enrollment.py            #   注册音频解码与时长校验
-frontend/                    # 静态 Web 前端
+  api.json                   # 可选：长文本热词抽取使用的外部 LLM 配置（OpenAI 兼容）
+frontend/                    # 静态 Web 前端（三个 Demo 页面 + 共享侧边栏 + EN/中文 i18n）
+  index.html / app.js        #   实时 ASR 主页
+  tsasr.html / tsasr-app.js  #   TS-ASR 演示
+  emotion.html / emotion-app.js  # 情感识别演示
+  sidebar.js                 #   注入侧边栏导航与 EN/中 语言切换
+  i18n.js                    #   极简前端 i18n（data-i18n / data-i18n-attr-* 等）
 scripts/                     # vLLM 服务启动脚本
-tests/                       # 测试工具
+tests/                       # 测试工具（ASR / TS-ASR / 情感各一个客户端脚本）
 docs/                        # 协议文档（每个端点一份）
 ```
 
