@@ -1,6 +1,11 @@
 (() => {
   'use strict';
 
+  // --- i18n ---
+  const i18n = window.Amphion && window.Amphion.i18n;
+  const t = (key, vars) => (i18n ? i18n.t(key, vars) : (vars && vars.defaultValue) || key);
+  const onLangChange = (fn) => (i18n ? i18n.onChange(fn) : () => {});
+
   // --- State ---
   let ws = null;
   let audioCtx = null;
@@ -15,6 +20,10 @@
   const segmentAudio = new Map();
   const MAX_EXTRACTED_HOTWORD_LENGTH = 10;
   const partialSeqMap = new Map(); // utterance_id -> highest seq seen
+
+  // Last-known UI states so we can re-render strings after a language switch.
+  let currentSyncState = 'waiting';
+  let currentExtractDyn = { key: 'asr.extract.idle', vars: null };
 
   const HOTWORD_BUCKETS = ['auto', 'chinese', 'english', 'indonesian', 'thai'];
   const HOTWORDS_PER_LANG_MIGRATED = 'hotwords_per_lang_migrated';
@@ -77,7 +86,6 @@
   }
 
   // --- DOM refs ---
-  // --- Status pill class tokens (paper theme) ---
   const SYNC_PILL_BASE = 'status-pill';
 
   const micBtn = document.getElementById('mic-btn');
@@ -97,6 +105,31 @@
   const hotwordExtractBtn = document.getElementById('hotword-extract-btn');
   const hotwordExtractStatus = document.getElementById('hotword-extract-status');
   const asrLangSelect = document.getElementById('asr-lang-select');
+
+  // --- Dynamic translation helpers ---
+  function setDynText(el, key, vars) {
+    if (!el) return;
+    el.setAttribute('data-dyn-key', key);
+    if (vars) {
+      el.setAttribute('data-dyn-vars', JSON.stringify(vars));
+    } else {
+      el.removeAttribute('data-dyn-vars');
+    }
+    el.textContent = t(key, vars || undefined);
+  }
+
+  function applyDyn(root) {
+    const scope = root || document;
+    scope.querySelectorAll('[data-dyn-key]').forEach((el) => {
+      const key = el.getAttribute('data-dyn-key');
+      let vars = null;
+      const rawVars = el.getAttribute('data-dyn-vars');
+      if (rawVars) {
+        try { vars = JSON.parse(rawVars); } catch { vars = null; }
+      }
+      el.textContent = t(key, vars || undefined);
+    });
+  }
 
   // --- Hotword management ---
   function sanitizeHotwords(sourceWords) {
@@ -120,11 +153,11 @@
       tag.className = 'hotword-pill';
       tag.innerHTML =
         `<span>${escapeHtml(word)}</span>` +
-        `<button data-idx="${idx}" aria-label="Remove hotword">&times;</button>`;
+        `<button data-idx="${idx}" aria-label="${escapeHtml(t('asr.hotword.removeAria'))}">&times;</button>`;
       tag.querySelector('button').addEventListener('click', () => removeHotword(idx));
       hotwordList.appendChild(tag);
     });
-    hotwordCount.textContent = `${hotwords.length} hotwords`;
+    setDynText(hotwordCount, 'asr.hotword.count', { n: hotwords.length });
   }
 
   function getEffectiveHotwords() {
@@ -133,18 +166,20 @@
 
   function setHotwordSyncStatus(state) {
     if (!hotwordSyncStatus) return;
+    currentSyncState = state || 'waiting';
     hotwordSyncStatus.className = SYNC_PILL_BASE;
     if (state === 'synced') {
-      hotwordSyncStatus.textContent = hotwordEnabled ? 'Active' : 'Paused';
+      const key = hotwordEnabled ? 'asr.sync.active' : 'asr.sync.paused';
+      setDynText(hotwordSyncStatus, key);
       hotwordSyncStatus.dataset.state = hotwordEnabled ? 'ready' : 'waiting';
       return;
     }
     if (state === 'offline') {
-      hotwordSyncStatus.textContent = 'Offline';
+      setDynText(hotwordSyncStatus, 'asr.sync.offline');
       hotwordSyncStatus.dataset.state = 'offline';
       return;
     }
-    hotwordSyncStatus.textContent = 'Waiting';
+    setDynText(hotwordSyncStatus, 'asr.sync.waiting');
     hotwordSyncStatus.dataset.state = 'waiting';
   }
 
@@ -175,9 +210,10 @@
     hotwordHitCount.textContent = String(sessionHitCount);
   }
 
-  function setExtractStatus(state, text) {
+  function setExtractStatus(state, key, vars) {
     if (!hotwordExtractStatus) return;
-    hotwordExtractStatus.textContent = text;
+    currentExtractDyn = { key, vars: vars || null };
+    setDynText(hotwordExtractStatus, key, vars || undefined);
     hotwordExtractStatus.className = 'hotword-extract-status';
     if (state === 'loading') {
       hotwordExtractStatus.classList.add('is-loading');
@@ -191,7 +227,10 @@
   function setExtractBusy(busy) {
     if (!hotwordExtractBtn || !hotwordTextarea) return;
     hotwordExtractBtn.disabled = busy;
-    hotwordExtractBtn.textContent = busy ? 'Extracting...' : 'Extract and Add';
+    setDynText(
+      hotwordExtractBtn,
+      busy ? 'asr.hotword.extracting' : 'asr.hotword.extract'
+    );
     hotwordTextarea.disabled = busy;
     updateExtractButtonAttention();
   }
@@ -229,22 +268,22 @@
 
   function requestHotwordExtraction(text) {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      setExtractStatus('error', 'WebSocket offline');
+      setExtractStatus('error', 'asr.extract.wsOffline');
       return;
     }
     const payloadText = String(text || '').trim();
     if (!payloadText) {
-      setExtractStatus('error', 'Please paste text first');
+      setExtractStatus('error', 'asr.extract.pasteFirst');
       return;
     }
     if (extractRequestId) {
-      setExtractStatus('error', 'Extraction already running');
+      setExtractStatus('error', 'asr.extract.alreadyRunning');
       return;
     }
 
     extractRequestId = `extract-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     setExtractBusy(true);
-    setExtractStatus('loading', 'Extracting...');
+    setExtractStatus('loading', 'asr.extract.loading');
     ws.send(
       JSON.stringify({
         type: 'extract_hotwords',
@@ -320,16 +359,16 @@
   renderHotwords();
   updateHitCounter();
   setHotwordSyncStatus('waiting');
-  setExtractStatus('idle', 'Idle');
+  setExtractStatus('idle', 'asr.extract.idle');
   updateExtractButtonAttention();
 
   // --- Connection status ---
   function setConnected(connected) {
     if (window.AmphionSidebar && window.AmphionSidebar.setConnectionState) {
       if (connected) {
-        window.AmphionSidebar.setConnectionState('connected', 'Connected');
+        window.AmphionSidebar.setConnectionState('connected');
       } else {
-        window.AmphionSidebar.setConnectionState('error', 'Disconnected');
+        window.AmphionSidebar.setConnectionState('error', t('common.disconnected'));
       }
     }
   }
@@ -351,7 +390,7 @@
       if (extractRequestId) {
         extractRequestId = null;
         setExtractBusy(false);
-        setExtractStatus('error', 'Connection closed');
+        setExtractStatus('error', 'asr.extract.connClosed');
       }
       stopRecording();
       setTimeout(connectWS, 2000);
@@ -363,7 +402,7 @@
       if (extractRequestId) {
         extractRequestId = null;
         setExtractBusy(false);
-        setExtractStatus('error', 'Connection error');
+        setExtractStatus('error', 'asr.extract.connError');
       }
     };
 
@@ -429,7 +468,7 @@
         break;
       case 'error':
         partialSeqMap.delete(data.id);
-        updateAIBubble(data.id, `Error: ${data.message}`, 'error');
+        updateAIBubble(data.id, data.message || '', 'error');
         break;
       case 'extract_hotwords_result':
         if (!extractRequestId || data.request_id !== extractRequestId) {
@@ -439,7 +478,10 @@
         setExtractBusy(false);
         {
           const merged = mergeExtractedHotwords(data.hotwords || []);
-          setExtractStatus('success', `Added ${merged.added}/${merged.total}`);
+          setExtractStatus('success', 'asr.extract.added', {
+            added: merged.added,
+            total: merged.total,
+          });
         }
         break;
       case 'extract_hotwords_error':
@@ -448,7 +490,13 @@
         }
         extractRequestId = null;
         setExtractBusy(false);
-        setExtractStatus('error', data.message || 'Extract failed');
+        if (data.message) {
+          // Backend-supplied free-form text wins over the generic label so
+          // operators see the actual reason; we don't translate it.
+          setExtractStatus('error', 'asr.extract.raw', { msg: data.message });
+        } else {
+          setExtractStatus('error', 'asr.extract.failed');
+        }
         break;
     }
   }
@@ -486,7 +534,13 @@
     wrapper.id = `user-${segId}`;
 
     const hasAudio = segmentAudio.has(segId);
-    const label = isPartial ? 'Speaking\u2026' : `Voice ${duration}`;
+    const labelKey = isPartial ? 'asr.user.speaking' : 'asr.user.voice';
+    const labelVars = isPartial ? null : { dur: duration };
+    const labelText = t(labelKey, labelVars || undefined);
+    const labelVarsAttr = labelVars
+      ? ` data-dyn-vars='${escapeHtml(JSON.stringify(labelVars))}'`
+      : '';
+    const replayTitle = escapeHtml(t('asr.user.replayTitle'));
     wrapper.innerHTML = `
       <div class="chat-bubble chat-bubble-user">
         <div class="flex items-center gap-2">
@@ -494,8 +548,9 @@
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
           </svg>
-          <span class="text-sm font-medium tracking-wide user-voice-label">${label}</span>
-          ${hasAudio ? `<button class="replay-btn" data-seg="${segId}" title="Replay audio">
+          <span class="text-sm font-medium tracking-wide user-voice-label"
+                data-dyn-key="${labelKey}"${labelVarsAttr}>${escapeHtml(labelText)}</span>
+          ${hasAudio ? `<button class="replay-btn" data-seg="${segId}" title="${replayTitle}">
             <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
               <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
             </svg>
@@ -522,9 +577,15 @@
     const wrapper = document.getElementById(`user-${segId}`);
     if (!wrapper) return;
     const label = wrapper.querySelector('.user-voice-label');
-    if (label) label.textContent = `Voice ${duration}`;
+    if (label) {
+      const vars = { dur: duration };
+      label.setAttribute('data-dyn-key', 'asr.user.voice');
+      label.setAttribute('data-dyn-vars', JSON.stringify(vars));
+      label.textContent = t('asr.user.voice', vars);
+    }
     if (segmentAudio.has(segId) && !wrapper.querySelector('.replay-btn')) {
-      const btnHtml = `<button class="replay-btn" data-seg="${segId}" title="Replay audio">
+      const replayTitle = escapeHtml(t('asr.user.replayTitle'));
+      const btnHtml = `<button class="replay-btn" data-seg="${segId}" title="${replayTitle}">
         <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
           <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
         </svg>
@@ -604,6 +665,19 @@
     });
   }
 
+  function fusionLabel(scope, value) {
+    if (!value) return '-';
+    const key = `fusion.${scope}.${value}`;
+    return t(key, { defaultValue: value });
+  }
+
+  function langDisplayName(value) {
+    if (!value) return '';
+    const v = String(value).trim();
+    if (!v) return '';
+    return t(`lang.name.${v}`, { defaultValue: v });
+  }
+
   function renderDualAsrDebug(debugInfo) {
     if (!debugInfo) return '';
     const primary = String(debugInfo.textPrimary || '').trim();
@@ -611,18 +685,26 @@
     const meta = debugInfo.fusionMeta || null;
     if (!primary && !secondary) return '';
 
-    const selected = meta && meta.selected ? escapeHtml(String(meta.selected)) : '-';
-    const reason = meta && meta.reason ? escapeHtml(String(meta.reason)) : '-';
+    const selected = meta && meta.selected ? escapeHtml(fusionLabel('selected', meta.selected)) : '-';
+    const reason = meta && meta.reason ? escapeHtml(fusionLabel('reason', meta.reason)) : '-';
     const similarity =
       meta && typeof meta.similarity === 'number' ? String(meta.similarity) : '-';
 
     return `
       <div class="mt-3 rounded-lg border p-2 text-xs space-y-1"
            style="border-color:var(--line); background:var(--paper-sunk); color:var(--ink-mute)">
-        <div class="text-[11px] text-faint">DEBUG Dual ASR</div>
-        <div><span class="text-faint">Primary:</span> ${escapeHtml(primary)}</div>
-        <div><span class="text-faint">Secondary:</span> ${escapeHtml(secondary)}</div>
-        <div><span class="text-faint">Selected:</span> ${selected} | <span class="text-faint">Reason:</span> ${reason} | <span class="text-faint">Sim:</span> ${similarity}</div>
+        <div class="text-[11px] text-faint" data-dyn-key="asr.debug.title">${escapeHtml(t('asr.debug.title'))}</div>
+        <div><span class="text-faint" data-dyn-key="asr.debug.primary">${escapeHtml(t('asr.debug.primary'))}</span> ${escapeHtml(primary)}</div>
+        <div><span class="text-faint" data-dyn-key="asr.debug.secondary">${escapeHtml(t('asr.debug.secondary'))}</span> ${escapeHtml(secondary)}</div>
+        <div>
+          <span class="text-faint" data-dyn-key="asr.debug.selected">${escapeHtml(t('asr.debug.selected'))}</span>
+          <span data-dyn-key="fusion.selected.${escapeHtml(meta && meta.selected ? meta.selected : '')}"
+                data-dyn-vars='${escapeHtml(JSON.stringify({ defaultValue: (meta && meta.selected) || '-' }))}'>${selected}</span>
+          | <span class="text-faint" data-dyn-key="asr.debug.reason">${escapeHtml(t('asr.debug.reason'))}</span>
+          <span data-dyn-key="fusion.reason.${escapeHtml(meta && meta.reason ? meta.reason : '')}"
+                data-dyn-vars='${escapeHtml(JSON.stringify({ defaultValue: (meta && meta.reason) || '-' }))}'>${reason}</span>
+          | <span class="text-faint" data-dyn-key="asr.debug.sim">${escapeHtml(t('asr.debug.sim'))}</span> ${similarity}
+        </div>
       </div>
     `;
   }
@@ -664,7 +746,7 @@
     if (status === 'streaming') {
       content.classList.remove('ai-processing');
       content.innerHTML = `<p class="text-sm leading-relaxed">${escapeHtml(text || '')}</p>
-        <div class="text-[11px] text-faint mt-1">Listening\u2026</div>`;
+        <div class="text-[11px] text-faint" data-dyn-key="asr.streamingHint">${escapeHtml(t('asr.streamingHint'))}</div>`;
       scrollChatToBottom();
       return;
     } else if (status === 'processing') {
@@ -675,7 +757,7 @@
           <div class="shimmer-line w-36 h-3 mb-2"></div>
           <div class="shimmer-line w-24 h-3"></div>
         </div>
-        <div class="text-xs text-faint mt-2">Processing...</div>
+        <div class="text-xs text-faint mt-2" data-dyn-key="asr.processing">${escapeHtml(t('asr.processing'))}</div>
       `;
     } else if (status === 'done') {
       content.classList.remove('ai-processing');
@@ -692,14 +774,22 @@
       }
       const hitMeta =
         highlighted.count > 0
-          ? `<div class="text-[11px] mt-2 stream-meta" style="color:var(--accent-deep)">Hotword hits: ${highlighted.count}</div>`
+          ? `<div class="text-[11px] mt-2 stream-meta" style="color:var(--accent-deep)"
+                  data-dyn-key="asr.debug.hotwordHits"
+                  data-dyn-vars='${escapeHtml(JSON.stringify({ n: highlighted.count }))}'>${escapeHtml(t('asr.debug.hotwordHits', { n: highlighted.count }))}</div>`
+          : '';
+      const detectedRaw =
+        debugInfo && debugInfo.srcLangDetected
+          ? String(debugInfo.srcLangDetected).trim()
           : '';
       const langDetectedMeta =
-        debugInfo &&
-        debugInfo.srcLangDetected &&
-        srcLangUi === 'auto' &&
-        String(debugInfo.srcLangDetected).trim()
-          ? `<div class="text-[11px] mt-2 stream-meta" style="color:var(--info)">Detected language: ${escapeHtml(String(debugInfo.srcLangDetected).trim())}</div>`
+        detectedRaw && srcLangUi === 'auto'
+          ? (() => {
+              const vars = { lang: langDisplayName(detectedRaw) };
+              return `<div class="text-[11px] mt-2 stream-meta" style="color:var(--info)"
+                          data-dyn-key="asr.debug.langDetected"
+                          data-dyn-vars='${escapeHtml(JSON.stringify({ lang: detectedRaw }))}'>${escapeHtml(t('asr.debug.langDetected', vars))}</div>`;
+            })()
           : '';
       const debugBlock = renderDualAsrDebug(debugInfo);
 
@@ -715,7 +805,10 @@
       }
     } else if (status === 'error') {
       content.classList.remove('ai-processing');
-      content.innerHTML = `<p class="text-sm" style="color:var(--danger)">${escapeHtml(text)}</p>`;
+      const msg = text || '';
+      content.innerHTML = `<p class="text-sm" style="color:var(--danger)"
+                              data-dyn-key="asr.errorPrefix"
+                              data-dyn-vars='${escapeHtml(JSON.stringify({ msg }))}'>${escapeHtml(t('asr.errorPrefix', { msg }))}</p>`;
     }
 
     scrollChatToBottom();
@@ -741,7 +834,7 @@
         },
       });
     } catch (err) {
-      alert('Microphone access denied. Please allow microphone access and try again.');
+      alert(t('asr.mic.alert.denied'));
       return;
     }
 
@@ -769,7 +862,7 @@
     isRecording = true;
     micBtn.classList.add('recording');
     micIcon.setAttribute('fill', 'currentColor');
-    micStatus.textContent = 'Listening...';
+    setDynText(micStatus, 'asr.mic.listening');
     pulseRings.forEach((r) => r.classList.add('active'));
   }
 
@@ -792,7 +885,7 @@
     isRecording = false;
     micBtn.classList.remove('recording');
     micIcon.setAttribute('fill', 'none');
-    micStatus.textContent = 'Click to start';
+    setDynText(micStatus, 'asr.mic.start');
     pulseRings.forEach((r) => r.classList.remove('active'));
   }
 
@@ -869,6 +962,17 @@
 
     return { html, count: merged.length };
   }
+
+  // --- Language change refresh ---
+  onLangChange(() => {
+    setHotwordSyncStatus(currentSyncState);
+    if (!isRecording) {
+      setDynText(micStatus, 'asr.mic.start');
+    } else {
+      setDynText(micStatus, 'asr.mic.listening');
+    }
+    applyDyn(document);
+  });
 
   // --- Init ---
   connectWS();

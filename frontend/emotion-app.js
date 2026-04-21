@@ -17,7 +17,14 @@
 (() => {
   'use strict';
 
-  const MODE_LABELS = { ser: 'SER', sec: 'SEC' };
+  const i18n = window.Amphion && window.Amphion.i18n;
+  const t = (key, vars) => (i18n ? i18n.t(key, vars) : (vars && vars.defaultValue) || key);
+  const onLangChange = (fn) => (i18n ? i18n.onChange(fn) : () => {});
+
+  const MODE_LABEL_KEYS = { ser: 'emotion.mode.tag.ser', sec: 'emotion.mode.tag.sec' };
+  const modeTag = (mode) => t(MODE_LABEL_KEYS[mode] || 'emotion.mode.tag.ser', {
+    defaultValue: (mode || 'ser').toUpperCase(),
+  });
 
   // Status badges now derive their palette from CSS via `data-state`.
   // Kept here only as a whitelist so we don't accidentally write unknown states.
@@ -50,6 +57,12 @@
   let awaitingFinal = false;
   let idleReleaseTimer = null;
 
+  // Last-known UI state so we can re-derive labels on language change.
+  let currentStatus = { state: 'idle', labelKey: 'emotion.status.idle', labelVars: null };
+  let currentButton = 'idle';
+  let currentResult = { kind: 'placeholder', key: 'emotion.result.placeholder' };
+  let lastFinalData = null; // for re-rendering result after lang switch
+
   const btn = document.getElementById('emotion-btn');
   const btnText = document.getElementById('emotion-btn-text');
   const pulseRings = document.querySelectorAll('.pulse-ring');
@@ -72,8 +85,10 @@
     return div.innerHTML;
   }
 
-  function setStatus(state, label) {
+  function setStatus(state, labelKey, labelVars) {
     const resolved = KNOWN_STATES.has(state) ? state : 'idle';
+    currentStatus = { state: resolved, labelKey, labelVars: labelVars || null };
+    const label = labelKey ? t(labelKey, labelVars || undefined) : '';
     statusBadge.textContent = label;
     statusBadge.className = 'status-pill';
     statusBadge.dataset.state = resolved;
@@ -90,68 +105,82 @@
   }
 
   function setButton(state) {
+    currentButton = state;
     btn.disabled = false;
     btn.classList.remove('recording');
     pulseRings.forEach((r) => r.classList.remove('active'));
     if (state === 'idle') {
-      btnText.textContent = 'Click to start';
+      btnText.textContent = t('emotion.btn.start');
     } else if (state === 'recording') {
-      btnText.textContent = 'Listening… click to stop';
+      btnText.textContent = t('emotion.btn.recording');
       btn.classList.add('recording');
       pulseRings.forEach((r) => r.classList.add('active'));
     } else if (state === 'waiting') {
-      btnText.textContent = 'Analyzing…';
+      btnText.textContent = t('emotion.btn.analyzing');
+      btn.disabled = true;
+    } else if (state === 'connecting') {
+      btnText.textContent = t('emotion.btn.connecting');
+      btn.disabled = true;
+    } else if (state === 'opening') {
+      btnText.textContent = t('emotion.btn.opening');
       btn.disabled = true;
     }
   }
 
   function setIdleStatus() {
     if (isCaptureWarm) {
-      setStatus('ready', 'Ready');
+      setStatus('ready', 'emotion.status.ready');
     } else {
-      setStatus('idle', 'Idle');
+      setStatus('idle', 'emotion.status.idle');
     }
   }
 
-  function resetResult(message) {
+  function resetResult(messageKey) {
+    const key = messageKey || 'emotion.result.placeholder';
+    currentResult = { kind: 'placeholder', key };
+    lastFinalData = null;
     resultBox.innerHTML =
-      '<span class="text-faint">' + escapeHtml(message || 'Result will appear here.') + '</span>';
+      '<span class="text-faint">' + escapeHtml(t(key)) + '</span>';
   }
 
   function renderResult(data) {
+    lastFinalData = data;
+    currentResult = { kind: 'final' };
     const mode = data.mode || modeSelect.value || 'ser';
     const label = String(data.label || '').trim();
     const text = String(data.text || '').trim();
     const duration = typeof data.duration_sec === 'number' ? data.duration_sec : 0;
 
-    const modeTag = MODE_LABELS[mode] || mode.toUpperCase();
+    const tag = modeTag(mode);
     const durTag = duration > 0 ? duration.toFixed(2) + 's' : '—';
 
     let body = '';
     if (mode === 'sec') {
-      const caption = text || '(empty)';
+      const caption = text || t('emotion.result.empty');
       const labelHint = label
-        ? '<div class="mt-2 text-[11px] text-muted">Taxonomy hint: '
-            + escapeHtml(label) + '</div>'
+        ? '<div class="mt-2 text-[11px] text-muted">'
+            + escapeHtml(t('emotion.result.taxonomyHint', { label }))
+            + '</div>'
         : '';
       body =
         '<div class="text-sm leading-relaxed">' + escapeHtml(caption) + '</div>'
         + labelHint;
     } else {
-      const displayLabel = label || '(unparsed)';
+      const displayLabel = label || t('emotion.result.unparsed');
       body =
         '<div class="flex items-center gap-2">'
         + '<span class="text-base font-semibold">' + escapeHtml(displayLabel) + '</span>'
         + '</div>';
       if (!label && text && text !== label) {
-        body += '<div class="mt-1 text-[11px] text-muted">Raw: '
-          + escapeHtml(text) + '</div>';
+        body += '<div class="mt-1 text-[11px] text-muted">'
+          + escapeHtml(t('emotion.result.raw', { text }))
+          + '</div>';
       }
     }
 
     resultBox.innerHTML =
       '<div class="flex items-center justify-between text-[11px] text-faint mb-1">'
-      + '<span>' + escapeHtml(modeTag) + '</span>'
+      + '<span>' + escapeHtml(tag) + '</span>'
       + '<span>' + escapeHtml(durTag) + '</span>'
       + '</div>'
       + body;
@@ -176,23 +205,25 @@
     if (!historyList) return;
     if (historyEntries.length === 0) {
       historyList.innerHTML =
-        '<li class="text-[11px] text-faint italic">No sessions yet.</li>';
+        '<li class="text-[11px] text-faint italic">'
+        + escapeHtml(t('emotion.history.empty'))
+        + '</li>';
       return;
     }
     historyList.innerHTML = historyEntries.map((entry) => {
       const hh = String(entry.ts.getHours()).padStart(2, '0');
       const mm = String(entry.ts.getMinutes()).padStart(2, '0');
       const ss = String(entry.ts.getSeconds()).padStart(2, '0');
-      const modeTag = MODE_LABELS[entry.mode] || entry.mode.toUpperCase();
+      const tag = modeTag(entry.mode);
       const durTag = entry.duration > 0 ? entry.duration.toFixed(2) + 's' : '—';
       const primary = entry.mode === 'sec'
-        ? (entry.text || '(empty)')
-        : (entry.label || entry.text || '(unparsed)');
+        ? (entry.text || t('emotion.result.empty'))
+        : (entry.label || entry.text || t('emotion.result.unparsed'));
       return (
         '<li class="rounded-lg border px-3 py-2 text-xs"'
         + ' style="border-color:var(--line); background:var(--paper-sunk); color:var(--ink)">'
         + '<div class="flex items-center justify-between text-[10px] text-faint mb-0.5">'
-        + '<span>' + escapeHtml(modeTag) + ' &middot; ' + escapeHtml(durTag) + '</span>'
+        + '<span>' + escapeHtml(tag) + ' &middot; ' + escapeHtml(durTag) + '</span>'
         + '<span>' + hh + ':' + mm + ':' + ss + '</span>'
         + '</div>'
         + '<div class="leading-snug">' + escapeHtml(primary) + '</div>'
@@ -272,8 +303,8 @@
       audioCtx = null;
     }
     if (mediaStream) {
-      mediaStream.getTracks().forEach((t) => {
-        try { t.stop(); } catch (_) { /* ignore */ }
+      mediaStream.getTracks().forEach((tr) => {
+        try { tr.stop(); } catch (_) { /* ignore */ }
       });
       mediaStream = null;
     }
@@ -316,9 +347,10 @@
   }
 
   function finishSession({
-    reason = null,
+    reasonKey = null,
+    reasonVars = null,
     state = null,
-    label = null,
+    labelKey = null,
     releaseNow = false,
   } = {}) {
     isRecording = false;
@@ -326,16 +358,21 @@
     detachGraph();
     closeWsSilently();
     setButton('idle');
-    if (reason) {
-      resetResult(reason);
+    if (reasonKey) {
+      currentResult = { kind: 'placeholder', key: reasonKey, vars: reasonVars };
+      lastFinalData = null;
+      resultBox.innerHTML =
+        '<span class="text-faint">'
+        + escapeHtml(t(reasonKey, reasonVars || undefined))
+        + '</span>';
     }
     if (releaseNow) {
       releaseCapture();
     } else {
       scheduleIdleRelease();
     }
-    if (state && label) {
-      setStatus(state, label);
+    if (state && labelKey) {
+      setStatus(state, labelKey);
     } else {
       setIdleStatus();
     }
@@ -353,19 +390,22 @@
       };
       ws.send(JSON.stringify(startMsg));
       isRecording = true;
-      setStatus('listening', 'Listening');
+      setStatus('listening', 'emotion.status.listening');
       setButton('recording');
-      resetResult('Speak now…');
+      currentResult = { kind: 'placeholder', key: 'emotion.result.speakNow' };
+      resultBox.innerHTML =
+        '<span class="text-faint">' + escapeHtml(t('emotion.result.speakNow')) + '</span>';
     } else if (data.type === 'final_emotion') {
       renderResult(data);
       pushHistory(data);
-      finishSession({ state: 'done', label: 'Done' });
+      finishSession({ state: 'done', labelKey: 'emotion.status.done' });
     } else if (data.type === 'error') {
-      const msg = data.message || 'unknown error';
+      const msg = data.message || t('emotion.error.unknown');
       finishSession({
-        reason: 'Error: ' + msg,
+        reasonKey: 'emotion.error.serverPrefix',
+        reasonVars: { msg },
         state: 'error',
-        label: 'Error',
+        labelKey: 'emotion.status.error',
       });
     }
   }
@@ -373,19 +413,25 @@
   async function start() {
     if (isRecording || awaitingFinal || ws) return;
     cancelIdleRelease();
-    setButton('waiting');
-    btnText.textContent = isCaptureWarm ? 'Connecting…' : 'Opening…';
+    setButton(isCaptureWarm ? 'connecting' : 'opening');
     btn.disabled = true;
-    setStatus('analyzing', 'Connecting');
-    resetResult(isCaptureWarm ? 'Connecting…' : 'Opening mic…');
+    setStatus('analyzing', 'emotion.status.connecting');
+    const placeholderKey = isCaptureWarm
+      ? 'emotion.result.connecting'
+      : 'emotion.result.opening';
+    currentResult = { kind: 'placeholder', key: placeholderKey };
+    resultBox.innerHTML =
+      '<span class="text-faint">' + escapeHtml(t(placeholderKey)) + '</span>';
 
     try {
       await warmCapture();
     } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
       finishSession({
-        reason: 'Microphone error: ' + (err && err.message ? err.message : String(err)),
+        reasonKey: 'emotion.error.mic',
+        reasonVars: { msg },
         state: 'error',
-        label: 'Mic error',
+        labelKey: 'emotion.status.micErr',
         releaseNow: true,
       });
       return;
@@ -397,10 +443,12 @@
       ws = new WebSocket(proto + '//' + location.host + '/emotion-streaming');
       ws.binaryType = 'arraybuffer';
     } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
       finishSession({
-        reason: 'WebSocket error: ' + (err && err.message ? err.message : String(err)),
+        reasonKey: 'emotion.error.ws',
+        reasonVars: { msg },
         state: 'error',
-        label: 'WS error',
+        labelKey: 'emotion.status.wsErr',
       });
       return;
     }
@@ -413,18 +461,18 @@
     ws.onerror = () => {
       if (awaitingFinal || isRecording) {
         finishSession({
-          reason: 'WebSocket error.',
+          reasonKey: 'emotion.error.wsGeneric',
           state: 'error',
-          label: 'WS error',
+          labelKey: 'emotion.status.wsErr',
         });
       }
     };
     ws.onclose = () => {
       if (awaitingFinal || isRecording) {
         finishSession({
-          reason: 'Connection closed before final result.',
+          reasonKey: 'emotion.error.closedBeforeFinal',
           state: 'error',
-          label: 'Closed',
+          labelKey: 'emotion.status.closed',
         });
       }
     };
@@ -441,13 +489,15 @@
       } catch (_) { /* ignore */ }
       awaitingFinal = true;
       setButton('waiting');
-      setStatus('analyzing', 'Analyzing');
-      resetResult('Analyzing…');
+      setStatus('analyzing', 'emotion.status.analyzing');
+      currentResult = { kind: 'placeholder', key: 'emotion.result.analyzing' };
+      resultBox.innerHTML =
+        '<span class="text-faint">' + escapeHtml(t('emotion.result.analyzing')) + '</span>';
     } else {
       finishSession({
-        reason: 'Connection lost.',
+        reasonKey: 'emotion.error.connLost',
         state: 'error',
-        label: 'Closed',
+        labelKey: 'emotion.status.closed',
       });
     }
   }
@@ -470,6 +520,23 @@
   window.addEventListener('beforeunload', () => {
     try { releaseCapture(); } catch (_) { /* ignore */ }
     try { closeWsSilently(); } catch (_) { /* ignore */ }
+  });
+
+  // --- Refresh on language change ---
+  onLangChange(() => {
+    if (currentStatus.labelKey) {
+      setStatus(currentStatus.state, currentStatus.labelKey, currentStatus.labelVars);
+    }
+    setButton(currentButton);
+    if (currentResult.kind === 'placeholder') {
+      resultBox.innerHTML =
+        '<span class="text-faint">'
+        + escapeHtml(t(currentResult.key, currentResult.vars || undefined))
+        + '</span>';
+    } else if (currentResult.kind === 'final' && lastFinalData) {
+      renderResult(lastFinalData);
+    }
+    renderHistory();
   });
 
   setButton('idle');

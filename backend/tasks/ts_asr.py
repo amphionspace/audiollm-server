@@ -24,6 +24,7 @@ import time
 import uuid
 
 from ..audio.utils import pcm_to_wav_base64
+from ..audio.vad import analyze_speech_presence
 from ..config import SAMPLE_RATE
 from ..streaming.events import PartialSnapshot, SegmentReady
 from ..streaming.session import SessionContext
@@ -40,6 +41,42 @@ def _resolve(cfg, tsasr_field: str, fallback_field: str) -> str:
     if value:
         return value
     return getattr(cfg, fallback_field, "") or ""
+
+
+def _passes_speech_gate(segment, cfg, *, kind: str) -> bool:
+    """Reject VAD segments dominated by transient noise (e.g. keyboard taps).
+
+    Returns True if the clip should proceed to TS-ASR inference. The gate is
+    a no-op when ``tsasr_speech_gate_enabled`` is False or the configured
+    minimum voiced duration is non-positive, preserving the legacy behavior
+    of forwarding every VAD-emitted segment.
+    """
+    if not bool(getattr(cfg, "tsasr_speech_gate_enabled", True)):
+        return True
+
+    min_voiced_ms = float(getattr(cfg, "tsasr_speech_gate_min_voiced_ms", 0))
+    if min_voiced_ms <= 0:
+        return True
+
+    prob_threshold = float(
+        getattr(cfg, "tsasr_speech_gate_prob_threshold", 0.6)
+    )
+    stats = analyze_speech_presence(segment, prob_threshold=prob_threshold)
+    voiced_ms = stats.voiced_sec * 1000.0
+    if voiced_ms < min_voiced_ms:
+        logger.info(
+            "TS-ASR %s gated: voiced=%.0fms<%0.fms ratio=%.2f mean_prob=%.2f "
+            "thr=%.2f total=%.2fs",
+            kind,
+            voiced_ms,
+            min_voiced_ms,
+            stats.voiced_ratio,
+            stats.mean_prob,
+            prob_threshold,
+            stats.total_sec,
+        )
+        return False
+    return True
 
 
 class TsAsrTaskEngine(BaseTaskEngine):
@@ -151,6 +188,9 @@ class TsAsrTaskEngine(BaseTaskEngine):
             segment = segment[-max_samples:]
             audio_duration = len(segment) / SAMPLE_RATE
 
+        if not _passes_speech_gate(segment, cfg, kind="segment"):
+            return False
+
         t0 = time.monotonic()
         mixed_b64 = pcm_to_wav_base64(segment)
         hotwords = list(ctx.hotwords) if self._hotwords_enabled else None
@@ -222,6 +262,10 @@ class TsAsrTaskEngine(BaseTaskEngine):
 
         snapshot = snap.pcm
         audio_duration = len(snapshot) / SAMPLE_RATE
+
+        if not _passes_speech_gate(snapshot, cfg, kind="partial"):
+            return
+
         t0 = time.monotonic()
         mixed_b64 = pcm_to_wav_base64(snapshot)
         hotwords = list(ctx.hotwords) if self._hotwords_enabled else None

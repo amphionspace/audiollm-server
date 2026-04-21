@@ -3,8 +3,8 @@
   "vllm_model_name": "Amphion/Amphion-3B",
   "secondary_vllm_base_url": "http://localhost:8001",
   "secondary_vllm_model_name": "Qwen/Qwen3-ASR-1.7B",
-  "enable_secondary_asr": false,
-  "enable_primary_asr": false,
+  "enable_secondary_asr": true,
+  "enable_primary_asr": true,
   "primary_asr_timeout": 4.0,
   "debug_show_dual_asr": true,
   "fusion_similarity_threshold": 0.85,
@@ -16,10 +16,10 @@
   "asr_request_timeout": 120,
   "enable_pseudo_stream": true,
   "pseudo_stream_interval_ms": 500,
-  "vad_threshold": 0.5,
+  "vad_threshold": 0.65,
   "silence_duration_ms": 200,
   "vad_smoothing_alpha": 0.35,
-  "vad_start_frames": 3,
+  "vad_start_frames": 10,
   "vad_pre_speech_ms": 500,
   "vad_end_frames": 20,
   "vad_keep_tail_ms": 40,
@@ -36,5 +36,8 @@
   "tsasr_enrollment_max_sec": 5.0,
   "tsasr_max_audio_seconds": 30.0,
   "tsasr_enable_partial": false,
-  "tsasr_enable_hotwords": false
+  "tsasr_enable_hotwords": false,
+  "tsasr_speech_gate_enabled": true,
+  "tsasr_speech_gate_prob_threshold": 0.6,
+  "tsasr_speech_gate_min_voiced_ms": 200
 }

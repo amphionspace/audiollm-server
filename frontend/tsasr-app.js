@@ -18,6 +18,10 @@
 (() => {
   'use strict';
 
+  const i18n = window.Amphion && window.Amphion.i18n;
+  const t = (key, vars) => (i18n ? i18n.t(key, vars) : (vars && vars.defaultValue) || key);
+  const onLangChange = (fn) => (i18n ? i18n.onChange(fn) : () => {});
+
   const MIN_ENROLL_SEC = 1.0;
   // Backend VAD-trims longer uploads to 5s (see tsasr_enrollment_max_sec).
   // Keeping the browser auto-stop in sync avoids uploading material we know
@@ -43,6 +47,9 @@
   let enrollDurationSec = 0;
   let isEnrollRecording = false;
   let enrollPreviewUrl = null;
+
+  // Track current displayed enrollment status so we can re-render on lang switch.
+  let enrollStatusDyn = { state: 'idle', key: 'tsasr.enroll.notRecorded', vars: null };
 
   // -------------------- Segment replay cache --------------------
   // Keyed by the backend-assigned `final.id`. Each value is a blob URL that
@@ -91,24 +98,28 @@
   const enrollProgress = document.getElementById('enroll-progress');
   const enrollPreviewEl = document.getElementById('enroll-preview');
 
-  const voiceTraitsInput = document.getElementById('voice-traits');
-  const languageSelect = document.getElementById('session-language');
+  function langDisplayName(value) {
+    if (!value) return '';
+    const v = String(value).trim();
+    if (!v) return '';
+    return t(`lang.name.${v}`, { defaultValue: v });
+  }
 
   // -------------------- Connection status --------------------
   function setConnStatus(state) {
     if (!window.AmphionSidebar || !window.AmphionSidebar.setConnectionState) return;
     if (state === 'connected') {
-      window.AmphionSidebar.setConnectionState('connected', 'Connected');
+      window.AmphionSidebar.setConnectionState('connected');
     } else if (state === 'pending') {
-      window.AmphionSidebar.setConnectionState('pending', 'Connecting...');
+      window.AmphionSidebar.setConnectionState('pending');
     } else {
-      window.AmphionSidebar.setConnectionState('idle', 'Idle');
+      window.AmphionSidebar.setConnectionState('idle');
     }
   }
   setConnStatus('disconnected');
 
   // -------------------- Enrollment status pill --------------------
-  function setEnrollStatus(state, text) {
+  function setEnrollStatus(state, key, vars) {
     enrollStatusPill.className = 'status-pill';
     if (state === 'recording') {
       enrollStatusPill.dataset.state = 'recording';
@@ -121,18 +132,23 @@
     } else {
       enrollStatusPill.dataset.state = 'idle';
     }
-    enrollStatusPill.textContent = text;
+    enrollStatusDyn = { state, key, vars: vars || null };
+    enrollStatusPill.textContent = t(key, vars || undefined);
   }
 
-  function updateMicGate(message) {
+  function updateMicGate(messageKey) {
     const enabled = enrollWavB64 !== null && !isEnrollRecording;
     micBtn.disabled = !enabled;
     if (isRecordingLive) {
-      micStatus.textContent = 'Listening...';
+      micStatus.textContent = t('tsasr.mic.listening');
+      micStatus.setAttribute('data-dyn-key', 'tsasr.mic.listening');
     } else if (!enabled) {
-      micStatus.textContent = message || 'Complete enrollment to enable';
+      const k = messageKey || 'tsasr.mic.gateDisabled';
+      micStatus.textContent = t(k);
+      micStatus.setAttribute('data-dyn-key', k);
     } else {
-      micStatus.textContent = 'Click to start';
+      micStatus.textContent = t('tsasr.mic.start');
+      micStatus.setAttribute('data-dyn-key', 'tsasr.mic.start');
     }
   }
 
@@ -221,8 +237,8 @@
       enrollStream = mediaStream;
     } catch (err) {
       console.error(err);
-      setEnrollStatus('error', 'Mic denied');
-      alert('Microphone access denied. Please allow microphone access.');
+      setEnrollStatus('error', 'tsasr.enroll.micDenied');
+      alert(t('tsasr.enroll.micAlert'));
       return;
     }
 
@@ -234,9 +250,10 @@
     };
     isEnrollRecording = true;
     enrollStartAt = performance.now();
-    enrollRecLabel.textContent = 'Stop';
+    enrollRecLabel.textContent = t('tsasr.enroll.stop');
+    enrollRecLabel.setAttribute('data-i18n', 'tsasr.enroll.stop');
     enrollRecBtn.classList.add('enroll-recording');
-    setEnrollStatus('recording', 'Recording...');
+    setEnrollStatus('recording', 'tsasr.enroll.recording');
     enrollResetBtn.disabled = true;
     enrollPreviewEl.classList.add('hidden');
 
@@ -259,7 +276,8 @@
     clearInterval(enrollTimerId);
     enrollTimerId = null;
     enrollRecBtn.classList.remove('enroll-recording');
-    enrollRecLabel.textContent = 'Start recording';
+    enrollRecLabel.textContent = t('tsasr.enroll.start');
+    enrollRecLabel.setAttribute('data-i18n', 'tsasr.enroll.start');
 
     if (enrollNode) {
       enrollNode.port.onmessage = null;
@@ -271,7 +289,7 @@
       enrollCtx = null;
     }
     if (enrollStream) {
-      enrollStream.getTracks().forEach((t) => t.stop());
+      enrollStream.getTracks().forEach((tr) => tr.stop());
       enrollStream = null;
     }
 
@@ -282,7 +300,7 @@
     enrollTimer.textContent = `${duration.toFixed(1)}s`;
 
     if (duration < MIN_ENROLL_SEC) {
-      setEnrollStatus('error', `Too short (${duration.toFixed(1)}s)`);
+      setEnrollStatus('error', 'tsasr.enroll.tooShort', { dur: duration.toFixed(1) });
       enrollChunks = [];
       enrollPcm = null;
       enrollWavB64 = null;
@@ -309,7 +327,7 @@
     enrollPreviewEl.src = enrollPreviewUrl;
     enrollPreviewEl.classList.remove('hidden');
 
-    setEnrollStatus('ready', `Ready (${duration.toFixed(1)}s)`);
+    setEnrollStatus('ready', 'tsasr.enroll.ready', { dur: duration.toFixed(1) });
     enrollResetBtn.disabled = false;
     updateMicGate();
   }
@@ -328,7 +346,7 @@
       enrollPreviewUrl = null;
     }
     enrollResetBtn.disabled = true;
-    setEnrollStatus('idle', 'Not recorded');
+    setEnrollStatus('idle', 'tsasr.enroll.notRecorded');
     updateMicGate();
   }
 
@@ -373,20 +391,31 @@
     activeReplayAudio = audio;
   }
 
-  function addFinalBubble(text, meta, segId) {
+  function addFinalBubble(text, langValue, durationSec, segId) {
     const wrapper = document.createElement('div');
     wrapper.className = 'chat-row chat-row-ai chat-bubble-float';
     if (segId) wrapper.id = `ai-${segId}`;
 
-    const metaLine = meta
-      ? `<div class="text-[11px] text-faint mt-1">${escapeHtml(meta)}</div>`
+    const metaParts = [];
+    if (langValue) {
+      metaParts.push(
+        `<span data-dyn-key="tsasr.meta.lang"
+               data-dyn-vars='${escapeHtml(JSON.stringify({ lang: langValue }))}'>${escapeHtml(t('tsasr.meta.lang', { lang: langDisplayName(langValue) }))}</span>`
+      );
+    }
+    if (typeof durationSec === 'number') {
+      metaParts.push(`<span>${durationSec.toFixed(1)}s</span>`);
+    }
+    const metaLine = metaParts.length
+      ? `<div class="text-[11px] text-faint mt-1">${metaParts.join(' \u00b7 ')}</div>`
       : '';
     const hasAudio = Boolean(segId) && segmentAudio.has(segId);
     // Keep the replay button inline with the paragraph so users scan text
     // first and see the play affordance as a subtle trailing glyph, not a
     // separate control.
+    const replayTitle = escapeHtml(t('tsasr.replayTitle'));
     const replayBtn = hasAudio
-      ? `<button class="replay-btn" type="button" title="Replay audio">
+      ? `<button class="replay-btn" type="button" title="${replayTitle}">
            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
              <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
            </svg>
@@ -425,9 +454,10 @@
     chatArea.scrollTo({ top: chatArea.scrollHeight, behavior: 'smooth' });
   }
 
-  function addErrorBubble(message) {
+  function addErrorBubble(code, message) {
     const wrapper = document.createElement('div');
     wrapper.className = 'chat-row chat-row-ai chat-bubble-float';
+    const vars = { code: code || 'error', msg: message || '' };
     wrapper.innerHTML = `
       <div class="flex gap-3 max-w-2xl items-start">
         <div class="chat-avatar flex-shrink-0"
@@ -438,8 +468,10 @@
                   d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
           </svg>
         </div>
-        <div class="chat-bubble chat-bubble-ai text-sm" style="color:var(--danger)">
-          ${escapeHtml(message)}
+        <div class="chat-bubble chat-bubble-ai text-sm" style="color:var(--danger)"
+             data-dyn-key="tsasr.error.serverPrefix"
+             data-dyn-vars='${escapeHtml(JSON.stringify(vars))}'>
+          ${escapeHtml(t('tsasr.error.serverPrefix', vars))}
         </div>
       </div>
     `;
@@ -456,12 +488,9 @@
   // -------------------- WebSocket --------------------
   function openWsAndStart() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const lang = languageSelect.value || '';
-    const url = `${proto}://${location.host}/transcribe-target-streaming${
-      lang ? `?language=${encodeURIComponent(lang)}` : ''
-    }`;
+    const url = `${proto}://${location.host}/transcribe-target-streaming`;
     setConnStatus('pending');
-    setEnrollStatus('pending', 'Sending enrollment...');
+    setEnrollStatus('pending', 'tsasr.enroll.sending');
     ws = new WebSocket(url);
 
     ws.onopen = () => {
@@ -474,9 +503,6 @@
         enrollment_audio: enrollWavB64,
         enrollment_format: 'wav',
       };
-      const traits = (voiceTraitsInput.value || '').trim();
-      if (traits) payload.voice_traits = traits;
-      if (lang) payload.language = lang;
       ws.send(JSON.stringify(payload));
     };
 
@@ -511,7 +537,8 @@
       case 'enrollment_ok':
         setEnrollStatus(
           'ready',
-          `Ready (${(data.duration_sec || enrollDurationSec).toFixed(1)}s)`
+          'tsasr.enroll.ready',
+          { dur: (data.duration_sec || enrollDurationSec).toFixed(1) }
         );
         startLiveStreaming();
         break;
@@ -534,16 +561,14 @@
               console.warn('Failed to decode segment audio:', err);
             }
           }
-          const metaParts = [];
-          if (data.language && data.language !== 'N/A') {
-            metaParts.push(`language: ${data.language}`);
-          }
-          if (typeof data.duration_sec === 'number') {
-            metaParts.push(`${data.duration_sec.toFixed(1)}s`);
-          }
+          const langValue =
+            data.language && data.language !== 'N/A' ? data.language : null;
+          const durationSec =
+            typeof data.duration_sec === 'number' ? data.duration_sec : null;
           addFinalBubble(
             data.text.trim(),
-            metaParts.join(' \u00b7 ') || null,
+            langValue,
+            durationSec,
             data.id || null,
           );
         }
@@ -553,8 +578,15 @@
         break;
       case 'error': {
         const code = data.code || 'error';
-        setEnrollStatus('error', code.replace(/^enrollment_/, ''));
-        addErrorBubble(`Server error [${code}]: ${data.message || ''}`);
+        // Pill stays short -- show the short code only; the full message
+        // lives in the error chat bubble below.
+        const shortCode = code.replace(/^enrollment_/, '');
+        setEnrollStatus(
+          'error',
+          'tsasr.enroll.errorCode',
+          { code: shortCode, defaultValue: shortCode }
+        );
+        addErrorBubble(code, data.message || '');
         if (code.startsWith('enrollment_')) {
           // Enrollment was rejected: tear down WS, let user re-record.
           stopLiveStreaming({ sendStop: false, reason: 'enrollment_rejected' });
@@ -577,7 +609,7 @@
       liveStream = mediaStream;
     } catch (err) {
       console.error(err);
-      addErrorBubble('Microphone access denied.');
+      addErrorBubble('mic_denied', t('tsasr.enroll.micAlert'));
       setConnStatus('disconnected');
       return;
     }
@@ -609,7 +641,7 @@
       liveCtx = null;
     }
     if (liveStream) {
-      liveStream.getTracks().forEach((t) => t.stop());
+      liveStream.getTracks().forEach((tr) => tr.stop());
       liveStream = null;
     }
 
@@ -637,7 +669,37 @@
     }
   });
 
+  // -------------------- Refresh on language change --------------------
+  function refreshDynamic() {
+    if (enrollStatusDyn.key) {
+      enrollStatusPill.textContent = t(
+        enrollStatusDyn.key,
+        enrollStatusDyn.vars || undefined
+      );
+    }
+    enrollRecLabel.textContent = isEnrollRecording
+      ? t('tsasr.enroll.stop')
+      : t('tsasr.enroll.start');
+    updateMicGate();
+    // Walk dyn nodes inside the chat area to refresh transcript meta + errors.
+    chatArea.querySelectorAll('[data-dyn-key]').forEach((el) => {
+      const key = el.getAttribute('data-dyn-key');
+      let vars = null;
+      const raw = el.getAttribute('data-dyn-vars');
+      if (raw) {
+        try { vars = JSON.parse(raw); } catch { vars = null; }
+      }
+      if (key === 'tsasr.meta.lang' && vars && vars.lang) {
+        el.textContent = t(key, { lang: langDisplayName(vars.lang) });
+      } else {
+        el.textContent = t(key, vars || undefined);
+      }
+    });
+  }
+
+  onLangChange(refreshDynamic);
+
   // -------------------- Init --------------------
-  setEnrollStatus('idle', 'Not recorded');
+  setEnrollStatus('idle', 'tsasr.enroll.notRecorded');
   updateMicGate();
 })();

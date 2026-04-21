@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Amphion Demo</title>
+  <title data-i18n-doc-title="asr.titleTag" data-i18n="asr.titleTag">Amphion Demo</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -19,8 +19,8 @@
     <main class="app-main">
       <header class="page-header">
         <div>
-          <h1 class="page-title">Realtime ASR</h1>
-          <p class="page-sub">Stream your voice and watch the transcript arrive as you speak.</p>
+          <h1 class="page-title" data-i18n="asr.title">Realtime ASR</h1>
+          <p class="page-sub" data-i18n="asr.subtitle">Stream your voice and watch the transcript arrive as you speak.</p>
         </div>
       </header>
 
@@ -36,7 +36,7 @@
                             d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
                     </svg>
                   </div>
-                  <div class="chat-bubble chat-bubble-ai leading-relaxed">
+                  <div class="chat-bubble chat-bubble-ai leading-relaxed" data-i18n-html="asr.greeting.html">
                     Ready when you are. Click the microphone to begin speaking and I'll transcribe your audio in real time.
                     <br/><br/>
                     <span class="text-muted">Tip: add hotwords in the right panel to improve recognition on domain-specific terms.</span>
@@ -50,14 +50,15 @@
                 <div class="pulse-ring"></div>
                 <div class="pulse-ring"></div>
                 <div class="pulse-ring"></div>
-                <button id="mic-btn" class="mic-btn" type="button" aria-label="Toggle microphone">
+                <button id="mic-btn" class="mic-btn" type="button"
+                        data-i18n-attr-aria-label="asr.mic.aria" aria-label="Toggle microphone">
                   <svg id="mic-icon" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                           d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
                   </svg>
                 </button>
               </div>
-              <p id="mic-status">Click to start</p>
+              <p id="mic-status" data-i18n="asr.mic.start">Click to start</p>
             </div>
           </section>
 
@@ -66,49 +67,56 @@
               <div class="flex items-start justify-between gap-3 mb-3">
                 <div>
                   <div class="flex items-center gap-2">
-                    <span class="text-[13px] font-semibold" style="letter-spacing:0.02em">Hotwords</span>
+                    <span class="text-[13px] font-semibold" style="letter-spacing:0.02em"
+                          data-i18n="asr.hotword.title">Hotwords</span>
                     <span id="hotword-sync-status" class="status-pill" data-state="waiting">Waiting</span>
                   </div>
-                  <p class="text-xs text-muted mt-1">Boost recognition for domain-specific terms.</p>
+                  <p class="text-xs text-muted mt-1" data-i18n="asr.hotword.tip">Boost recognition for domain-specific terms.</p>
                   <div class="mt-3">
-                    <label for="asr-lang-select" class="block text-[11px] text-faint mb-1">Language</label>
-                    <select id="asr-lang-select" class="asr-lang-select w-full max-w-[220px]" aria-label="ASR input language">
-                      <option value="auto">Auto (detect)</option>
-                      <option value="chinese">Chinese</option>
-                      <option value="english">English</option>
-                      <option value="indonesian">Indonesian</option>
-                      <option value="thai">Thai</option>
+                    <label for="asr-lang-select" class="block text-[11px] text-faint mb-1"
+                           data-i18n="asr.hotword.lang">Language</label>
+                    <select id="asr-lang-select" class="asr-lang-select w-full max-w-[220px]"
+                            data-i18n-attr-aria-label="asr.hotword.langSelect.aria"
+                            aria-label="ASR input language">
+                      <option value="auto" data-i18n="asr.hotword.langOption.auto">Auto (detect)</option>
+                      <option value="chinese" data-i18n="asr.hotword.langOption.chinese">Chinese</option>
+                      <option value="english" data-i18n="asr.hotword.langOption.english">English</option>
+                      <option value="indonesian" data-i18n="asr.hotword.langOption.indonesian">Indonesian</option>
+                      <option value="thai" data-i18n="asr.hotword.langOption.thai">Thai</option>
                     </select>
-                    <p class="text-[10px] text-faint mt-1">Hotwords are saved per language.</p>
+                    <p class="text-[10px] text-faint mt-1" data-i18n="asr.hotword.langTip">Hotwords are saved per language.</p>
                   </div>
                 </div>
 
-                <label for="hotword-enabled" class="hotword-switch" title="Toggle hotword influence">
+                <label for="hotword-enabled" class="hotword-switch"
+                       data-i18n-attr-title="asr.hotword.toggle.title" title="Toggle hotword influence">
                   <input id="hotword-enabled" type="checkbox" checked />
                   <span class="hotword-switch-track"></span>
-                  <span class="hotword-switch-label">ON</span>
+                  <span class="hotword-switch-label" data-i18n="asr.hotword.toggle.on">ON</span>
                 </label>
               </div>
 
               <div class="flex gap-2 mb-3">
                 <input id="hotword-input" type="text" class="hotword-input flex-1"
+                       data-i18n-attr-placeholder="asr.hotword.placeholder"
                        placeholder="Add hotword (comma-separated for batch)" />
-                <button id="hotword-add-btn" class="btn-secondary">Add</button>
-                <button id="hotword-clear-btn" class="btn-ghost">Clear</button>
+                <button id="hotword-add-btn" class="btn-secondary" data-i18n="asr.hotword.add">Add</button>
+                <button id="hotword-clear-btn" class="btn-ghost" data-i18n="asr.hotword.clear">Clear</button>
               </div>
 
               <div class="mb-3">
                 <textarea id="hotword-textarea" class="hotword-textarea w-full" rows="4"
+                          data-i18n-attr-placeholder="asr.hotword.textarea.placeholder"
                           placeholder="Paste long text here to extract hotwords with LLM"></textarea>
                 <div class="mt-2 flex items-center justify-between gap-2">
-                  <button id="hotword-extract-btn" class="btn-primary">Extract and Add</button>
+                  <button id="hotword-extract-btn" class="btn-primary" data-i18n="asr.hotword.extract">Extract and Add</button>
                   <span id="hotword-extract-status" class="hotword-extract-status">Idle</span>
                 </div>
               </div>
 
               <div class="flex items-center justify-between text-xs text-muted mb-2">
                 <span id="hotword-count">0 hotwords</span>
-                <span>Session hits: <span id="hotword-hit-count" style="color:var(--ink)">0</span></span>
+                <span><span data-i18n="asr.hotword.sessionHits">Session hits:</span> <span id="hotword-hit-count" style="color:var(--ink)">0</span></span>
               </div>
 
               <div id="hotword-list" class="flex flex-wrap gap-2 min-h-[32px] overflow-y-auto pr-1"></div>
@@ -119,6 +127,7 @@
     </main>
   </div>
 
+  <script src="i18n.js"></script>
   <script src="sidebar.js"></script>
   <script src="app.js"></script>
 </body>

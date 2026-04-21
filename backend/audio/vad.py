@@ -1,5 +1,6 @@
 import logging
 import math
+from typing import NamedTuple
 
 import numpy as np
 
@@ -294,3 +295,65 @@ def vad_trim_audio(
     if out.size > target_samples:
         out = out[:target_samples]
     return out.astype(np.float32, copy=False)
+
+
+class SpeechPresenceStats(NamedTuple):
+    """Per-segment speech-presence summary used as a second-stage gate.
+
+    ``voiced_sec`` is the cumulative duration of frames whose smoothed VAD
+    probability strictly exceeds the caller's threshold, ``total_sec`` is the
+    analyzed duration (rounded down to whole hops), and ``mean_prob`` is the
+    average smoothed probability across all analyzed frames. ``voiced_ratio``
+    is ``voiced_sec / total_sec`` or ``0.0`` for empty input.
+    """
+
+    total_sec: float
+    voiced_sec: float
+    mean_prob: float
+    voiced_ratio: float
+
+
+def analyze_speech_presence(
+    pcm: np.ndarray,
+    *,
+    prob_threshold: float = 0.6,
+    sample_rate: int = SAMPLE_RATE,
+) -> SpeechPresenceStats:
+    """Compute speech-presence statistics for an already-segmented clip.
+
+    Walks ``pcm`` hop-by-hop through a fresh :class:`VADProcessor` instance and
+    records the post-smoothing probability at each step. The state-machine
+    side effects (segment emission, internal buffers) are intentionally
+    ignored — we only need the per-frame probabilities.
+
+    Designed as a cheap (no extra network calls) second-stage gate on top of
+    VAD-segmented audio: transient noise like keyboard taps tends to produce a
+    short burst of high-prob frames inside a longer otherwise-silent segment,
+    so its accumulated voiced duration stays well below that of even brief
+    real speech. Callers typically pair this with a stricter ``prob_threshold``
+    (e.g. 0.6) than the segmentation threshold (default 0.5).
+    """
+    if pcm.size == 0:
+        return SpeechPresenceStats(0.0, 0.0, 0.0, 0.0)
+
+    vad = VADProcessor()
+    hop = vad.hop_size
+    n_full = (pcm.size // hop) * hop
+    if n_full <= 0:
+        return SpeechPresenceStats(0.0, 0.0, 0.0, 0.0)
+
+    n_frames = n_full // hop
+    probs = np.empty(n_frames, dtype=np.float32)
+    for idx, i in enumerate(range(0, n_full, hop)):
+        vad.process(pcm[i : i + hop])
+        probs[idx] = (
+            vad.smoothed_prob if vad.smoothed_prob is not None else 0.0
+        )
+
+    frame_sec = hop / max(1, sample_rate)
+    total_sec = n_frames * frame_sec
+    voiced_frames = int((probs > prob_threshold).sum())
+    voiced_sec = voiced_frames * frame_sec
+    mean_prob = float(probs.mean())
+    voiced_ratio = voiced_sec / total_sec if total_sec > 0 else 0.0
+    return SpeechPresenceStats(total_sec, voiced_sec, mean_prob, voiced_ratio)

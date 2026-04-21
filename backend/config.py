@@ -74,6 +74,16 @@ class Config:
     tsasr_max_audio_seconds: float = 30.0
     tsasr_enable_partial: bool = False
     tsasr_enable_hotwords: bool = False
+    # Second-stage speech-presence gate. The Amphion TS-ASR engine has no
+    # silence/noise filter beyond the upstream VAD (the secondary ASR is
+    # disabled because Qwen3-ASR-1.7B can't take dual-audio input), so
+    # transient noise like keyboard taps that VAD misclassifies as speech
+    # would otherwise be sent straight to the model. We re-analyze each
+    # segmented clip with a stricter per-frame probability threshold and
+    # require a minimum cumulative voiced duration before invoking vLLM.
+    tsasr_speech_gate_enabled: bool = True
+    tsasr_speech_gate_prob_threshold: float = 0.6
+    tsasr_speech_gate_min_voiced_ms: int = 200
 
     # ---- Emotion recognition: vLLM endpoint ------------------------------
     # The Amphion multi-task model (Amphion/Amphion-3B) is trained to handle
@@ -161,3 +171,6 @@ TSASR_ENROLLMENT_MAX_SEC = _default.tsasr_enrollment_max_sec
 TSASR_MAX_AUDIO_SECONDS = _default.tsasr_max_audio_seconds
 TSASR_ENABLE_PARTIAL = _default.tsasr_enable_partial
 TSASR_ENABLE_HOTWORDS = _default.tsasr_enable_hotwords
+TSASR_SPEECH_GATE_ENABLED = _default.tsasr_speech_gate_enabled
+TSASR_SPEECH_GATE_PROB_THRESHOLD = _default.tsasr_speech_gate_prob_threshold
+TSASR_SPEECH_GATE_MIN_VOICED_MS = _default.tsasr_speech_gate_min_voiced_ms
