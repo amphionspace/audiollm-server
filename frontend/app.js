@@ -14,6 +14,7 @@
   let isRecording = false;
   let hotwords = [];
   let hotwordEnabled = localStorage.getItem('hotword_enabled') !== '0';
+  let emotionEnabled = localStorage.getItem('asr_emotion_enabled') === '1';
   let sessionHitCount = 0;
   let extractRequestId = null;
   let activeReplayAudio = null;
@@ -105,6 +106,8 @@
   const hotwordExtractBtn = document.getElementById('hotword-extract-btn');
   const hotwordExtractStatus = document.getElementById('hotword-extract-status');
   const asrLangSelect = document.getElementById('asr-lang-select');
+  const emotionToggle = document.getElementById('emotion-toggle');
+  const emotionToggleLabel = document.getElementById('emotion-toggle-label');
 
   // --- Dynamic translation helpers ---
   function setDynText(el, key, vars) {
@@ -190,12 +193,30 @@
           type: 'update_hotwords',
           hotwords: getEffectiveHotwords(),
           src_lang: apiLangFromUi(srcLangUi),
+          enable_emotion: emotionEnabled,
         })
       );
       setHotwordSyncStatus('synced');
     } else {
       setHotwordSyncStatus('offline');
     }
+  }
+
+  function syncEmotionToggle() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: 'update_emotion',
+          enabled: emotionEnabled,
+        })
+      );
+    }
+  }
+
+  function refreshEmotionToggleLabel() {
+    if (!emotionToggleLabel) return;
+    const key = emotionEnabled ? 'asr.emotion.toggle.on' : 'asr.emotion.toggle.off';
+    setDynText(emotionToggleLabel, key);
   }
 
   function saveAndSyncHotwords() {
@@ -339,6 +360,17 @@
     syncHotwords();
   });
 
+  if (emotionToggle) {
+    emotionToggle.checked = emotionEnabled;
+    refreshEmotionToggleLabel();
+    emotionToggle.addEventListener('change', () => {
+      emotionEnabled = emotionToggle.checked;
+      localStorage.setItem('asr_emotion_enabled', emotionEnabled ? '1' : '0');
+      refreshEmotionToggleLabel();
+      syncEmotionToggle();
+    });
+  }
+
   if (asrLangSelect) {
     asrLangSelect.value = srcLangUi;
     asrLangSelect.addEventListener('change', () => {
@@ -460,6 +492,7 @@
           textSecondary: data.text_secondary,
           fusionMeta: data.fusion_meta,
           srcLangDetected: data.src_lang_detected,
+          emotion: data.emotion,
         });
         break;
       case 'discard':
@@ -709,6 +742,30 @@
     `;
   }
 
+  function renderEmotionMeta(emotion) {
+    if (!emotion) return '';
+    const ser = String(emotion.ser_label || '').trim();
+    const secText = String(emotion.sec_text || '').trim();
+    if (!ser && !secText) return '';
+
+    const parts = [];
+    if (ser) {
+      parts.push(
+        `<span class="text-faint">${escapeHtml(t('asr.emotion.result.ser'))}:</span> ${escapeHtml(ser)}`
+      );
+    }
+    if (secText) {
+      parts.push(
+        `<span class="text-faint">${escapeHtml(t('asr.emotion.result.sec'))}:</span> ${escapeHtml(secText)}`
+      );
+    }
+    return `
+      <div class="text-[11px] mt-2 stream-meta" style="color:var(--accent-deep)">
+        ${parts.join(' &middot; ')}
+      </div>
+    `;
+  }
+
   function streamRevealContent(container, htmlString, charDelayMs = 12) {
     const temp = document.createElement('div');
     temp.innerHTML = htmlString;
@@ -792,15 +849,16 @@
             })()
           : '';
       const debugBlock = renderDualAsrDebug(debugInfo);
+      const emotionBlock = renderEmotionMeta(debugInfo && debugInfo.emotion);
 
       const textP = document.createElement('p');
       textP.className = 'text-sm leading-relaxed';
       streamRevealContent(textP, highlighted.html);
       content.innerHTML = '';
       content.appendChild(textP);
-      if (hitMeta || langDetectedMeta || debugBlock) {
+      if (hitMeta || langDetectedMeta || debugBlock || emotionBlock) {
         const extra = document.createElement('div');
-        extra.innerHTML = langDetectedMeta + hitMeta + debugBlock;
+        extra.innerHTML = langDetectedMeta + hitMeta + emotionBlock + debugBlock;
         content.appendChild(extra);
       }
     } else if (status === 'error') {

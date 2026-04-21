@@ -13,6 +13,10 @@ from .audio.utils import Resampler48to16, pcm_to_wav_base64
 from .audio.vad import VADProcessor
 from .config import (
     DEBUG_SHOW_DUAL_ASR,
+    EMOTION_MAX_AUDIO_SECONDS,
+    EMOTION_REQUEST_TIMEOUT,
+    EMOTION_VLLM_BASE_URL,
+    EMOTION_VLLM_MODEL_NAME,
     ENABLE_PRIMARY_ASR,
     ENABLE_PSEUDO_STREAM,
     ENABLE_SECONDARY_ASR,
@@ -21,6 +25,7 @@ from .config import (
     PSEUDO_STREAM_INTERVAL_MS,
     SAMPLE_RATE,
 )
+from .emotion.client import query_emotion_model
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,7 @@ class AudioSession:
         self._pcm_carry = np.empty(0, dtype=np.float32)
         self.hotwords: list[str] = []
         self.src_lang: str = "N/A"
+        self.enable_emotion: bool = False
         self.stop_event = asyncio.Event()
         self.extract_tasks: set[asyncio.Task] = set()
         self._ws_closed = False
@@ -201,9 +207,18 @@ class AudioSession:
             self.hotwords = sanitize_hotwords(ctrl.get("hotwords", []))
             if "src_lang" in ctrl:
                 self.src_lang = normalize_client_src_lang(ctrl.get("src_lang"))
+            if "enable_emotion" in ctrl:
+                self.enable_emotion = bool(ctrl.get("enable_emotion"))
             logger.info(
-                "Hotwords updated: %s (src_lang=%s)", self.hotwords, self.src_lang
+                "Hotwords updated: %s (src_lang=%s, emotion=%s)",
+                self.hotwords,
+                self.src_lang,
+                self.enable_emotion,
             )
+
+        elif ctrl.get("type") == "update_emotion":
+            self.enable_emotion = bool(ctrl.get("enabled"))
+            logger.info("Emotion recognition toggled: %s", self.enable_emotion)
 
         elif ctrl.get("type") == "extract_hotwords":
             request_id = str(ctrl.get("request_id", "")).strip()
@@ -383,7 +398,63 @@ class AudioSession:
                     "fusion_meta": fused["fusion"],
                 }
             )
+
+        if self.enable_emotion:
+            emotion_payload = await self._run_emotion(segment)
+            if emotion_payload is not None:
+                payload["emotion"] = emotion_payload
+
         await self._send_json(payload)
+
+    async def _run_emotion(self, segment: np.ndarray) -> dict | None:
+        """Run SER + SEC in parallel on the final segment. Best-effort."""
+        audio_duration = len(segment) / SAMPLE_RATE
+        clip = segment
+        if (
+            EMOTION_MAX_AUDIO_SECONDS > 0
+            and audio_duration > EMOTION_MAX_AUDIO_SECONDS
+        ):
+            max_samples = int(SAMPLE_RATE * EMOTION_MAX_AUDIO_SECONDS)
+            clip = segment[-max_samples:]
+
+        try:
+            wav_b64 = pcm_to_wav_base64(clip)
+        except Exception:
+            logger.exception("Emotion: failed to encode wav")
+            return None
+
+        async def _call(mode: str):
+            return await query_emotion_model(
+                wav_b64,
+                mode=mode,
+                base_url=EMOTION_VLLM_BASE_URL,
+                model_name=EMOTION_VLLM_MODEL_NAME,
+                timeout=EMOTION_REQUEST_TIMEOUT,
+            )
+
+        ser_res, sec_res = await asyncio.gather(
+            _call("ser"), _call("sec"), return_exceptions=True
+        )
+
+        if isinstance(ser_res, Exception):
+            logger.warning("SER inference failed: %s", ser_res)
+            ser_res = None
+        if isinstance(sec_res, Exception):
+            logger.warning("SEC inference failed: %s", sec_res)
+            sec_res = None
+
+        ser_label = str((ser_res or {}).get("label", "") or "").strip()
+        sec_text = str((sec_res or {}).get("text", "") or "").strip()
+        sec_label = str((sec_res or {}).get("label", "") or "").strip()
+
+        if not ser_label and not sec_text and not sec_label:
+            return None
+
+        return {
+            "ser_label": ser_label,
+            "sec_text": sec_text,
+            "sec_label": sec_label,
+        }
 
     async def _send_vad_event(
         self,

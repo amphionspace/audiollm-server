@@ -96,6 +96,23 @@
                 </label>
               </div>
 
+              <div class="flex items-center justify-between gap-3 mb-3 pb-3"
+                   style="border-bottom:1px solid var(--line)">
+                <div class="min-w-0">
+                  <span class="text-[13px] font-semibold" style="letter-spacing:0.02em"
+                        data-i18n="asr.emotion.title">Emotion recognition</span>
+                  <p class="text-xs text-muted mt-1"
+                     data-i18n="asr.emotion.tip">Attach SER and SEC to the final transcript.</p>
+                </div>
+                <label for="emotion-toggle" class="hotword-switch"
+                       data-i18n-attr-title="asr.emotion.toggle.title"
+                       title="Toggle emotion recognition">
+                  <input id="emotion-toggle" type="checkbox" />
+                  <span class="hotword-switch-track"></span>
+                  <span id="emotion-toggle-label" class="hotword-switch-label">OFF</span>
+                </label>
+              </div>
+
               <div class="flex gap-2 mb-3">
                 <input id="hotword-input" type="text" class="hotword-input flex-1"
                        data-i18n-attr-placeholder="asr.hotword.placeholder"
