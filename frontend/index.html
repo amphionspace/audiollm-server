@@ -7,159 +7,119 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Source+Serif+4:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
   <link rel="stylesheet" href="style.css" />
 </head>
-<body class="text-white antialiased">
-  <!-- Background ambience -->
-  <div class="bg-mesh" aria-hidden="true"></div>
-  <div class="bg-orb bg-orb-1"></div>
-  <div class="bg-orb bg-orb-2"></div>
-  <div class="bg-orb bg-orb-3"></div>
-
-  <!-- Main container -->
-  <div class="relative z-10 flex flex-col h-screen max-w-7xl mx-auto px-4">
-
-    <!-- Header -->
-    <header class="flex items-center justify-between py-4 flex-shrink-0">
-      <div class="flex items-center gap-3">
-        <div class="w-9 h-9 rounded-xl bg-white/10 border border-white/10
-                    flex items-center justify-center shadow-sm">
-          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/>
-          </svg>
-        </div>
+<body data-page="asr">
+  <div class="app-shell">
+    <!-- Sidebar is injected by sidebar.js -->
+    <main class="app-main">
+      <header class="page-header">
         <div>
-          <h1 class="text-lg font-semibold tracking-tight">Amphion Demo</h1>
-          <p class="text-xs text-white/40">Amphion &middot; Real-time ASR</p>
+          <h1 class="page-title">Realtime ASR</h1>
+          <p class="page-sub">Stream your voice and watch the transcript arrive as you speak.</p>
+        </div>
+      </header>
+
+      <div class="page-content">
+        <div class="flex-1 min-h-0 flex flex-col lg:flex-row gap-5">
+          <section class="flex-1 min-h-0 flex flex-col">
+            <div id="chat-area" class="flex-1 min-h-0 overflow-y-auto pr-1 mb-4">
+              <div class="chat-row chat-row-ai chat-bubble-float">
+                <div class="flex gap-3 max-w-2xl items-start">
+                  <div class="chat-avatar flex-shrink-0">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                  </div>
+                  <div class="chat-bubble chat-bubble-ai leading-relaxed">
+                    Ready when you are. Click the microphone to begin speaking and I'll transcribe your audio in real time.
+                    <br/><br/>
+                    <span class="text-muted">Tip: add hotwords in the right panel to improve recognition on domain-specific terms.</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex-shrink-0 flex flex-col items-center pb-4 pt-2">
+              <div class="mic-btn-wrapper">
+                <div class="pulse-ring"></div>
+                <div class="pulse-ring"></div>
+                <div class="pulse-ring"></div>
+                <button id="mic-btn" class="mic-btn" type="button" aria-label="Toggle microphone">
+                  <svg id="mic-icon" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                  </svg>
+                </button>
+              </div>
+              <p id="mic-status">Click to start</p>
+            </div>
+          </section>
+
+          <aside class="lg:w-[380px] xl:w-[420px] flex-shrink-0 min-h-0">
+            <div id="hotword-panel" class="paper-card p-4 h-full flex flex-col">
+              <div class="flex items-start justify-between gap-3 mb-3">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] font-semibold" style="letter-spacing:0.02em">Hotwords</span>
+                    <span id="hotword-sync-status" class="status-pill" data-state="waiting">Waiting</span>
+                  </div>
+                  <p class="text-xs text-muted mt-1">Boost recognition for domain-specific terms.</p>
+                  <div class="mt-3">
+                    <label for="asr-lang-select" class="block text-[11px] text-faint mb-1">Language</label>
+                    <select id="asr-lang-select" class="asr-lang-select w-full max-w-[220px]" aria-label="ASR input language">
+                      <option value="auto">Auto (detect)</option>
+                      <option value="chinese">Chinese</option>
+                      <option value="english">English</option>
+                      <option value="indonesian">Indonesian</option>
+                      <option value="thai">Thai</option>
+                    </select>
+                    <p class="text-[10px] text-faint mt-1">Hotwords are saved per language.</p>
+                  </div>
+                </div>
+
+                <label for="hotword-enabled" class="hotword-switch" title="Toggle hotword influence">
+                  <input id="hotword-enabled" type="checkbox" checked />
+                  <span class="hotword-switch-track"></span>
+                  <span class="hotword-switch-label">ON</span>
+                </label>
+              </div>
+
+              <div class="flex gap-2 mb-3">
+                <input id="hotword-input" type="text" class="hotword-input flex-1"
+                       placeholder="Add hotword (comma-separated for batch)" />
+                <button id="hotword-add-btn" class="btn-secondary">Add</button>
+                <button id="hotword-clear-btn" class="btn-ghost">Clear</button>
+              </div>
+
+              <div class="mb-3">
+                <textarea id="hotword-textarea" class="hotword-textarea w-full" rows="4"
+                          placeholder="Paste long text here to extract hotwords with LLM"></textarea>
+                <div class="mt-2 flex items-center justify-between gap-2">
+                  <button id="hotword-extract-btn" class="btn-primary">Extract and Add</button>
+                  <span id="hotword-extract-status" class="hotword-extract-status">Idle</span>
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between text-xs text-muted mb-2">
+                <span id="hotword-count">0 hotwords</span>
+                <span>Session hits: <span id="hotword-hit-count" style="color:var(--ink)">0</span></span>
+              </div>
+
+              <div id="hotword-list" class="flex flex-wrap gap-2 min-h-[32px] overflow-y-auto pr-1"></div>
+            </div>
+          </aside>
         </div>
       </div>
-      <div class="flex items-center gap-2">
-        <div id="conn-dot" class="w-2.5 h-2.5 rounded-full bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.35)]"></div>
-        <span id="conn-label" class="text-xs text-white/50">Disconnected</span>
-      </div>
-    </header>
-
-    <div class="flex-1 min-h-0 flex flex-col lg:flex-row gap-4 pb-4">
-      <section class="flex-1 min-h-0 flex flex-col">
-        <!-- Chat area -->
-        <div id="chat-area"
-             class="flex-1 min-h-0 overflow-y-auto pr-1 mb-4 scroll-smooth">
-          <!-- Welcome message -->
-          <div class="chat-row chat-row-ai chat-bubble-float">
-            <div class="flex gap-3 max-w-2xl items-start">
-              <div class="chat-avatar flex-shrink-0">
-                <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                        d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
-                </svg>
-              </div>
-              <div class="chat-bubble chat-bubble-ai text-white/85 text-sm leading-relaxed">
-                Ready! Click the microphone button below to start speaking.
-                I'll transcribe your audio in real-time.
-                <br/><br/>
-                <span class="text-white/50">Tip: Add hotwords in the right panel to improve recognition accuracy for domain-specific terms.</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Mic button area -->
-        <div class="flex-shrink-0 flex flex-col items-center pb-4 pt-2">
-          <div class="mic-btn-wrapper">
-            <div class="pulse-ring"></div>
-            <div class="pulse-ring"></div>
-            <div class="pulse-ring"></div>
-            <button id="mic-btn" type="button" aria-label="Toggle microphone">
-              <svg id="mic-icon" class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                      d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
-              </svg>
-            </button>
-          </div>
-          <p id="mic-status" class="mt-3 text-sm text-white/40">Click to start</p>
-        </div>
-      </section>
-
-      <!-- Hotword control -->
-      <aside class="lg:w-[420px] xl:w-[460px] flex-shrink-0 min-h-0">
-        <div id="hotword-panel" class="hotword-card glass-card rounded-2xl p-4 h-full flex flex-col">
-          <div class="flex items-start justify-between gap-4 mb-3">
-            <div>
-              <div class="flex items-center gap-2">
-                <span class="text-sm font-semibold text-white/92 tracking-wide">Hotwords Control</span>
-                <span id="hotword-sync-status" class="text-[11px] px-2 py-0.5 rounded-full border border-white/15 text-white/65 bg-white/6">
-                  Waiting
-                </span>
-              </div>
-              <p class="text-xs text-white/45 mt-1">Keep hotwords active to improve domain-specific recognition.</p>
-              <div class="mt-2">
-                <label for="asr-lang-select" class="block text-[11px] text-white/50 mb-1">Language</label>
-                <select id="asr-lang-select" class="asr-lang-select w-full max-w-[220px]" aria-label="ASR input language">
-                  <option value="auto">Auto (detect)</option>
-                  <option value="chinese">Chinese</option>
-                  <option value="english">English</option>
-                  <option value="indonesian">Indonesian</option>
-                  <option value="thai">Thai</option>
-                </select>
-                <p class="text-[10px] text-white/35 mt-1">Hotwords are saved per language.</p>
-              </div>
-            </div>
-
-            <label for="hotword-enabled" class="hotword-switch" title="Toggle hotword influence">
-              <input id="hotword-enabled" type="checkbox" checked />
-              <span class="hotword-switch-track"></span>
-              <span class="hotword-switch-label text-xs text-white/60">ON</span>
-            </label>
-          </div>
-
-          <div class="flex gap-2 mb-3">
-            <input id="hotword-input"
-                   type="text"
-                   class="hotword-input flex-1"
-                   placeholder="Add hotword (comma-separated for batch)" />
-            <button id="hotword-add-btn"
-                    class="px-4 py-2 rounded-xl bg-white/12 hover:bg-white/18 border border-white/15
-                           text-sm font-medium transition-colors">
-              Add
-            </button>
-            <button id="hotword-clear-btn"
-                    class="px-3 py-2 rounded-xl bg-white/4 hover:bg-white/9 border border-white/10
-                           text-sm text-white/50 hover:text-white/80 transition-colors">
-              Clear
-            </button>
-          </div>
-
-          <div class="mb-3">
-            <textarea
-              id="hotword-textarea"
-              class="hotword-textarea w-full"
-              rows="4"
-              placeholder="Paste long text here to extract hotwords with LLM"
-            ></textarea>
-            <div class="mt-2 flex items-center justify-between gap-2">
-              <button
-                id="hotword-extract-btn"
-                class="px-4 py-2 rounded-xl bg-sky-500/18 hover:bg-sky-500/24 border border-sky-300/25 text-sm font-medium text-sky-100 transition-colors"
-              >
-                Extract and Add
-              </button>
-              <span id="hotword-extract-status" class="hotword-extract-status">Idle</span>
-            </div>
-          </div>
-
-          <div class="flex items-center justify-between text-xs text-white/45 mb-2">
-            <span id="hotword-count">0 hotwords</span>
-            <span>Session hits: <span id="hotword-hit-count" class="text-white/72">0</span></span>
-          </div>
-
-          <div id="hotword-list" class="flex flex-wrap gap-2 min-h-[32px] overflow-y-auto pr-1"></div>
-        </div>
-      </aside>
-    </div>
+    </main>
   </div>
 
+  <script src="sidebar.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

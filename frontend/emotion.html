@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Amphion Emotion Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Source+Serif+4:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body data-page="emotion">
+  <div class="app-shell">
+    <!-- Sidebar is injected by sidebar.js -->
+    <main class="app-main">
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Emotion Recognition</h1>
+          <p class="page-sub">SER and SEC inference on a full spoken utterance.</p>
+        </div>
+      </header>
+
+      <div class="page-content">
+        <div class="flex-1 min-h-0 flex flex-col">
+
+          <!-- Scrollable content area: mode + result + history -->
+          <div class="flex-1 min-h-0 overflow-y-auto pr-1 pb-2 flex flex-col items-center">
+            <div class="w-full max-w-xl paper-card p-6 sm:p-7 mt-2">
+
+              <div class="flex items-start justify-between gap-4 mb-4">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] font-semibold" style="letter-spacing:0.02em">Live emotion inference</span>
+                    <span id="emotion-status" class="status-pill" data-state="idle">Idle</span>
+                    <span id="emotion-live-dot" class="emotion-live-dot" aria-hidden="true"></span>
+                  </div>
+                  <p class="text-xs text-muted mt-1 leading-relaxed">
+                    Press the microphone to start, speak naturally, then press again to stop.
+                    The model uses the full utterance; clips longer than 20 seconds are trimmed
+                    to the trailing 20s.
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-3 mb-4">
+                <label for="emotion-mode" class="text-[11px] text-muted">Mode</label>
+                <select id="emotion-mode" class="asr-lang-select" aria-label="Emotion task mode">
+                  <option value="ser">SER &middot; label</option>
+                  <option value="sec">SEC &middot; caption</option>
+                </select>
+              </div>
+
+              <div id="emotion-result"
+                   class="rounded-xl border p-5 text-sm min-h-[120px]"
+                   style="border-color:var(--line); background:var(--paper-sunk); color:var(--ink)">
+                <span class="text-faint">Result will appear here.</span>
+              </div>
+
+              <div class="mt-5">
+                <div class="flex items-center justify-between text-[11px] text-muted mb-2">
+                  <span>Recent results</span>
+                  <button id="emotion-history-clear" class="btn-ghost !px-2 !py-1">Clear</button>
+                </div>
+                <ul id="emotion-history" class="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  <li class="text-[11px] text-faint italic">No sessions yet.</li>
+                </ul>
+              </div>
+
+              <div class="mt-5 text-[11px] text-faint leading-relaxed">
+                SER labels: Neutral, Happy, Sad, Angry, Fear, Disgust, Surprise, Other/Complex.
+                SEC returns a free-form caption of emotional tone, tempo, and prosody.
+              </div>
+            </div>
+          </div>
+
+          <!-- Mic area: placement and markup mirror index.html / tsasr.html so the
+               .mic-btn element shares its view-transition-name across pages. -->
+          <div class="flex-shrink-0 flex flex-col items-center pb-4 pt-2">
+            <div class="mic-btn-wrapper">
+              <div class="pulse-ring"></div>
+              <div class="pulse-ring"></div>
+              <div class="pulse-ring"></div>
+              <button id="emotion-btn" class="mic-btn" type="button" aria-label="Toggle emotion recording">
+                <svg id="emotion-mic-icon" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                </svg>
+              </button>
+            </div>
+            <p id="emotion-btn-text" class="mic-status-label">Click to start</p>
+          </div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="sidebar.js"></script>
+  <script src="emotion-app.js"></script>
+</body>
+</html>

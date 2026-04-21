@@ -27,7 +27,7 @@ vim backend/config.json
 bash start.sh
 ```
 
-浏览器打开 `https://<服务器IP>:8443` 即可使用。
+浏览器打开 `https://<服务器IP>:8443` 即可使用，或访问 `/tsasr.html` 体验目标说话人识别（TS-ASR）Demo。
 
 > 首次访问时浏览器会提示自签名证书不安全，点击 **高级** → **继续访问** 即可。
 
@@ -54,12 +54,16 @@ graph LR
 
 ## WebSocket 接口
 
-服务暴露两个 WebSocket 端点：
+服务暴露三个 WebSocket 端点，按任务一类一个：
 
-| 端点 | 用途 |
-|---|---|
-| `/ws/audio` | 前端 Demo —— 浏览器麦克风采集 + UI 交互 |
-| `/transcribe-streaming` | 服务对接 —— 标准 ASR 流式协议，供上游服务调用 |
+| 端点 | 任务 | VAD | 输出 | 协议文档 |
+|---|---|---|---|---|
+| `/ws/audio` | 浏览器 Demo（ASR + 双模型调试视图） | 是 | response / partial_transcript | 见前端代码 |
+| `/transcribe-streaming` | 个性化语音识别 | 是 | partial / final（每段语音一条） | [docs/transcribe-streaming-protocol.md](docs/transcribe-streaming-protocol.md) |
+| `/transcribe-target-streaming` | 目标说话人识别（TS-ASR，注册音频 + 混合音频） | 是 | enrollment_ok / final（每段语音一条） | [docs/tsasr.md](docs/tsasr.md) |
+| `/emotion-streaming` | 整段情感识别（SER 8 分类 / SEC 自由描述） | 否 | final_emotion（每个 start/stop 周期一条） | [docs/emotion-streaming-protocol.md](docs/emotion-streaming-protocol.md) |
+
+新增任务的命名约定：每个任务一个独立 WebSocket 端点（`/<task>-streaming`），共享同一套 `start` / `stop` / `update_hotwords` 控制消息与 `config` 覆写机制；任务专属字段（如 ASR 的 `language`/`hotwords`、情感的输出标签集）只出现在对应端点的协议文档中。
 
 ### `/transcribe-streaming` 协议
 
@@ -252,6 +256,29 @@ MODEL_PATH=/path/to/Qwen3-ASR-1.7B bash scripts/start_vllm_qwen.sh
 | `fusion_hotword_boost` | float | `0.12` | 主模型命中每个热词时获得的评分加成 |
 | `fusion_primary_score_margin` | float | `0.08` | 主模型评分需超过副模型至少这么多才会被选用 |
 
+#### 目标说话人识别（仅 `/transcribe-target-streaming` 使用）
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `tsasr_base_url` | string | `""` | TS-ASR 模型的 vLLM 服务地址；空字符串时回落到 `vllm_base_url` |
+| `tsasr_model_name` | string | `""` | TS-ASR 模型名称；空字符串时回落到 `vllm_model_name` |
+| `tsasr_request_timeout` | float | `30.0` | 单次推理 HTTP 请求超时（秒） |
+| `tsasr_enrollment_min_sec` | float | `1.0` | 注册音频最短时长（秒），小于此值服务端拒绝 |
+| `tsasr_enrollment_max_sec` | float | `5.0` | 注册音频最长时长（秒），超过此值服务端用 VAD 抽取有声帧后截断到该上限，而不是拒绝 |
+| `tsasr_max_audio_seconds` | float | `30.0` | 单段混合音频时长上限；超过则保留尾部 |
+| `tsasr_enable_partial` | bool | `false` | 是否开启伪流式 partial；双音频推理 RTF 较高，默认关闭 |
+| `tsasr_enable_hotwords` | bool | `false` | 是否把会话热词注入 Prompt；短期方案未验证，默认关闭 |
+
+#### 情感识别（仅 `/emotion-streaming` 使用）
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `emotion_vllm_base_url` | string | `http://localhost:8000` | 情感识别模型的 vLLM 服务地址；默认与主 ASR 共用同一 Amphion 多任务服务 |
+| `emotion_vllm_model_name` | string | `Amphion/Amphion-3B` | 情感识别模型名称；与 AmphionASR 项目的 SER/SEC 训练模型一致 |
+| `emotion_request_timeout` | float | `30.0` | 情感推理 HTTP 请求总超时（秒） |
+| `emotion_max_audio_seconds` | float | `20.0` | 单次推理处理的最长音频秒数；超过则保留尾部，贴合 Amphion SER/SEC 训练时 1-20s 的 utterance 上限 |
+| `emotion_task_mode` | string | `ser` | 缺省任务变体：`ser` 输出 8 分类标签，`sec` 输出自由文本描述；可被 `start.mode` 覆盖 |
+
 #### 调试
 
 | 参数 | 类型 | 默认值 | 说明 |
@@ -270,12 +297,20 @@ MODEL_PATH=/path/to/Qwen3-ASR-1.7B bash scripts/start_vllm_qwen.sh
 
 ```
 backend/
-  main.py                    # FastAPI 入口
-  config.py                  # 配置加载（从 config.json）
+  main.py                    # FastAPI 入口：把端点映射到 (AudioStream, TaskEngine) 组合
+  config.py                  # 配置加载（从 config.json），ASR / Emotion 字段在同一 dataclass 中分组
   config.json                # 服务端默认配置
   http_client.py             # 共享异步 HTTP 客户端
-  session.py                 # WebSocket 会话（VAD + ASR 管线）
-  asr_streaming_session.py   # 流式 ASR 会话
+  session.py                 # /ws/audio 浏览器 demo 会话
+  streaming/                 # 协议/会话层（任务无关）
+    session.py               #   StreamingSession：WS 生命周期 + 控制消息 + 工作队列
+    audio_stream.py          #   AudioStream 策略：VadSegmentedStream / WholeUtteranceStream
+    events.py                #   SegmentReady / PartialSnapshot
+  tasks/                     # 任务推理层（一类任务一个 engine）
+    base.py                  #   TaskEngine 协议 + BaseTaskEngine 默认实现
+    asr.py                   #   AsrTaskEngine：双模型 + 融合 + 伪流 partial
+    emotion.py               #   EmotionTaskEngine：整段情感推理
+    ts_asr.py                #   TsAsrTaskEngine：注册音频 + 混合音频双路推理
   audio/                     # 音频信号处理
     utils.py                 #   48→16 kHz 重采样、PCM/WAV 转换
     vad.py                   #   语音端点检测（TEN VAD + 备用方案）
@@ -284,11 +319,20 @@ backend/
     fusion.py                #   双模型融合逻辑
     hotword.py               #   热词提取服务
     prompt.py                #   LLM Prompt 模板
+  emotion/                   # 情感模型交互
+    client.py                #   vLLM API 调用与输出解析
+    prompt.py                #   情感识别 Prompt 与标签集
+  tsasr/                     # 目标说话人识别（短期方案，独立演化）
+    client.py                #   query_tsasr_model：双音频 vLLM 请求
+    prompt.py                #   build_tsasr_content：可扩展的 Prompt 构建器
+    enrollment.py            #   注册音频解码与时长校验
 frontend/                    # 静态 Web 前端
 scripts/                     # vLLM 服务启动脚本
 tests/                       # 测试工具
-docs/                        # 协议文档
+docs/                        # 协议文档（每个端点一份）
 ```
+
+> 新增一种任务时，只需新建 `backend/<task>/` 推理客户端 + `backend/tasks/<task>.py` 任务引擎，再在 `main.py` 用对应的 `AudioStream` 策略组装一个新端点即可，不需要改动 `streaming/` 与现有任务的代码。
 
 ## 参与贡献
 

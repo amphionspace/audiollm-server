@@ -1,0 +1,59 @@
+/* TS-ASR demo overrides. The base look-and-feel comes from style.css;
+   this file only adds enrollment-specific widgets in the paper theme. */
+
+.enroll-progress {
+  position: relative;
+  height: 6px;
+  border-radius: 4px;
+  background: var(--line-soft);
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.enroll-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent-deep) 100%
+  );
+  border-radius: 4px;
+  transition: width 80ms linear;
+}
+
+.enroll-recording .enroll-progress-bar {
+  animation: enroll-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes enroll-pulse {
+  0%, 100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.15);
+  }
+}
+
+.enroll-preview {
+  width: 100%;
+  margin-top: 0.75rem;
+  border-radius: 10px;
+  background: var(--paper-sunk);
+  border: 1px solid var(--line);
+}
+
+.enroll-preview::-webkit-media-controls-panel {
+  background: var(--paper-sunk);
+}
+
+/* Extra recording-button state when actively capturing enrollment */
+#enroll-rec-btn.enroll-recording {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+#enroll-rec-btn.enroll-recording:hover {
+  background: #9e4540;
+  border-color: #9e4540;
+}

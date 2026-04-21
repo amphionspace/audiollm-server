@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Amphion TS-ASR Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Source+Serif+4:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="tsasr.css" />
+</head>
+<body data-page="tsasr">
+  <div class="app-shell">
+    <!-- Sidebar is injected by sidebar.js -->
+    <main class="app-main">
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Target-Speaker ASR</h1>
+          <p class="page-sub">Enroll a voice once, then transcribe only that speaker amid overlapping audio.</p>
+        </div>
+      </header>
+
+      <div class="page-content">
+        <div class="flex-1 min-h-0 flex flex-col lg:flex-row gap-5">
+          <section class="flex-1 min-h-0 flex flex-col">
+            <div id="chat-area" class="flex-1 min-h-0 overflow-y-auto pr-1 mb-4">
+              <div class="chat-row chat-row-ai chat-bubble-float">
+                <div class="flex gap-3 max-w-2xl items-start">
+                  <div class="chat-avatar flex-shrink-0">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                  </div>
+                  <div class="chat-bubble chat-bubble-ai leading-relaxed">
+                    Record a 1-5s clean sample of the target speaker first. Once enrollment is accepted, you can
+                    start speaking with any interfering audio in the background and the model will transcribe only
+                    the enrolled voice.
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex-shrink-0 flex flex-col items-center pb-4 pt-2">
+              <div class="mic-btn-wrapper">
+                <div class="pulse-ring"></div>
+                <div class="pulse-ring"></div>
+                <div class="pulse-ring"></div>
+                <button id="mic-btn" class="mic-btn" type="button" aria-label="Toggle microphone" disabled>
+                  <svg id="mic-icon" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                  </svg>
+                </button>
+              </div>
+              <p id="mic-status">Complete enrollment to enable</p>
+            </div>
+          </section>
+
+          <aside class="lg:w-[380px] xl:w-[420px] flex-shrink-0 min-h-0">
+            <div id="enroll-panel" class="paper-card p-4 h-full flex flex-col">
+              <div class="flex items-start justify-between gap-3 mb-3">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] font-semibold" style="letter-spacing:0.02em">Speaker Enrollment</span>
+                    <span id="enroll-status" class="status-pill" data-state="idle">Not recorded</span>
+                  </div>
+                  <p class="text-xs text-muted mt-1">
+                    Record 1-5 seconds of the target speaker in a quiet environment.
+                  </p>
+                </div>
+              </div>
+
+              <div id="enroll-recorder" class="mb-3">
+                <div class="flex items-center gap-2">
+                  <button id="enroll-rec-btn" class="btn-primary flex-1">
+                    <span id="enroll-rec-label">Start recording</span>
+                  </button>
+                  <button id="enroll-reset-btn" disabled class="btn-ghost">Reset</button>
+                </div>
+                <div id="enroll-progress" class="enroll-progress mt-3">
+                  <div id="enroll-progress-bar" class="enroll-progress-bar"></div>
+                </div>
+                <div class="flex items-center justify-between text-[11px] text-muted mt-1">
+                  <span id="enroll-timer">0.0s</span>
+                  <span>min 1.0s &middot; max 5.0s</span>
+                </div>
+              </div>
+
+              <audio id="enroll-preview" controls class="enroll-preview hidden" preload="metadata"></audio>
+
+              <div class="mt-3">
+                <label for="voice-traits" class="block text-[11px] text-muted mb-1">Voice traits (optional)</label>
+                <input id="voice-traits" type="text"
+                       placeholder="e.g. female, warm, mid-range"
+                       class="hotword-input w-full" />
+                <p class="text-[10px] text-faint mt-1">
+                  Free-form hint appended to the prompt before the transcribe step.
+                </p>
+              </div>
+
+              <div class="mt-3">
+                <label for="session-language" class="block text-[11px] text-muted mb-1">Language</label>
+                <select id="session-language" class="asr-lang-select w-full max-w-[220px]">
+                  <option value="">Auto</option>
+                  <option value="zh">Chinese</option>
+                  <option value="en">English</option>
+                  <option value="id">Indonesian</option>
+                  <option value="th">Thai</option>
+                </select>
+              </div>
+
+              <div class="mt-auto text-[11px] text-faint pt-4">
+                Short-term demo: model = primary ASR endpoint.
+                Prompt and optional switches (hotwords, voice traits) are expected
+                to evolve before a dedicated TS-ASR checkpoint ships.
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="sidebar.js"></script>
+  <script src="tsasr-app.js"></script>
+</body>
+</html>

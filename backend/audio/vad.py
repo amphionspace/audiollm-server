@@ -232,3 +232,65 @@ class VADProcessor:
         self.speech_count = 0
         self.is_speaking = False
         self.smoothed_prob = None
+
+
+def vad_trim_audio(
+    pcm: np.ndarray,
+    target_sec: float,
+    *,
+    sample_rate: int = SAMPLE_RATE,
+) -> np.ndarray:
+    """Keep up to ``target_sec`` of voiced audio from ``pcm`` via VAD.
+
+    The input is walked hop-by-hop through a fresh :class:`VADProcessor` and
+    each emitted speech segment is appended in order until the accumulated
+    voiced duration reaches ``target_sec``. If the clip never transitioned
+    to silence at the end (e.g. continuous speech up to the last sample),
+    the processor's internal buffer is flushed so the tail isn't dropped.
+
+    Rationale: TS-ASR enrollment only needs a few seconds of clean target
+    speech, but users often upload longer clips with leading/trailing
+    silence or a chatter preamble. Running VAD lets us throw away those
+    boring segments before we hit the ``target_sec`` cap, rather than
+    naively keeping the first N seconds (which may be silence) or the
+    last N seconds (which may be mid-word).
+
+    When VAD finds no voiced frames (e.g. extremely quiet microphone or a
+    silent file) we fall back to the leading ``target_sec`` window so the
+    caller still gets *something* to forward. The downstream duration guard
+    will then reject the clip if it's too short after the cap.
+    """
+    if pcm.size == 0:
+        return pcm.astype(np.float32, copy=False)
+    target_samples = int(target_sec * sample_rate)
+    if target_samples <= 0 or pcm.size <= target_samples:
+        return pcm.astype(np.float32, copy=False)
+
+    vad = VADProcessor(sample_rate=sample_rate)
+    hop = vad.hop_size
+    n_full = (pcm.size // hop) * hop
+
+    collected: list[np.ndarray] = []
+    accumulated = 0
+    hit_target = False
+    for i in range(0, n_full, hop):
+        seg = vad.process(pcm[i : i + hop])
+        if seg is not None:
+            collected.append(seg)
+            accumulated += seg.size
+            if accumulated >= target_samples:
+                hit_target = True
+                break
+    if not hit_target:
+        tail = vad.flush()
+        if tail is not None:
+            collected.append(tail)
+            accumulated += tail.size
+
+    if not collected:
+        return pcm[:target_samples].astype(np.float32, copy=False)
+
+    out = np.concatenate(collected)
+    if out.size > target_samples:
+        out = out[:target_samples]
+    return out.astype(np.float32, copy=False)

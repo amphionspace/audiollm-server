@@ -77,13 +77,14 @@
   }
 
   // --- DOM refs ---
+  // --- Status pill class tokens (paper theme) ---
+  const SYNC_PILL_BASE = 'status-pill';
+
   const micBtn = document.getElementById('mic-btn');
   const micIcon = document.getElementById('mic-icon');
   const micStatus = document.getElementById('mic-status');
   const pulseRings = document.querySelectorAll('.pulse-ring');
   const chatArea = document.getElementById('chat-area');
-  const connDot = document.getElementById('conn-dot');
-  const connLabel = document.getElementById('conn-label');
   const hotwordInput = document.getElementById('hotword-input');
   const hotwordAddBtn = document.getElementById('hotword-add-btn');
   const hotwordList = document.getElementById('hotword-list');
@@ -116,12 +117,10 @@
     hotwordList.innerHTML = '';
     hotwords.forEach((word, idx) => {
       const tag = document.createElement('span');
-      tag.className =
-        'inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm ' +
-        'bg-white/6 text-white/90 border border-white/14 backdrop-blur-sm';
+      tag.className = 'hotword-pill';
       tag.innerHTML =
         `<span>${escapeHtml(word)}</span>` +
-        `<button class="hover:text-red-400 transition-colors text-white/50 ml-0.5" data-idx="${idx}">&times;</button>`;
+        `<button data-idx="${idx}" aria-label="Remove hotword">&times;</button>`;
       tag.querySelector('button').addEventListener('click', () => removeHotword(idx));
       hotwordList.appendChild(tag);
     });
@@ -134,21 +133,19 @@
 
   function setHotwordSyncStatus(state) {
     if (!hotwordSyncStatus) return;
+    hotwordSyncStatus.className = SYNC_PILL_BASE;
     if (state === 'synced') {
       hotwordSyncStatus.textContent = hotwordEnabled ? 'Active' : 'Paused';
-      hotwordSyncStatus.className =
-        'text-[11px] px-2 py-0.5 rounded-full border border-emerald-300/35 text-emerald-200/90 bg-emerald-300/10';
+      hotwordSyncStatus.dataset.state = hotwordEnabled ? 'ready' : 'waiting';
       return;
     }
     if (state === 'offline') {
       hotwordSyncStatus.textContent = 'Offline';
-      hotwordSyncStatus.className =
-        'text-[11px] px-2 py-0.5 rounded-full border border-amber-300/35 text-amber-200/90 bg-amber-300/10';
+      hotwordSyncStatus.dataset.state = 'offline';
       return;
     }
     hotwordSyncStatus.textContent = 'Waiting';
-    hotwordSyncStatus.className =
-      'text-[11px] px-2 py-0.5 rounded-full border border-white/15 text-white/65 bg-white/6';
+    hotwordSyncStatus.dataset.state = 'waiting';
   }
 
   function syncHotwords() {
@@ -195,8 +192,6 @@
     if (!hotwordExtractBtn || !hotwordTextarea) return;
     hotwordExtractBtn.disabled = busy;
     hotwordExtractBtn.textContent = busy ? 'Extracting...' : 'Extract and Add';
-    hotwordExtractBtn.classList.toggle('opacity-60', busy);
-    hotwordExtractBtn.classList.toggle('cursor-not-allowed', busy);
     hotwordTextarea.disabled = busy;
     updateExtractButtonAttention();
   }
@@ -330,12 +325,12 @@
 
   // --- Connection status ---
   function setConnected(connected) {
-    if (connected) {
-      connDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.35)]';
-      connLabel.textContent = 'Connected';
-    } else {
-      connDot.className = 'w-2.5 h-2.5 rounded-full bg-red-400 shadow-[0_0_8px_rgba(248,113,113,0.35)]';
-      connLabel.textContent = 'Disconnected';
+    if (window.AmphionSidebar && window.AmphionSidebar.setConnectionState) {
+      if (connected) {
+        window.AmphionSidebar.setConnectionState('connected', 'Connected');
+      } else {
+        window.AmphionSidebar.setConnectionState('error', 'Disconnected');
+      }
     }
   }
 
@@ -493,9 +488,9 @@
     const hasAudio = segmentAudio.has(segId);
     const label = isPartial ? 'Speaking\u2026' : `Voice ${duration}`;
     wrapper.innerHTML = `
-      <div class="chat-bubble chat-bubble-user text-white">
+      <div class="chat-bubble chat-bubble-user">
         <div class="flex items-center gap-2">
-          <svg class="w-4 h-4 text-white/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
           </svg>
@@ -552,7 +547,7 @@
     let bars = '';
     for (let i = 0; i < 20; i++) {
       const h = 4 + Math.random() * 12;
-      bars += `<div class="w-1 rounded-full bg-white/50" style="height:${h}px"></div>`;
+      bars += `<div class="waveform-bar" style="height:${h}px"></div>`;
     }
     return bars;
   }
@@ -565,12 +560,12 @@
     wrapper.innerHTML = `
       <div class="flex gap-3 max-w-2xl items-start">
         <div class="chat-avatar flex-shrink-0">
-          <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                   d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
           </svg>
         </div>
-        <div class="chat-bubble chat-bubble-ai ai-processing text-white/90 ai-content">
+        <div class="chat-bubble chat-bubble-ai ai-processing ai-content">
           <div class="shimmer-lines">
             <div class="shimmer-line w-48 h-3 mb-2"></div>
             <div class="shimmer-line w-36 h-3 mb-2"></div>
@@ -622,11 +617,12 @@
       meta && typeof meta.similarity === 'number' ? String(meta.similarity) : '-';
 
     return `
-      <div class="mt-3 rounded-lg border border-white/12 bg-black/20 p-2 text-xs text-white/70 space-y-1">
-        <div class="text-[11px] text-white/50">DEBUG Dual ASR</div>
-        <div><span class="text-white/50">Primary:</span> ${escapeHtml(primary)}</div>
-        <div><span class="text-white/50">Secondary:</span> ${escapeHtml(secondary)}</div>
-        <div><span class="text-white/50">Selected:</span> ${selected} | <span class="text-white/50">Reason:</span> ${reason} | <span class="text-white/50">Sim:</span> ${similarity}</div>
+      <div class="mt-3 rounded-lg border p-2 text-xs space-y-1"
+           style="border-color:var(--line); background:var(--paper-sunk); color:var(--ink-mute)">
+        <div class="text-[11px] text-faint">DEBUG Dual ASR</div>
+        <div><span class="text-faint">Primary:</span> ${escapeHtml(primary)}</div>
+        <div><span class="text-faint">Secondary:</span> ${escapeHtml(secondary)}</div>
+        <div><span class="text-faint">Selected:</span> ${selected} | <span class="text-faint">Reason:</span> ${reason} | <span class="text-faint">Sim:</span> ${similarity}</div>
       </div>
     `;
   }
@@ -667,8 +663,8 @@
 
     if (status === 'streaming') {
       content.classList.remove('ai-processing');
-      content.innerHTML = `<p class="text-sm leading-relaxed text-white/80">${escapeHtml(text || '')}</p>
-        <div class="text-[11px] text-white/35 mt-1">Listening\u2026</div>`;
+      content.innerHTML = `<p class="text-sm leading-relaxed">${escapeHtml(text || '')}</p>
+        <div class="text-[11px] text-faint mt-1">Listening\u2026</div>`;
       scrollChatToBottom();
       return;
     } else if (status === 'processing') {
@@ -679,7 +675,7 @@
           <div class="shimmer-line w-36 h-3 mb-2"></div>
           <div class="shimmer-line w-24 h-3"></div>
         </div>
-        <div class="text-xs text-white/40 mt-2">Processing...</div>
+        <div class="text-xs text-faint mt-2">Processing...</div>
       `;
     } else if (status === 'done') {
       content.classList.remove('ai-processing');
@@ -696,14 +692,14 @@
       }
       const hitMeta =
         highlighted.count > 0
-          ? `<div class="text-[11px] text-sky-200/85 mt-2 stream-meta">Hotword hits: ${highlighted.count}</div>`
+          ? `<div class="text-[11px] mt-2 stream-meta" style="color:var(--accent-deep)">Hotword hits: ${highlighted.count}</div>`
           : '';
       const langDetectedMeta =
         debugInfo &&
         debugInfo.srcLangDetected &&
         srcLangUi === 'auto' &&
         String(debugInfo.srcLangDetected).trim()
-          ? `<div class="text-[11px] text-violet-200/80 mt-2 stream-meta">Detected language: ${escapeHtml(String(debugInfo.srcLangDetected).trim())}</div>`
+          ? `<div class="text-[11px] mt-2 stream-meta" style="color:var(--info)">Detected language: ${escapeHtml(String(debugInfo.srcLangDetected).trim())}</div>`
           : '';
       const debugBlock = renderDualAsrDebug(debugInfo);
 
@@ -719,7 +715,7 @@
       }
     } else if (status === 'error') {
       content.classList.remove('ai-processing');
-      content.innerHTML = `<p class="text-sm text-red-400">${escapeHtml(text)}</p>`;
+      content.innerHTML = `<p class="text-sm" style="color:var(--danger)">${escapeHtml(text)}</p>`;
     }
 
     scrollChatToBottom();

@@ -13,13 +13,17 @@ if [ ! -f cert.pem ] || [ ! -f key.pem ]; then
     echo "Certificate generated: cert.pem / key.pem"
 fi
 
+HOST_IP="${HOST_IP:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
+HOST_IP="${HOST_IP:-localhost}"
+
 echo ""
 echo "======================================"
 echo "  AudioLLM Server"
 echo "  https://0.0.0.0:${PORT}"
 echo "======================================"
 echo ""
-echo "  Open in browser:  https://<your-server-ip>:${PORT}"
+echo "  Open in browser:  https://${HOST_IP}:${PORT}"
+echo "                    https://localhost:${PORT}  (on this machine)"
 echo "  First visit: click 'Advanced' -> 'Proceed' to accept self-signed cert"
 echo ""
 
