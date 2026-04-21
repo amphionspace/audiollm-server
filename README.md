@@ -5,7 +5,7 @@
 基于 [Amphion](https://github.com/open-mmlab/Amphion) (vLLM) 的实时语音多任务 Demo，集成 TEN VAD 语音端点检测。
 支持三类任务：
 
-- 实时语音转写（双 ASR 模型 Amphion + Qwen 并行推理 + 归一化质量评估 + 风险感知融合）
+- 实时语音转写（双 ASR 模型 Amphion + Qwen 并行推理 + 归一化质量评估 + 风险感知融合，可选在每条转写旁附上情感/语气）
 - 目标说话人识别（TS-ASR，注册音频 + 混合音频双路推理，附带二级语音存在性门控）
 - 情感识别（SER 8 分类 / SEC 自由文本描述，整段语音推理）
 
@@ -41,7 +41,7 @@ bash start.sh
 
 | 页面 | 路径 | 说明 |
 |---|---|---|
-| 实时语音转写 | / 或 /index.html | 双 ASR 模型并行 + 融合 |
+| 实时语音转写 | / 或 /index.html | 双 ASR 模型并行 + 融合；右侧面板可开启"情感识别"开关，在每条 final 转写下附上情绪与语气 |
 | 目标说话人识别 | /tsasr.html | 录入注册音频后只识别该说话人 |
 | 情感识别 | /emotion.html | 整段语音 SER / SEC |
 
@@ -76,12 +76,37 @@ graph LR
 
 | 端点 | 任务 | VAD | 输出 | 协议文档 |
 |---|---|---|---|---|
-| `/ws/audio` | 浏览器 Demo（ASR + 双模型调试视图） | 是 | response / partial_transcript | 见前端代码 |
+| `/ws/audio` | 浏览器 Demo（ASR + 双模型调试视图 + 可选情感） | 是 | response / partial_transcript，可选 response.emotion（SER 标签 + SEC 描述） | 见前端代码 |
 | `/transcribe-streaming` | 个性化语音识别 | 是 | partial / final（每段语音一条） | [docs/transcribe-streaming-protocol.md](docs/transcribe-streaming-protocol.md) |
 | `/transcribe-target-streaming` | 目标说话人识别（TS-ASR，注册音频 + 混合音频） | 是 | enrollment_ok / final（每段语音一条） | [docs/tsasr.md](docs/tsasr.md) |
 | `/emotion-streaming` | 整段情感识别（SER 8 分类 / SEC 自由描述） | 否 | final_emotion（每个 start/stop 周期一条） | [docs/emotion-streaming-protocol.md](docs/emotion-streaming-protocol.md) |
 
 新增任务的命名约定：每个任务一个独立 WebSocket 端点（`/<task>-streaming`），共享同一套 `start` / `stop` / `update_hotwords` 控制消息与 `config` 覆写机制；任务专属字段（如 ASR 的 `language`/`hotwords`、情感的输出标签集）只出现在对应端点的协议文档中。
+
+### `/ws/audio` 的情感开关
+
+浏览器 Demo 右侧面板有一个"情感识别"开关，开启后后端会为每个 final 片段并行跑一次 SER 与一次 SEC，并把结果挂到既有的 `response` 消息上：
+
+```json
+{
+  "type": "response",
+  "id": "seg-...",
+  "text": "转写文本",
+  "emotion": {
+    "ser_label": "Happy",
+    "sec_text":  "轻快、略带笑意的语气",
+    "sec_label": "Happy"
+  }
+}
+```
+
+前端对应的控制消息：
+
+```json
+{"type": "update_emotion", "enabled": true}
+```
+
+也兼容在 `update_hotwords` 里直接携带可选的 `enable_emotion: true/false`。情感推理超时或失败时 `emotion` 字段会被整体省略，不影响 ASR 结果照常返回。
 
 ### `/transcribe-streaming` 协议
 
@@ -210,6 +235,20 @@ MODEL_PATH=/path/to/Amphion-3B bash scripts/start_vllm_amphion.sh
 ```bash
 MODEL_PATH=/path/to/Qwen3-ASR-1.7B bash scripts/start_vllm_qwen.sh
 ```
+
+---
+
+## 运维脚本
+
+如果你通过 systemd（服务名默认 `audiollm-demo`）部署本服务，可以用 `scripts/restart_service.sh` 一键重启并查看日志，改完后端代码后无需手动敲 `systemctl`：
+
+```bash
+scripts/restart_service.sh            # 重启并打印最近 30 行日志
+scripts/restart_service.sh -f         # 重启并实时跟随日志（Ctrl+C 退出）
+SERVICE=my-demo scripts/restart_service.sh   # 指定其他 systemd 服务名
+```
+
+脚本会自动检测是否需要 `sudo`、校验 `systemctl is-active` 状态，并在启动失败时打印近 50 行错误日志后以非零码退出。
 
 ---
 
