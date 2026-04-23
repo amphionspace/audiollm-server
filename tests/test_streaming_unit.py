@@ -133,6 +133,26 @@ def test_vad_segmented_stream_flush_returns_nothing_when_silent():
     assert list(stream.flush(force=True)) == []
 
 
+def test_vad_segmented_stream_partial_override_disables_snapshots():
+    """``enable_partial=False`` must keep partials off even if cfg says yes."""
+    cfg = load_config().override(enable_pseudo_stream=True)
+    stream = VadSegmentedStream(enable_partial=False)
+    stream.configure(cfg)
+    assert stream._enable_partial is False
+
+
+def test_vad_segmented_stream_partial_default_follows_cfg():
+    cfg_on = load_config().override(enable_pseudo_stream=True)
+    s_on = VadSegmentedStream()
+    s_on.configure(cfg_on)
+    assert s_on._enable_partial is True
+
+    cfg_off = load_config().override(enable_pseudo_stream=False)
+    s_off = VadSegmentedStream()
+    s_off.configure(cfg_off)
+    assert s_off._enable_partial is False
+
+
 # ---------------------------------------------------------------------------
 # Session tests with a fake engine
 # ---------------------------------------------------------------------------
@@ -391,6 +411,65 @@ async def test_emotion_engine_on_stop_emits_empty_when_no_audio():
         "text": "",
         "duration_sec": 0.0,
     }
+
+
+@pytest.mark.asyncio
+async def test_emotion_engine_streaming_mode_skips_empty_fallback():
+    """In segmented streaming mode, a silent session must not emit a final."""
+    sent: list[dict] = []
+
+    async def _send_json(payload):
+        sent.append(payload)
+        return True
+
+    cfg = load_config()
+    ctx = SessionContext(cfg=cfg, send_json=_send_json)
+    engine = EmotionTaskEngine(streaming=True)
+    await engine.on_start({"type": "start", "mode": "ser"}, ctx)
+    await engine.on_stop(ctx, sent_any_response=False, stopped=True)
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_emotion_engine_streaming_mode_emits_per_segment(monkeypatch):
+    """Each VAD segment should produce its own final_emotion in streaming mode."""
+    sent: list[dict] = []
+
+    async def _send_json(payload):
+        sent.append(payload)
+        return True
+
+    cfg = load_config()
+    ctx = SessionContext(cfg=cfg, language="zh", src_lang="Chinese", send_json=_send_json)
+
+    call_count = {"n": 0}
+
+    async def _fake_query(audio_wav_base64, *, mode="ser", base_url=None, model_name=None, timeout=None, max_tokens=None):
+        call_count["n"] += 1
+        return {
+            "mode": mode,
+            "label": "Happy" if call_count["n"] == 1 else "Sad",
+            "text": "Happy" if call_count["n"] == 1 else "Sad",
+            "raw_text": "",
+        }
+
+    monkeypatch.setattr("backend.tasks.emotion.query_emotion_model", _fake_query)
+
+    engine = EmotionTaskEngine(streaming=True)
+    await engine.on_start({"type": "start", "mode": "ser"}, ctx)
+
+    seg1 = SegmentReady(pcm=np.zeros(8000, dtype=np.float32))
+    seg2 = SegmentReady(pcm=np.zeros(16000, dtype=np.float32), is_stop_flush=True)
+    assert await engine.handle_segment(seg1, ctx) is True
+    assert await engine.handle_segment(seg2, ctx) is True
+    # Streaming on_stop must NOT add a synthetic empty final since segments
+    # were already sent.
+    await engine.on_stop(ctx, sent_any_response=True, stopped=True)
+
+    assert [m["type"] for m in sent] == ["final_emotion", "final_emotion"]
+    assert sent[0]["label"] == "Happy"
+    assert sent[1]["label"] == "Sad"
+    assert sent[0]["language"] == "zh"
 
 
 @pytest.mark.asyncio

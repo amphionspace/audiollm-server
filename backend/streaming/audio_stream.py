@@ -60,22 +60,30 @@ class VadSegmentedStream:
     still speaking.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, enable_partial: bool | None = None) -> None:
         self.vad = VADProcessor()
         self._pcm_carry: np.ndarray = np.empty(0, dtype=np.float32)
         self._cfg: Config | None = None
         self._partial_interval: float = 0.5
         self._last_partial_time: float = 0.0
+        # ``None`` means "follow cfg.enable_pseudo_stream"; callers that know
+        # their downstream engine doesn't consume partials (e.g. emotion) can
+        # pass ``False`` to skip the snapshot bookkeeping entirely regardless
+        # of how the deployment toggles pseudo-stream globally.
+        self._partial_override: bool | None = enable_partial
         self._enable_partial: bool = True
 
     def configure(self, cfg: Config) -> None:
         self._cfg = cfg
         self._partial_interval = cfg.pseudo_stream_interval_ms / 1000.0
-        # Partial snapshots only make sense if at least one ASR engine is on
-        # AND pseudo-stream is enabled. Higher-level engines may further
-        # suppress partials, but a stream that knows nothing about engines
-        # uses the conservative default.
-        self._enable_partial = bool(cfg.enable_pseudo_stream)
+        if self._partial_override is None:
+            # Partial snapshots only make sense if at least one ASR engine is
+            # on AND pseudo-stream is enabled. Higher-level engines may further
+            # suppress partials, but a stream that knows nothing about engines
+            # uses the conservative default.
+            self._enable_partial = bool(cfg.enable_pseudo_stream)
+        else:
+            self._enable_partial = self._partial_override
 
     @property
     def cfg(self) -> Config:

@@ -72,6 +72,23 @@
   const resultBox = document.getElementById('emotion-result');
   const historyList = document.getElementById('emotion-history');
   const historyClear = document.getElementById('emotion-history-clear');
+  const uploadBtn = document.getElementById('upload-btn');
+  const uploadBtnLabel = uploadBtn ? uploadBtn.querySelector('.btn-upload-label') : null;
+  const uploadInput = document.getElementById('upload-input');
+  const uploadStatus = document.getElementById('upload-status');
+
+  // Upload state. The upload path is now a one-shot REST POST against
+  // /api/emotion/upload, so all we track is whether one is in flight (to
+  // gate the mic button) plus the dynamic status text for re-rendering.
+  let isUploading = false;
+  let uploadController = null;     // AbortController for in-flight fetch
+  let currentUploadDyn = null;     // { key, vars } | null when hidden
+  const EMOTION_UPLOAD_SAMPLE_RATE = 16000;
+  // Server caps emotion uploads at emotion_max_audio_seconds (default 20s,
+  // tail-trimmed). We give the client a slightly more generous ceiling and
+  // let the server do the final trim — the user-visible behaviour matches
+  // what the live mic flow has always done.
+  const EMOTION_UPLOAD_MAX_SECONDS = 60;
 
   if (!btn || !btnText || !statusBadge || !modeSelect || !resultBox) {
     return;
@@ -502,7 +519,144 @@
     }
   }
 
+  // --- Upload flow ----------------------------------------------------------
+
+  function setUploadStatus(state, key, vars) {
+    if (!uploadStatus) return;
+    if (!key) {
+      uploadStatus.hidden = true;
+      uploadStatus.textContent = '';
+      uploadStatus.removeAttribute('data-state');
+      currentUploadDyn = null;
+      return;
+    }
+    uploadStatus.hidden = false;
+    uploadStatus.dataset.state = state || 'info';
+    currentUploadDyn = { key, vars: vars || null };
+    uploadStatus.textContent = t(key, vars || undefined);
+  }
+
+  function setUploadBusy(busy) {
+    isUploading = busy;
+    if (uploadBtn) {
+      uploadBtn.disabled = busy;
+    }
+    if (uploadBtnLabel) {
+      uploadBtnLabel.textContent = t(busy ? 'emotion.upload.uploading' : 'emotion.upload.label');
+    }
+    btn.disabled = busy || isRecording || awaitingFinal;
+  }
+
+  async function handleUploadFile(file) {
+    if (!file) return;
+    // The live mic flow shares the result panel and idle-release timer; we
+    // refuse uploads while either is active so the two flows can't fight
+    // for the same UI slot.
+    if (isRecording || awaitingFinal || ws || isUploading) {
+      setUploadStatus('error', 'emotion.upload.error.busy');
+      return;
+    }
+    const upload = window.AmphionAudioUpload;
+    if (!upload) {
+      setUploadStatus('error', 'emotion.upload.error.unsupported');
+      return;
+    }
+
+    setUploadBusy(true);
+    setUploadStatus('info', 'emotion.upload.decoding');
+
+    let decoded;
+    try {
+      decoded = await upload.decodeFileToWavBytes(file, EMOTION_UPLOAD_SAMPLE_RATE);
+    } catch (err) {
+      console.error('Upload decode failed:', err);
+      setUploadBusy(false);
+      setUploadStatus('error', 'emotion.upload.error.decode');
+      return;
+    }
+    if (!decoded || !decoded.wav || !decoded.pcm.length) {
+      setUploadBusy(false);
+      setUploadStatus('error', 'emotion.upload.error.empty');
+      return;
+    }
+
+    let pcm = decoded.pcm;
+    let wavBytes = decoded.wav;
+    const totalSec = pcm.length / EMOTION_UPLOAD_SAMPLE_RATE;
+    let trimmedNote = null;
+    if (totalSec > EMOTION_UPLOAD_MAX_SECONDS) {
+      pcm = new Float32Array(
+        pcm.subarray(0, Math.floor(EMOTION_UPLOAD_MAX_SECONDS * EMOTION_UPLOAD_SAMPLE_RATE))
+      );
+      wavBytes = upload.encodeWavBytes(pcm, EMOTION_UPLOAD_SAMPLE_RATE);
+      trimmedNote = totalSec.toFixed(1);
+    }
+
+    // Use the existing "analyzing" placeholders so the result panel is
+    // visually consistent with the live-mic flow.
+    setStatus('analyzing', 'emotion.status.analyzing');
+    setUploadStatus('info', 'emotion.upload.analyzing');
+    currentResult = { kind: 'placeholder', key: 'emotion.result.analyzing' };
+    resultBox.innerHTML =
+      '<span class="text-faint">' + escapeHtml(t('emotion.result.analyzing')) + '</span>';
+
+    uploadController = new AbortController();
+    let result;
+    try {
+      result = await upload.postWavToEndpoint(
+        '/api/emotion/upload',
+        wavBytes,
+        { mode: modeSelect.value || 'ser' },
+        { signal: uploadController.signal, fileName: file.name || 'upload.wav' }
+      );
+    } catch (err) {
+      console.error('Upload request failed:', err);
+      uploadController = null;
+      setUploadBusy(false);
+      const aborted = err && err.name === 'AbortError';
+      const msg = err && err.message ? err.message : 'Upload failed';
+      finishSession({
+        reasonKey: aborted ? 'emotion.upload.aborted' : 'emotion.error.serverPrefix',
+        reasonVars: aborted ? null : { msg },
+        state: 'error',
+        labelKey: 'emotion.status.error',
+      });
+      setUploadStatus(aborted ? 'info' : 'error',
+        aborted ? 'emotion.upload.aborted' : 'emotion.upload.error.serverPrefix',
+        aborted ? null : { msg });
+      return;
+    }
+    uploadController = null;
+
+    renderResult(result);
+    pushHistory(result);
+    setStatus('done', 'emotion.status.done');
+    setIdleStatus();
+    setUploadBusy(false);
+    if (trimmedNote !== null) {
+      setUploadStatus('warn', 'emotion.upload.trimmed', {
+        max: EMOTION_UPLOAD_MAX_SECONDS,
+        actual: trimmedNote,
+      });
+    } else {
+      setUploadStatus('success', 'emotion.upload.done');
+    }
+  }
+
+  if (uploadBtn && uploadInput) {
+    uploadBtn.addEventListener('click', () => {
+      if (isUploading || isRecording || awaitingFinal) return;
+      uploadInput.value = '';
+      uploadInput.click();
+    });
+    uploadInput.addEventListener('change', () => {
+      const file = uploadInput.files && uploadInput.files[0];
+      if (file) handleUploadFile(file);
+    });
+  }
+
   btn.addEventListener('click', () => {
+    if (isUploading) return;
     if (isRecording) {
       stop();
     } else if (!awaitingFinal && !ws) {
@@ -537,6 +691,12 @@
       renderResult(lastFinalData);
     }
     renderHistory();
+    if (uploadBtnLabel) {
+      uploadBtnLabel.textContent = t(isUploading ? 'emotion.upload.uploading' : 'emotion.upload.label');
+    }
+    if (currentUploadDyn && uploadStatus) {
+      uploadStatus.textContent = t(currentUploadDyn.key, currentUploadDyn.vars || undefined);
+    }
   });
 
   setButton('idle');

@@ -72,7 +72,7 @@ graph LR
 
 ## WebSocket 接口
 
-服务暴露四个 WebSocket 端点，按任务一类一个：
+服务暴露五个 WebSocket 端点，按任务一类一个：
 
 | 端点 | 任务 | VAD | 输出 | 协议文档 |
 |---|---|---|---|---|
@@ -80,6 +80,7 @@ graph LR
 | `/transcribe-streaming` | 个性化语音识别 | 是 | partial / final（每段语音一条） | [docs/transcribe-streaming-protocol.md](docs/transcribe-streaming-protocol.md) |
 | `/transcribe-target-streaming` | 目标说话人识别（TS-ASR，注册音频 + 混合音频） | 是 | enrollment_ok / final（每段语音一条） | [docs/tsasr.md](docs/tsasr.md) |
 | `/emotion-streaming` | 整段情感识别（SER 8 分类 / SEC 自由描述） | 否 | final_emotion（每个 start/stop 周期一条） | [docs/emotion-streaming-protocol.md](docs/emotion-streaming-protocol.md) |
+| `/emotion-segmented-streaming` | 按段流式情感识别（同模型，逐段返回） | 是 | final_emotion（每个 VAD 段一条） | [docs/emotion-segmented-streaming-protocol.md](docs/emotion-segmented-streaming-protocol.md) |
 
 新增任务的命名约定：每个任务一个独立 WebSocket 端点（`/<task>-streaming`），共享同一套 `start` / `stop` / `update_hotwords` 控制消息与 `config` 覆写机制；任务专属字段（如 ASR 的 `language`/`hotwords`、情感的输出标签集）只出现在对应端点的协议文档中。
 

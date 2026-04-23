@@ -1257,3 +1257,88 @@ button {
     height: 60px;
   }
 }
+
+/* -------------------- Upload audio file -------------------- */
+.upload-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 100%;
+}
+
+.btn-upload {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--paper-elev);
+  color: var(--ink-mute);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    transform 0.12s ease;
+}
+
+.btn-upload:hover:not(:disabled) {
+  background: var(--paper-sunk);
+  border-color: var(--ink-faint);
+  color: var(--ink);
+}
+
+.btn-upload:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn-upload:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-upload .upload-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.btn-upload .btn-upload-label {
+  display: inline-block;
+}
+
+.enroll-upload-row {
+  margin-top: 8px;
+  justify-content: flex-start;
+}
+
+.upload-status {
+  font-size: 11.5px;
+  color: var(--ink-mute);
+  letter-spacing: 0.01em;
+  max-width: 260px;
+  text-align: center;
+}
+
+.upload-status[data-state="info"] {
+  color: var(--ink-mute);
+}
+
+.upload-status[data-state="warn"] {
+  color: var(--accent-deep, #b07d2a);
+}
+
+.upload-status[data-state="success"] {
+  color: var(--info, #4a7c59);
+}
+
+.upload-status[data-state="error"] {
+  color: var(--danger, #b4504a);
+}

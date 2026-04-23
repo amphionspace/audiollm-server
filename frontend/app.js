@@ -108,6 +108,23 @@
   const asrLangSelect = document.getElementById('asr-lang-select');
   const emotionToggle = document.getElementById('emotion-toggle');
   const emotionToggleLabel = document.getElementById('emotion-toggle-label');
+  const uploadBtn = document.getElementById('upload-btn');
+  const uploadBtnLabel = uploadBtn ? uploadBtn.querySelector('.btn-upload-label') : null;
+  const uploadInput = document.getElementById('upload-input');
+  const uploadStatus = document.getElementById('upload-status');
+
+  // Upload state. The upload path is a one-shot REST POST against
+  // /api/asr/upload, so all we need to track is whether one is in flight
+  // (to gate the mic button) plus the latest status text for re-rendering
+  // on language switches.
+  let isUploading = false;
+  let uploadController = null;     // AbortController for in-flight fetch
+  let currentUploadDyn = null;     // { key, vars } | null when hidden
+  // Server caps ASR uploads at 60s (matches _ASR_MAX_SECONDS in main.py),
+  // and the model itself was trained on 16 kHz mono — encoding to that
+  // up-front saves the server a resample.
+  const ASR_UPLOAD_SAMPLE_RATE = 16000;
+  const ASR_UPLOAD_MAX_SECONDS = 60;
 
   // --- Dynamic translation helpers ---
   function setDynText(el, key, vars) {
@@ -424,6 +441,8 @@
         setExtractBusy(false);
         setExtractStatus('error', 'asr.extract.connClosed');
       }
+      // The upload path is REST and not bound to the WS lifecycle, so
+      // there is nothing to clean up here for it.
       stopRecording();
       setTimeout(connectWS, 2000);
     };
@@ -948,12 +967,175 @@
   }
 
   micBtn.addEventListener('click', () => {
+    if (isUploading) return;
     if (isRecording) {
       stopRecording();
     } else {
       startRecording();
     }
   });
+
+  // --- Upload local audio file ---
+  // The upload button hits POST /api/asr/upload; the response is a single
+  // {text, language} payload that we render as one synthetic user/AI bubble
+  // pair (ids namespaced as "upload-N" so they never collide with VAD ids
+  // like "seg-3f9a-1").
+
+  let uploadCounter = 0;
+
+  function setUploadStatus(state, key, vars) {
+    if (!uploadStatus) return;
+    if (!key) {
+      uploadStatus.hidden = true;
+      uploadStatus.textContent = '';
+      uploadStatus.removeAttribute('data-state');
+      currentUploadDyn = null;
+      return;
+    }
+    uploadStatus.hidden = false;
+    uploadStatus.dataset.state = state || 'info';
+    currentUploadDyn = { key, vars: vars || null };
+    uploadStatus.textContent = t(key, vars || undefined);
+  }
+
+  function setUploadBusy(busy) {
+    isUploading = busy;
+    if (uploadBtn) {
+      uploadBtn.disabled = busy;
+    }
+    if (uploadBtnLabel) {
+      setDynText(uploadBtnLabel, busy ? 'asr.upload.uploading' : 'asr.upload.label');
+    }
+    if (micBtn) {
+      micBtn.disabled = busy || isRecording;
+    }
+  }
+
+  async function handleUploadFile(file) {
+    if (!file) return;
+    if (isRecording) {
+      alert(t('asr.upload.error.busyRecording'));
+      return;
+    }
+    if (isUploading) return;
+
+    const upload = window.AmphionAudioUpload;
+    if (!upload) {
+      setUploadStatus('error', 'asr.upload.error.unsupported');
+      return;
+    }
+
+    setUploadBusy(true);
+    setUploadStatus('info', 'asr.upload.decoding');
+
+    let decoded;
+    try {
+      decoded = await upload.decodeFileToWavBytes(file, ASR_UPLOAD_SAMPLE_RATE);
+    } catch (err) {
+      console.error('Upload decode failed:', err);
+      setUploadBusy(false);
+      setUploadStatus('error', 'asr.upload.error.decode');
+      return;
+    }
+    if (!decoded || !decoded.wav || !decoded.pcm.length) {
+      setUploadBusy(false);
+      setUploadStatus('error', 'asr.upload.error.empty');
+      return;
+    }
+
+    let pcm = decoded.pcm;
+    let wavBytes = decoded.wav;
+    const totalSec = pcm.length / ASR_UPLOAD_SAMPLE_RATE;
+    let trimmedNote = null;
+    if (totalSec > ASR_UPLOAD_MAX_SECONDS) {
+      // Match the server-side cap up-front so progress text matches what
+      // the model actually transcribes; otherwise we'd display "60s sent"
+      // for a 90s file and confuse the user when only the trailing window
+      // came back transcribed.
+      pcm = new Float32Array(
+        pcm.subarray(0, Math.floor(ASR_UPLOAD_MAX_SECONDS * ASR_UPLOAD_SAMPLE_RATE))
+      );
+      wavBytes = upload.encodeWavBytes(pcm, ASR_UPLOAD_SAMPLE_RATE);
+      trimmedNote = totalSec.toFixed(1);
+    }
+
+    // Stage a chat row pair so the user sees their upload appear in the
+    // transcript stream while the server is thinking. The id namespace
+    // mirrors what `vad_event` would have produced.
+    uploadCounter += 1;
+    const segId = `upload-${uploadCounter}`;
+    const audioB64 = upload.bytesToBase64(wavBytes);
+    segmentAudio.set(segId, b64ToWavBlobUrl(audioB64));
+    addUserBubble(segId, `${(pcm.length / ASR_UPLOAD_SAMPLE_RATE).toFixed(1)}s`);
+    addAIBubble(segId);
+    updateAIBubble(segId, null, 'processing');
+
+    setUploadStatus('info', 'asr.upload.analyzing', {
+      sec: (pcm.length / ASR_UPLOAD_SAMPLE_RATE).toFixed(1),
+    });
+
+    uploadController = new AbortController();
+    const startedAt = performance.now();
+    let result;
+    try {
+      result = await upload.postWavToEndpoint(
+        '/api/asr/upload',
+        wavBytes,
+        {
+          language: apiLangFromUi(srcLangUi) || '',
+          hotwords: (hotwords || []).join(','),
+        },
+        { signal: uploadController.signal, fileName: file.name || 'upload.wav' }
+      );
+    } catch (err) {
+      console.error('Upload request failed:', err);
+      // Replace the "thinking" bubble with an error so the row is not left
+      // hanging in a perpetually-spinning state.
+      updateAIBubble(segId, err.message || 'Upload failed', 'error');
+      setUploadBusy(false);
+      uploadController = null;
+      const key = err && err.name === 'AbortError'
+        ? 'asr.upload.aborted'
+        : 'asr.upload.error.request';
+      setUploadStatus(err && err.name === 'AbortError' ? 'info' : 'error', key);
+      return;
+    }
+    uploadController = null;
+
+    const text = (result && result.text) || '';
+    updateAIBubble(segId, text, 'done', undefined, {
+      srcLangDetected: result && result.language,
+    });
+
+    const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
+    setUploadBusy(false);
+    if (trimmedNote !== null) {
+      setUploadStatus('warn', 'asr.upload.trimmed', {
+        max: ASR_UPLOAD_MAX_SECONDS,
+        actual: trimmedNote,
+      });
+    } else {
+      setUploadStatus('success', 'asr.upload.done', { elapsed });
+    }
+  }
+
+  if (uploadBtn && uploadInput) {
+    uploadBtn.addEventListener('click', () => {
+      if (isUploading) return;
+      if (isRecording) {
+        alert(t('asr.upload.error.busyRecording'));
+        return;
+      }
+      uploadInput.value = '';
+      uploadInput.click();
+    });
+    uploadInput.addEventListener('change', () => {
+      const file = uploadInput.files && uploadInput.files[0];
+      if (file) {
+        handleUploadFile(file);
+      }
+    });
+  }
 
   // --- Utilities ---
   function escapeHtml(text) {
@@ -1028,6 +1210,12 @@
       setDynText(micStatus, 'asr.mic.start');
     } else {
       setDynText(micStatus, 'asr.mic.listening');
+    }
+    if (uploadBtnLabel) {
+      setDynText(uploadBtnLabel, isUploading ? 'asr.upload.uploading' : 'asr.upload.label');
+    }
+    if (currentUploadDyn && uploadStatus) {
+      uploadStatus.textContent = t(currentUploadDyn.key, currentUploadDyn.vars || undefined);
     }
     applyDyn(document);
   });

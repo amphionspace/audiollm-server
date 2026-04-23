@@ -4,6 +4,8 @@
 
 `/emotion-streaming` 是面向上游服务的「整段音频情感识别」WebSocket 接口。客户端持续推送一段语音的 PCM 数据，服务端在收到 `stop` 后对完整片段做一次情感推理，返回一条 `final_emotion`。
 
+> 需要按 VAD 切段、长录音内多次返回情感判断的场景，请使用按段流式版本 [`/emotion-segmented-streaming`](emotion-segmented-streaming-protocol.md)。两个端点共享同一套底层模型与 prompt，仅切段策略与 final_emotion 节奏不同。
+
 底层模型与 prompt 与 AmphionASR 项目的多任务模型对齐，支持两种任务变体：
 
 | 模式 | 训练 prompt | 输出形态 |

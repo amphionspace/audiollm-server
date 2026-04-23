@@ -16,6 +16,7 @@ dependencies = [
     "fastapi",
     "httpx",
     "numpy",
+    "python-multipart",
     "ten-vad",
     "uvicorn[standard]",
 ]

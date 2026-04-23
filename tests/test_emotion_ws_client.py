@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""WebSocket test client for /emotion-streaming endpoint.
+"""WebSocket test client for /emotion-streaming and /emotion-segmented-streaming.
 
-Sends an entire audio file through the WS, then `stop`, and prints the
-single ``final_emotion`` reply.
+Sends an entire audio file through the WS, then ``stop``. With the default
+URL (``/emotion-streaming``) the server replies with one ``final_emotion``
+and the client returns. When pointed at ``/emotion-segmented-streaming``
+(via ``--url`` or ``--segmented``) the client keeps receiving until the
+server closes the connection, so it can print every per-segment
+``final_emotion``.
 
 Usage:
     python test_emotion_ws_client.py <audio_file> [--url URL] [--chunk-ms MS] [--config K=V ...]
@@ -11,6 +15,9 @@ Examples:
     python test_emotion_ws_client.py audio.wav
     python test_emotion_ws_client.py raw.pcm --chunk-ms 80
     python test_emotion_ws_client.py audio.wav --config emotion_request_timeout=20
+    python test_emotion_ws_client.py audio.wav --segmented
+    python test_emotion_ws_client.py audio.wav \
+        --url wss://localhost:8443/emotion-segmented-streaming
 """
 
 import argparse
@@ -87,7 +94,8 @@ def _parse_config_value(v: str) -> object:
 
 
 async def run_client(url: str, audio_file: str, chunk_ms: int, mode: str | None,
-                     config_overrides: dict | None = None):
+                     config_overrides: dict | None = None,
+                     segmented: bool = False):
     suffix = Path(audio_file).suffix.lower()
     print(f"Loading audio: {audio_file}")
 
@@ -113,7 +121,7 @@ async def run_client(url: str, audio_file: str, chunk_ms: int, mode: str | None,
 
     print(f"Connecting to {url} ...")
     async with websockets.connect(url, ssl=ssl_ctx) as ws:
-        recv_task = asyncio.create_task(_receive_messages(ws))
+        recv_task = asyncio.create_task(_receive_messages(ws, segmented=segmented))
 
         await asyncio.sleep(0.1)
 
@@ -157,7 +165,8 @@ async def run_client(url: str, audio_file: str, chunk_ms: int, mode: str | None,
             recv_task.cancel()
 
 
-async def _receive_messages(ws):
+async def _receive_messages(ws, *, segmented: bool = False):
+    final_count = 0
     try:
         async for raw_msg in ws:
             try:
@@ -171,28 +180,44 @@ async def _receive_messages(ws):
                 print("<- ready")
             elif msg_type == "final_emotion":
                 mode = msg.get("mode", "?")
+                final_count += 1
+                tag = f"#{final_count} " if segmented else ""
                 if mode == "sec":
-                    print(f"<- FINAL_EMOTION[sec]: label={msg.get('label')!r} "
+                    print(f"<- {tag}FINAL_EMOTION[sec]: label={msg.get('label')!r} "
                           f"text={msg.get('text', '')!r} "
                           f"duration={msg.get('duration_sec')}s")
                 else:
-                    print(f"<- FINAL_EMOTION[ser]: label={msg.get('label')!r} "
+                    print(f"<- {tag}FINAL_EMOTION[ser]: label={msg.get('label')!r} "
                           f"duration={msg.get('duration_sec')}s")
-                return
+                # Whole-utterance endpoint guarantees exactly one final per
+                # cycle, so we can return early. Segmented streaming may emit
+                # several finals (one per VAD segment), so keep draining until
+                # the server closes the WebSocket.
+                if not segmented:
+                    return
             elif msg_type == "error":
                 print(f"<- ERROR: {msg.get('message', '')}")
             else:
                 print(f"<- {msg_type}: {json.dumps(msg, ensure_ascii=False)}")
     except websockets.exceptions.ConnectionClosed:
         pass
-    print("[connection closed]")
+    print(f"[connection closed] received {final_count} final_emotion message(s)")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test WS client for /emotion-streaming")
+    parser = argparse.ArgumentParser(
+        description="Test WS client for /emotion-streaming and /emotion-segmented-streaming"
+    )
     parser.add_argument("audio_file", help="Path to audio file (WAV or raw PCM s16le 16kHz)")
-    parser.add_argument("--url", default="wss://localhost:8443/emotion-streaming",
-                        help="WebSocket URL (default: wss://localhost:8443/emotion-streaming)")
+    parser.add_argument("--url", default=None,
+                        help="WebSocket URL. Defaults to "
+                             "wss://localhost:8443/emotion-streaming, or "
+                             "wss://localhost:8443/emotion-segmented-streaming "
+                             "when --segmented is set.")
+    parser.add_argument("--segmented", action="store_true",
+                        help="Target the VAD-segmented endpoint and keep "
+                             "receiving until the server closes the WebSocket. "
+                             "Implies the default URL switch shown above.")
     parser.add_argument("--chunk-ms", type=int, default=80, help="Chunk size in ms (default: 80)")
     parser.add_argument("--mode", choices=("ser", "sec"), default=None,
                         help="Emotion task variant. ser=8-class label; "
@@ -207,6 +232,16 @@ def main():
         print(f"Error: file not found: {args.audio_file}", file=sys.stderr)
         sys.exit(1)
 
+    if args.url is None:
+        args.url = (
+            "wss://localhost:8443/emotion-segmented-streaming"
+            if args.segmented
+            else "wss://localhost:8443/emotion-streaming"
+        )
+    # Auto-detect segmented mode from an explicit URL so users don't have to
+    # remember to pass both --url and --segmented.
+    segmented = args.segmented or "segmented" in args.url
+
     cfg_overrides: dict | None = None
     if args.config:
         cfg_overrides = {}
@@ -217,7 +252,10 @@ def main():
             k, v = item.split("=", 1)
             cfg_overrides[k.strip()] = _parse_config_value(v.strip())
 
-    asyncio.run(run_client(args.url, args.audio_file, args.chunk_ms, args.mode, cfg_overrides))
+    asyncio.run(run_client(
+        args.url, args.audio_file, args.chunk_ms, args.mode,
+        cfg_overrides, segmented=segmented,
+    ))
 
 
 if __name__ == "__main__":

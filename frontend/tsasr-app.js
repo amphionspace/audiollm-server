@@ -98,6 +98,28 @@
   const enrollProgress = document.getElementById('enroll-progress');
   const enrollPreviewEl = document.getElementById('enroll-preview');
 
+  const uploadBtn = document.getElementById('upload-btn');
+  const uploadBtnLabel = uploadBtn ? uploadBtn.querySelector('.btn-upload-label') : null;
+  const uploadInput = document.getElementById('upload-input');
+  const uploadStatus = document.getElementById('upload-status');
+
+  const enrollUploadBtn = document.getElementById('enroll-upload-btn');
+  const enrollUploadBtnLabel = enrollUploadBtn
+    ? enrollUploadBtn.querySelector('.btn-upload-label')
+    : null;
+  const enrollUploadInput = document.getElementById('enroll-upload-input');
+  const enrollUploadStatus = document.getElementById('enroll-upload-status');
+  let isEnrollUploading = false;
+  let currentEnrollUploadDyn = null; // { key, vars }
+
+  // Upload state for the transcription stage. The transcription upload now
+  // hits POST /api/tsasr/upload as a one-shot REST call (mixed audio in
+  // multipart, enrollment WAV inlined as base64) and never opens a WS.
+  let isUploading = false;
+  let uploadController = null;     // AbortController for in-flight fetch
+  let currentUploadDyn = null;     // { key, vars }
+  const TSASR_UPLOAD_MAX_SECONDS = 60;
+
   function langDisplayName(value) {
     if (!value) return '';
     const v = String(value).trim();
@@ -137,8 +159,24 @@
   }
 
   function updateMicGate(messageKey) {
-    const enabled = enrollWavB64 !== null && !isEnrollRecording;
+    const enabled =
+      enrollWavB64 !== null
+      && !isEnrollRecording
+      && !isUploading
+      && !isEnrollUploading;
     micBtn.disabled = !enabled;
+    if (uploadBtn) {
+      uploadBtn.disabled =
+        enrollWavB64 === null
+        || isEnrollRecording
+        || isRecordingLive
+        || isUploading
+        || isEnrollUploading;
+    }
+    if (enrollUploadBtn) {
+      enrollUploadBtn.disabled =
+        isEnrollRecording || isRecordingLive || isEnrollUploading;
+    }
     if (isRecordingLive) {
       micStatus.textContent = t('tsasr.mic.listening');
       micStatus.setAttribute('data-dyn-key', 'tsasr.mic.listening');
@@ -347,6 +385,12 @@
     }
     enrollResetBtn.disabled = true;
     setEnrollStatus('idle', 'tsasr.enroll.notRecorded');
+    if (uploadController) {
+      try { uploadController.abort(); } catch (_) { /* noop */ }
+      uploadController = null;
+    }
+    setUploadStatus(null, null);
+    setEnrollUploadStatus(null, null);
     updateMicGate();
   }
 
@@ -362,6 +406,140 @@
     if (isRecordingLive) return;
     resetEnrollment();
   });
+
+  // -------------------- Enrollment via uploaded audio --------------------
+  // Mirrors stopEnrollRecording's tail-end work (truncate, encode WAV,
+  // populate preview + enrollWavB64) but the source PCM comes from a
+  // user-picked file decoded by AmphionAudioUpload instead of the mic.
+
+  function setEnrollUploadStatus(state, key, vars) {
+    if (!enrollUploadStatus) return;
+    if (!key) {
+      enrollUploadStatus.hidden = true;
+      enrollUploadStatus.textContent = '';
+      enrollUploadStatus.removeAttribute('data-state');
+      currentEnrollUploadDyn = null;
+      return;
+    }
+    enrollUploadStatus.hidden = false;
+    enrollUploadStatus.dataset.state = state || 'info';
+    currentEnrollUploadDyn = { key, vars: vars || null };
+    enrollUploadStatus.textContent = t(key, vars || undefined);
+  }
+
+  function setEnrollUploadBusy(busy) {
+    isEnrollUploading = busy;
+    if (enrollUploadBtn) {
+      enrollUploadBtn.disabled = busy || isEnrollRecording || isRecordingLive;
+    }
+    if (enrollUploadBtnLabel) {
+      enrollUploadBtnLabel.textContent = t(
+        busy ? 'tsasr.enrollUpload.uploading' : 'tsasr.enrollUpload.label'
+      );
+    }
+    // While uploading enrollment, also gate the mic / file-upload for the
+    // transcription stage so the user can't fire two flows at once.
+    enrollRecBtn.disabled = busy;
+    enrollResetBtn.disabled = busy || enrollWavB64 === null;
+    updateMicGate();
+  }
+
+  async function handleEnrollUploadFile(file) {
+    if (!file) return;
+    if (isEnrollRecording || isRecordingLive || isEnrollUploading || isUploading) {
+      setEnrollUploadStatus('error', 'tsasr.enrollUpload.error.busy');
+      return;
+    }
+    const upload = window.AmphionAudioUpload;
+    if (!upload) {
+      setEnrollUploadStatus('error', 'tsasr.enrollUpload.error.unsupported');
+      return;
+    }
+
+    setEnrollUploadBusy(true);
+    setEnrollUploadStatus('info', 'tsasr.enrollUpload.decoding');
+
+    let pcm;
+    try {
+      pcm = await upload.decodeFileToMono(file, TARGET_SAMPLE_RATE);
+    } catch (err) {
+      console.error('Enrollment upload decode failed:', err);
+      setEnrollUploadBusy(false);
+      setEnrollUploadStatus('error', 'tsasr.enrollUpload.error.decode');
+      return;
+    }
+    if (!pcm || pcm.length === 0) {
+      setEnrollUploadBusy(false);
+      setEnrollUploadStatus('error', 'tsasr.enrollUpload.error.empty');
+      return;
+    }
+
+    const sr = TARGET_SAMPLE_RATE;
+    const totalSec = pcm.length / sr;
+    if (totalSec < MIN_ENROLL_SEC) {
+      setEnrollUploadBusy(false);
+      setEnrollUploadStatus('error', 'tsasr.enrollUpload.error.tooShort', {
+        dur: totalSec.toFixed(1),
+        min: MIN_ENROLL_SEC.toFixed(1),
+      });
+      return;
+    }
+
+    let trimmedNote = null;
+    if (totalSec > MAX_ENROLL_SEC) {
+      // Match the live recorder's auto-stop behavior: keep the leading
+      // MAX_ENROLL_SEC seconds, drop the rest. The backend VAD-trims
+      // anyway, but trimming up-front gives a tidy preview waveform.
+      pcm = new Float32Array(pcm.subarray(0, Math.floor(sr * MAX_ENROLL_SEC)));
+      trimmedNote = totalSec.toFixed(1);
+    }
+    const finalDuration = pcm.length / sr;
+
+    // Update the recorder UI state so the existing "ready" affordances
+    // (preview, reset button, status pill, gating) light up as if the
+    // enrollment had been recorded live.
+    enrollPcm = pcm;
+    enrollDurationSec = finalDuration;
+    enrollTimer.textContent = `${finalDuration.toFixed(1)}s`;
+    enrollProgressBar.style.width = `${Math.min(100, (finalDuration / MAX_ENROLL_SEC) * 100)}%`;
+
+    const wavBytes = encodeWav(pcm, sr);
+    enrollWavB64 = bytesToBase64(wavBytes);
+
+    if (enrollPreviewUrl) URL.revokeObjectURL(enrollPreviewUrl);
+    enrollPreviewUrl = URL.createObjectURL(
+      new Blob([wavBytes], { type: 'audio/wav' })
+    );
+    enrollPreviewEl.src = enrollPreviewUrl;
+    enrollPreviewEl.classList.remove('hidden');
+
+    setEnrollStatus('ready', 'tsasr.enroll.ready', { dur: finalDuration.toFixed(1) });
+    enrollResetBtn.disabled = false;
+    setEnrollUploadBusy(false);
+    if (trimmedNote !== null) {
+      setEnrollUploadStatus('warn', 'tsasr.enrollUpload.trimmed', {
+        max: MAX_ENROLL_SEC.toFixed(1),
+        actual: trimmedNote,
+      });
+    } else {
+      setEnrollUploadStatus('success', 'tsasr.enrollUpload.done', {
+        dur: finalDuration.toFixed(1),
+      });
+    }
+    updateMicGate();
+  }
+
+  if (enrollUploadBtn && enrollUploadInput) {
+    enrollUploadBtn.addEventListener('click', () => {
+      if (enrollUploadBtn.disabled) return;
+      enrollUploadInput.value = '';
+      enrollUploadInput.click();
+    });
+    enrollUploadInput.addEventListener('change', () => {
+      const file = enrollUploadInput.files && enrollUploadInput.files[0];
+      if (file) handleEnrollUploadFile(file);
+    });
+  }
 
   // -------------------- Transcript UI --------------------
   function replaySegment(segId, btn) {
@@ -483,6 +661,162 @@
     const div = document.createElement('div');
     div.textContent = String(text == null ? '' : text);
     return div.innerHTML;
+  }
+
+  // -------------------- Upload (transcription stage only) --------------------
+
+  function setUploadStatus(state, key, vars) {
+    if (!uploadStatus) return;
+    if (!key) {
+      uploadStatus.hidden = true;
+      uploadStatus.textContent = '';
+      uploadStatus.removeAttribute('data-state');
+      currentUploadDyn = null;
+      return;
+    }
+    uploadStatus.hidden = false;
+    uploadStatus.dataset.state = state || 'info';
+    currentUploadDyn = { key, vars: vars || null };
+    uploadStatus.textContent = t(key, vars || undefined);
+  }
+
+  function setUploadBusy(busy) {
+    isUploading = busy;
+    if (uploadBtnLabel) {
+      uploadBtnLabel.textContent = t(busy ? 'tsasr.upload.uploading' : 'tsasr.upload.label');
+    }
+    updateMicGate();
+  }
+
+  async function handleUploadFile(file) {
+    if (!file) return;
+    if (!enrollWavB64) {
+      setUploadStatus('error', 'tsasr.upload.error.noEnroll');
+      return;
+    }
+    if (isUploading || isRecordingLive || isEnrollRecording || isEnrollUploading) {
+      setUploadStatus('error', 'tsasr.upload.error.busy');
+      return;
+    }
+    const upload = window.AmphionAudioUpload;
+    if (!upload) {
+      setUploadStatus('error', 'tsasr.upload.error.unsupported');
+      return;
+    }
+
+    setUploadBusy(true);
+    setUploadStatus('info', 'tsasr.upload.decoding');
+
+    let decoded;
+    try {
+      decoded = await upload.decodeFileToWavBytes(file, TARGET_SAMPLE_RATE);
+    } catch (err) {
+      console.error('Upload decode failed:', err);
+      setUploadBusy(false);
+      setUploadStatus('error', 'tsasr.upload.error.decode');
+      return;
+    }
+    if (!decoded || !decoded.wav || !decoded.pcm.length) {
+      setUploadBusy(false);
+      setUploadStatus('error', 'tsasr.upload.error.empty');
+      return;
+    }
+
+    let pcm = decoded.pcm;
+    let wavBytes = decoded.wav;
+    const totalSec = pcm.length / TARGET_SAMPLE_RATE;
+    let trimmedNote = null;
+    if (totalSec > TSASR_UPLOAD_MAX_SECONDS) {
+      pcm = new Float32Array(
+        pcm.subarray(0, Math.floor(TSASR_UPLOAD_MAX_SECONDS * TARGET_SAMPLE_RATE))
+      );
+      wavBytes = upload.encodeWavBytes(pcm, TARGET_SAMPLE_RATE);
+      trimmedNote = totalSec.toFixed(1);
+    }
+
+    setUploadStatus('info', 'tsasr.upload.analyzing');
+    uploadController = new AbortController();
+    let result;
+    try {
+      result = await upload.postWavToEndpoint(
+        '/api/tsasr/upload',
+        wavBytes,
+        {
+          enrollment_wav_base64: enrollWavB64,
+          // Pass through the same hot-word/voice-trait knobs the live mic
+          // session would, even though the server currently ignores them
+          // unless ``tsasr_enable_hotwords`` is on. Voice traits are not
+          // exposed in the demo UI yet, so they go in empty.
+          hotwords: '',
+          voice_traits: '',
+        },
+        { signal: uploadController.signal, fileName: file.name || 'upload.wav' }
+      );
+    } catch (err) {
+      console.error('Upload request failed:', err);
+      uploadController = null;
+      setUploadBusy(false);
+      const aborted = err && err.name === 'AbortError';
+      const detail = err && err.message ? err.message : 'Upload failed';
+      // Surface enrollment-validation errors with the same chat bubble the
+      // WS path uses so users get a consistent failure mode regardless of
+      // whether the bad enrollment came from the mic or a file.
+      if (err && err.payload && typeof err.payload.detail === 'object') {
+        const d = err.payload.detail;
+        addErrorBubble(d.code || 'error', d.message || detail);
+      } else if (!aborted) {
+        addErrorBubble('upload_error', detail);
+      }
+      setUploadStatus(
+        aborted ? 'info' : 'error',
+        aborted ? 'tsasr.upload.aborted' : 'tsasr.upload.error.serverPrefix',
+        aborted ? null : { msg: detail }
+      );
+      return;
+    }
+    uploadController = null;
+
+    const text = (result && result.text) || '';
+    if (text.trim()) {
+      // Mirror the WS ``final`` payload's replay-button wiring.
+      if (result.audio_b64) {
+        const synthId = `upload-${Date.now()}`;
+        try {
+          segmentAudio.set(synthId, b64ToWavBlobUrl(result.audio_b64));
+        } catch (err) {
+          console.warn('Failed to decode uploaded segment audio:', err);
+        }
+        const langValue =
+          result.language && result.language !== 'N/A' ? result.language : null;
+        const durationSec =
+          typeof result.duration_sec === 'number' ? result.duration_sec : null;
+        addFinalBubble(text.trim(), langValue, durationSec, synthId);
+      } else {
+        addFinalBubble(text.trim(), result.language || null, null, null);
+      }
+    }
+
+    setUploadBusy(false);
+    if (trimmedNote !== null) {
+      setUploadStatus('warn', 'tsasr.upload.trimmed', {
+        max: TSASR_UPLOAD_MAX_SECONDS,
+        actual: trimmedNote,
+      });
+    } else {
+      setUploadStatus('success', 'tsasr.upload.done');
+    }
+  }
+
+  if (uploadBtn && uploadInput) {
+    uploadBtn.addEventListener('click', () => {
+      if (uploadBtn.disabled) return;
+      uploadInput.value = '';
+      uploadInput.click();
+    });
+    uploadInput.addEventListener('change', () => {
+      const file = uploadInput.files && uploadInput.files[0];
+      if (file) handleUploadFile(file);
+    });
   }
 
   // -------------------- WebSocket --------------------
@@ -680,6 +1014,23 @@
     enrollRecLabel.textContent = isEnrollRecording
       ? t('tsasr.enroll.stop')
       : t('tsasr.enroll.start');
+    if (uploadBtnLabel) {
+      uploadBtnLabel.textContent = t(isUploading ? 'tsasr.upload.uploading' : 'tsasr.upload.label');
+    }
+    if (currentUploadDyn && uploadStatus) {
+      uploadStatus.textContent = t(currentUploadDyn.key, currentUploadDyn.vars || undefined);
+    }
+    if (enrollUploadBtnLabel) {
+      enrollUploadBtnLabel.textContent = t(
+        isEnrollUploading ? 'tsasr.enrollUpload.uploading' : 'tsasr.enrollUpload.label'
+      );
+    }
+    if (currentEnrollUploadDyn && enrollUploadStatus) {
+      enrollUploadStatus.textContent = t(
+        currentEnrollUploadDyn.key,
+        currentEnrollUploadDyn.vars || undefined,
+      );
+    }
     updateMicGate();
     // Walk dyn nodes inside the chat area to refresh transcript meta + errors.
     chatArea.querySelectorAll('[data-dyn-key]').forEach((el) => {

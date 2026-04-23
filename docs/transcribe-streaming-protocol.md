@@ -1,16 +1,17 @@
 # /transcribe-streaming WebSocket 协议文档
 
-> 端点命名约定：本服务按任务一类一个 WebSocket 端点（`/<task>-streaming`）。本文档主体描述的是「个性化语音识别」任务；目标说话人 ASR 使用 `/transcribe-target-streaming`（详见 [docs/tsasr.md](tsasr.md)），整段情感识别使用 `/emotion-streaming`（详见 [docs/emotion-streaming-protocol.md](emotion-streaming-protocol.md)）。三个端点共享相同的控制消息基础结构（`ready` / `start` / `stop` / `update_hotwords` / `error` / `start.config` 覆写机制），只是任务专属字段与输出语义不同。
+> 端点命名约定：本服务按任务一类一个 WebSocket 端点（`/<task>-streaming`）。本文档主体描述的是「个性化语音识别」任务；目标说话人 ASR 使用 `/transcribe-target-streaming`（详见 [docs/tsasr.md](tsasr.md)），整段情感识别使用 `/emotion-streaming`（详见 [docs/emotion-streaming-protocol.md](emotion-streaming-protocol.md)），按段流式情感识别使用 `/emotion-segmented-streaming`（详见 [docs/emotion-segmented-streaming-protocol.md](emotion-segmented-streaming-protocol.md)）。所有端点共享相同的控制消息基础结构（`ready` / `start` / `stop` / `update_hotwords` / `error` / `start.config` 覆写机制），只是任务专属字段与输出语义不同。
 
-## 当前支持的三个 Demo WS 端点总览
+## 当前支持的 Demo WS 端点总览
 
-下表列出本服务当前对外提供的三个任务流式 WebSocket 接入方式，所有端点均共享 `ready / start / 二进制 PCM / stop / error` 的基础时序，差异集中在 `start` 必填字段与服务端推送的结果消息类型上。
+下表列出本服务当前对外提供的任务流式 WebSocket 接入方式，所有端点均共享 `ready / start / 二进制 PCM / stop / error` 的基础时序，差异集中在 `start` 必填字段与服务端推送的结果消息类型上。
 
 | 任务 | 端点路径 | Query 参数 | 是否走 VAD 分段 | partial 输出 | 最终消息类型 | start 关键字段 | 详细协议 |
 |---|---|---|---|---|---|---|---|
 | 通用流式 ASR | /transcribe-streaming | language（可选） | 是 | 是（伪流式） | final_asr | mode=asr_only, format=pcm_s16le, sample_rate_hz=16000, channels=1 | 见本文档下文 |
 | 目标说话人 ASR（TS-ASR） | /transcribe-target-streaming | language（可选） | 是 | 默认关闭，由 tsasr_enable_partial 控制 | final（task=tsasr） | format/sample_rate_hz/channels（可选）+ enrollment_audio（必填，base64 WAV） | docs/tsasr.md |
 | 整段情感识别（SER/SEC） | /emotion-streaming | 无 | 否（整段缓存到 stop） | 否 | final_emotion | format=pcm_s16le, sample_rate_hz=16000, channels=1, mode=ser 或 sec（可选） | docs/emotion-streaming-protocol.md |
+| 按段流式情感识别（SER/SEC） | /emotion-segmented-streaming | language（可选） | 是 | 否 | final_emotion（每段一条） | format=pcm_s16le, sample_rate_hz=16000, channels=1, mode=ser 或 sec（可选） | docs/emotion-segmented-streaming-protocol.md |
 
 三类端点统一的接入步骤：
 

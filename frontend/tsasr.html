@@ -61,6 +61,21 @@
                 </button>
               </div>
               <p id="mic-status">Complete enrollment to enable</p>
+              <div class="upload-row">
+                <input id="upload-input" type="file" accept="audio/*" hidden />
+                <button id="upload-btn" class="btn-upload" type="button" disabled
+                        data-i18n-attr-aria-label="tsasr.upload.aria"
+                        aria-label="Upload audio file">
+                  <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 16V4"/>
+                    <path d="M6 10l6-6 6 6"/>
+                    <path d="M4 20h16"/>
+                  </svg>
+                  <span class="btn-upload-label" data-i18n="tsasr.upload.label">Upload audio</span>
+                </button>
+                <span id="upload-status" class="upload-status" hidden></span>
+              </div>
             </div>
           </section>
 
@@ -94,6 +109,21 @@
                   <span id="enroll-timer">0.0s</span>
                   <span data-i18n="tsasr.enroll.minMax">min 1.0s &middot; max 5.0s</span>
                 </div>
+                <div class="upload-row enroll-upload-row">
+                  <input id="enroll-upload-input" type="file" accept="audio/*" hidden />
+                  <button id="enroll-upload-btn" class="btn-upload" type="button"
+                          data-i18n-attr-aria-label="tsasr.enrollUpload.aria"
+                          aria-label="Upload enrollment audio">
+                    <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M12 16V4"/>
+                      <path d="M6 10l6-6 6 6"/>
+                      <path d="M4 20h16"/>
+                    </svg>
+                    <span class="btn-upload-label" data-i18n="tsasr.enrollUpload.label">Upload enrollment</span>
+                  </button>
+                  <span id="enroll-upload-status" class="upload-status" hidden></span>
+                </div>
               </div>
 
               <audio id="enroll-preview" controls class="enroll-preview hidden" preload="metadata"></audio>
@@ -112,6 +142,7 @@
 
   <script src="i18n.js"></script>
   <script src="sidebar.js"></script>
+  <script src="audio-upload.js"></script>
   <script src="tsasr-app.js"></script>
 </body>
 </html>

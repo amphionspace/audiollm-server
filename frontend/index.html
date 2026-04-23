@@ -59,6 +59,21 @@
                 </button>
               </div>
               <p id="mic-status" data-i18n="asr.mic.start">Click to start</p>
+              <div class="upload-row">
+                <input id="upload-input" type="file" accept="audio/*" hidden />
+                <button id="upload-btn" class="btn-upload" type="button"
+                        data-i18n-attr-aria-label="asr.upload.aria"
+                        aria-label="Upload audio file">
+                  <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 16V4"/>
+                    <path d="M6 10l6-6 6 6"/>
+                    <path d="M4 20h16"/>
+                  </svg>
+                  <span class="btn-upload-label" data-i18n="asr.upload.label">Upload audio</span>
+                </button>
+                <span id="upload-status" class="upload-status" hidden></span>
+              </div>
             </div>
           </section>
 
@@ -146,6 +161,7 @@
 
   <script src="i18n.js"></script>
   <script src="sidebar.js"></script>
+  <script src="audio-upload.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

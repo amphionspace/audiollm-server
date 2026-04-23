@@ -1,9 +1,19 @@
 """Emotion task engine (SER / SEC), aligned with AmphionASR.
 
-Designed to be paired with :class:`backend.streaming.WholeUtteranceStream`:
-the stream accumulates the entire utterance and emits exactly one
-``SegmentReady`` on stop / disconnect, which this engine turns into a single
-``final_emotion`` message.
+The same engine class powers two endpoints with different stream strategies:
+
+- ``streaming=False`` (default) pairs with
+  :class:`backend.streaming.WholeUtteranceStream` to implement
+  ``/emotion-streaming``: the stream accumulates the entire utterance and
+  emits exactly one ``SegmentReady`` on stop / disconnect, which this engine
+  turns into a single ``final_emotion`` message. If no audio was received,
+  ``on_stop`` still emits an empty ``final_emotion`` so callers always get a
+  reply per ``start``/``stop`` cycle.
+- ``streaming=True`` pairs with :class:`backend.streaming.VadSegmentedStream`
+  to implement ``/emotion-segmented-streaming``: each VAD-detected speech
+  segment triggers an inference and produces its own ``final_emotion``. If
+  the session held no speech, no fallback empty event is sent (matching the
+  behavior of ``/transcribe-streaming``).
 
 The task variant (``ser`` for classification, ``sec`` for free-form caption)
 is selected per session via the ``mode`` field on the ``start`` control
@@ -27,12 +37,19 @@ logger = logging.getLogger(__name__)
 
 
 class EmotionTaskEngine(BaseTaskEngine):
-    """Run a single emotion inference per session, on the full utterance."""
+    """Run emotion inference per audio segment.
+
+    With ``streaming=False`` the engine expects a single segment (the whole
+    utterance, fed by :class:`WholeUtteranceStream`) and guarantees a final
+    reply per session. With ``streaming=True`` it produces one final per
+    VAD-segmented utterance and skips the empty-session fallback.
+    """
 
     name = "emotion"
 
-    def __init__(self) -> None:
+    def __init__(self, *, streaming: bool = False) -> None:
         self._mode: EmotionMode = DEFAULT_MODE
+        self._streaming = bool(streaming)
 
     async def on_start(self, ctrl: dict, ctx: SessionContext) -> None:
         cfg_default = getattr(ctx.cfg, "emotion_task_mode", DEFAULT_MODE)
@@ -84,6 +101,12 @@ class EmotionTaskEngine(BaseTaskEngine):
         sent_any_response: bool,
         stopped: bool,
     ) -> None:
+        # Whole-utterance mode promises one final per start/stop cycle, so we
+        # synthesize an empty reply when no audio survived. Segmented streaming
+        # mode follows the ASR convention: a silent session produces zero
+        # finals.
+        if self._streaming:
+            return
         if stopped and not sent_any_response:
             empty: dict = {
                 "type": "final_emotion",
