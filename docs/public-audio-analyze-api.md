@@ -1,14 +1,14 @@
 # AudioLLM 非实时音频分析 API
 
-本文档面向外部调用方，说明如何通过服务地址 `http://172.16.0.3:8080` 上传一段音频，并获取 ASR 原始结果、ASR 清洗文本、情感标签和情感描述。
+本文档面向外部调用方，说明如何通过服务地址 `http://172.16.0.3:8082` 上传一段音频，并获取 ASR 原始结果、ASR 清洗文本、情感标签和情感描述。
 
 ## 访问地址
 
 | 项目 | 值 |
 |---|---|
-| Base URL | `http://172.16.0.3:8080` |
+| Base URL | `http://172.16.0.3:8082` |
 | Endpoint | `POST /api/audio/analyze` |
-| 完整 URL | `http://172.16.0.3:8080/api/audio/analyze` |
+| 完整 URL | `http://172.16.0.3:8082/api/audio/analyze` |
 | Content-Type | `multipart/form-data` |
 | 鉴权 | 当前不需要 API Key 或 Token |
 
@@ -45,7 +45,7 @@
 请使用 `-F` 发送 `multipart/form-data`。不要手动添加 `Content-Type: multipart/form-data` 请求头，curl 会自动生成正确的 boundary；手动设置容易导致服务端返回 `400 There was an error parsing the body`。
 
 ```bash
-curl -X POST "http://172.16.0.3:8080/api/audio/analyze" \
+curl -X POST "http://172.16.0.3:8082/api/audio/analyze" \
   -F "audio=@sample.wav" \
   -F "language=zh" \
   -F "hotword_pool_id=tenant-a" \
@@ -60,7 +60,7 @@ from pathlib import Path
 
 import requests
 
-url = "http://172.16.0.3:8080/api/audio/analyze"
+url = "http://172.16.0.3:8082/api/audio/analyze"
 audio_path = Path("sample.wav")
 
 with audio_path.open("rb") as f:
@@ -104,7 +104,7 @@ async function callAudioAnalyzeApi(filePath: string) {
   fs.closeSync(file);
 
   const uploadConfig = {
-    url: 'http://172.16.0.3:8080/api/audio/analyze',
+    url: 'http://172.16.0.3:8082/api/audio/analyze',
     header: {
       key1: 'Content-Type',
       key2: 'multipart/form-data'

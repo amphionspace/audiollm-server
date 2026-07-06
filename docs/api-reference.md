@@ -6,12 +6,12 @@
 
 | 项目 | 说明 |
 |---|---|
-| Base URL | `http://172.16.0.3:8080`（systemd 生产部署） |
-| WebSocket Base URL | `ws://172.16.0.3:8080` |
+| Base URL | `http://172.16.0.3:8082`（systemd 生产部署） |
+| WebSocket Base URL | `ws://172.16.0.3:8082` |
 | 鉴权 | 当前服务不要求 API Key、Token 或自定义请求头 |
 | 音频格式 | WebSocket 发送原始 PCM：16 kHz、mono、signed 16-bit little-endian |
 | REST 上传 | 使用 multipart/form-data 上传 WAV 文件，服务端会解码为 16 kHz mono |
-| 默认端口 | systemd 生产部署 `8080`（HTTP）；`start.sh` 开发启动为 `8443`（HTTPS） |
+| 默认端口 | systemd 生产部署 `8082`（HTTP）；`start.sh` 开发启动为 `8443`（HTTPS） |
 
 生产环境如需访问控制、限流或 IP 白名单，应在 API 网关、负载均衡或反向代理层配置。
 
@@ -55,7 +55,7 @@
 
 所有任务型 WebSocket 接口共享同一条基本流程：
 
-1. 连接 `ws://172.16.0.3:8080/<endpoint>`。
+1. 连接 `ws://172.16.0.3:8082/<endpoint>`。
 2. 等待服务端发送 `{"type":"ready"}`。
 3. 发送一条 `start` JSON 消息，声明音频格式和任务参数。
 4. 持续发送二进制 PCM 音频帧。
@@ -147,7 +147,7 @@ REST 接口适合离线测试或一次性上传完整录音。请求使用 `mult
 
 ```bash
 python docs/examples/rest_upload.py analyze sample.wav \
-  --base-url http://172.16.0.3:8080 \
+  --base-url http://172.16.0.3:8082 \
   --language zh \
   --hotwords "挚音科技,张硕"
 ```
@@ -192,7 +192,7 @@ python docs/examples/rest_upload.py analyze sample.wav \
 
 ```bash
 python docs/examples/rest_upload.py asr sample.wav \
-  --base-url http://172.16.0.3:8080 \
+  --base-url http://172.16.0.3:8082 \
   --language zh \
   --hotwords "挚音科技,张硕"
 ```
@@ -219,7 +219,7 @@ python docs/examples/rest_upload.py asr sample.wav \
 `POST /api/asr/transcriptions` 面向整段会议录音等长音频（默认上限 3 小时 / 512 MB，超时长直接 400 拒绝而非截断）。服务端先按与流式端点相同的 VAD 状态机把录音切成语音段（切段停顿阈值可经 `transcribe_silence_duration_ms` 独立调参、不影响实时端点；连续无停顿语音超过 `transcribe_max_segment_sec` 会强制切分），再对每段并行执行与 `/api/asr/upload` 相同的双模型转写（含 ITN / 车牌规范化），最后按时间序拼出全文。表单字段为 `audio`（WAV）、`language`、`hotwords`；不支持 `enrollment_id`（目标说话人过滤与多人会议语义相反）。
 
 ```bash
-curl -X POST http://172.16.0.3:8080/api/asr/transcriptions \
+curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
   -F "audio=@meeting.wav" \
   -F "language=zh" \
   -F "hotwords=挚音科技,张硕"
@@ -252,7 +252,7 @@ curl -X POST http://172.16.0.3:8080/api/asr/transcriptions \
 `POST /api/asr/enrollment` 上传一段目标说话人音频，返回不透明的 `enrollment_id` 供后续请求复用：`/transcribe-streaming` 放进 `start.enrollment_id`、`/tuling/ast/v3` 放进首帧 `parameter.asr_config.enrollment_id`、REST 的 `/api/asr/upload` 与 `/api/audio/analyze` 作为表单字段 `enrollment_id`。
 
 ```bash
-curl -X POST http://172.16.0.3:8080/api/asr/enrollment \
+curl -X POST http://172.16.0.3:8082/api/asr/enrollment \
   -F "audio=@speaker_enroll.wav"
 # 也支持 speaker_enroll.mp3；raw PCM 请按 16 kHz mono s16le 上传并使用 .pcm 后缀。
 ```
@@ -291,17 +291,17 @@ curl -X POST http://172.16.0.3:8080/api/asr/enrollment \
 ASR 热词偏置按 `hotword_pool_id` 维护热词池。final 段先在当前热词池内召回 `recall_top_k` 个相关热词，再让少量请求临时 `hotwords`（默认 `recall_custom_hotword_limit=8`，去重、不写入热词池）优先进入主 ASR prompt，并过滤与请求热词精确重复或整词同音（忽略声调）的召回词；伪流式 partial 不执行召回、不注入热词、也不走 encoder bypass，只使用纯 vLLM raw-audio 推理。池管理接口优先代理 `services.recall_management` 指向的 RAG-ASR HTTP 管理服务；未配置管理服务时使用 Triton 管理路径，不在 demo 进程内复制热词状态。未传热词池 ID 时使用 `config.yaml` 的 `hotword_pool_id`，默认 `default`。
 
 ```bash
-curl 'http://172.16.0.3:8080/api/asr/hotword-pool?hotword_pool_id=tenant-a&limit=20'
-curl -X POST http://172.16.0.3:8080/api/asr/hotword-pool \
+curl 'http://172.16.0.3:8082/api/asr/hotword-pool?hotword_pool_id=tenant-a&limit=20'
+curl -X POST http://172.16.0.3:8082/api/asr/hotword-pool \
   -H 'content-type: application/json' \
   -d '{"hotword_pool_id":"tenant-a","hotwords":["挚音科技","张硕"]}'
-curl -X DELETE http://172.16.0.3:8080/api/asr/hotword-pool \
+curl -X DELETE http://172.16.0.3:8082/api/asr/hotword-pool \
   -H 'content-type: application/json' \
   -d '{"hotword_pool_id":"tenant-a","hotwords":["张硕"]}'
-curl -X POST http://172.16.0.3:8080/api/asr/hotword-pool/clear \
+curl -X POST http://172.16.0.3:8082/api/asr/hotword-pool/clear \
   -H 'content-type: application/json' \
   -d '{"hotword_pool_id":"tenant-a"}'
-curl -X POST 'http://172.16.0.3:8080/api/asr/hotword-pool/reload?hotword_pool_id=tenant-a'
+curl -X POST 'http://172.16.0.3:8082/api/asr/hotword-pool/reload?hotword_pool_id=tenant-a'
 ```
 
 | 接口 | 请求 | 响应 |
@@ -317,7 +317,7 @@ curl -X POST 'http://172.16.0.3:8080/api/asr/hotword-pool/reload?hotword_pool_id
 
 ```bash
 python docs/examples/rest_upload.py emotion sample.wav \
-  --base-url http://172.16.0.3:8080 \
+  --base-url http://172.16.0.3:8082 \
   --mode ser \
   --language zh
 ```
@@ -347,7 +347,7 @@ pip install websockets requests numpy
 
 ```bash
 python docs/examples/ws_transcribe.py sample.wav \
-  --url ws://172.16.0.3:8080/transcribe-streaming \
+  --url ws://172.16.0.3:8082/transcribe-streaming \
   --language zh
 ```
 
@@ -355,7 +355,7 @@ python docs/examples/ws_transcribe.py sample.wav \
 
 ```bash
 python docs/examples/http_emotion_job.py sample.wav \
-  --base-url http://172.16.0.3:8080 \
+  --base-url http://172.16.0.3:8082 \
   --mode ser
 ```
 
@@ -363,7 +363,7 @@ python docs/examples/http_emotion_job.py sample.wav \
 
 ```bash
 python docs/examples/rest_upload.py emotion sample.wav \
-  --base-url http://172.16.0.3:8080 \
+  --base-url http://172.16.0.3:8082 \
   --mode ser
 ```
 
@@ -371,7 +371,7 @@ python docs/examples/rest_upload.py emotion sample.wav \
 
 ```bash
 python tests/test_emotion_ws_client.py sample.wav \
-  --url ws://172.16.0.3:8080/emotion-segmented-streaming \
+  --url ws://172.16.0.3:8082/emotion-segmented-streaming \
   --segmented \
   --language zh
 ```

@@ -44,7 +44,7 @@
 ### 调用示例
 
 ```bash
-curl -X POST http://172.16.0.3:8080/api/asr/transcriptions \
+curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
   -F "audio=@meeting.wav" \
   -F "language=zh" \
   -F "hotwords=挚音科技,张硕"
@@ -213,7 +213,7 @@ rest:
 
 ```bash
 python docs/examples/http_transcribe_job.py meeting.wav \
-  --base-url http://172.16.0.3:8080 \
+  --base-url http://172.16.0.3:8082 \
   --language zh \
   --hotwords "挚音科技,张硕" \
   --full-text-only

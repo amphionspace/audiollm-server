@@ -38,7 +38,7 @@ vim config.yaml  # upstreams.hotword_llm
 bash start.sh
 ```
 
-浏览器打开 `http://172.16.0.3:8080`（systemd 部署）或 `https://172.16.0.3:8443`（`bash start.sh` 自签 HTTPS）进入实时 ASR Demo，另一个 Demo 入口：
+浏览器打开 `http://172.16.0.3:8082`（systemd 部署）或 `https://172.16.0.3:8443`（`bash start.sh` 自签 HTTPS）进入实时 ASR Demo，另一个 Demo 入口：
 
 | 页面 | 路径 | 说明 |
 |---|---|---|
@@ -112,7 +112,7 @@ graph LR
 通过 WebSocket 连接：
 
 ```
-ws://172.16.0.3:8080/transcribe-streaming
+ws://172.16.0.3:8082/transcribe-streaming
 ```
 
 **消息流程：**
@@ -178,7 +178,7 @@ import asyncio, json, websockets
 
 async def transcribe(pcm_bytes: bytes):
     async with websockets.connect(
-        "ws://172.16.0.3:8080/transcribe-streaming"
+        "ws://172.16.0.3:8082/transcribe-streaming"
     ) as ws:
         ready = json.loads(await ws.recv())
         assert ready["type"] == "ready"
@@ -236,9 +236,19 @@ MODEL_PATH=/path/to/Qwen3-ASR-1.7B bash scripts/start_vllm_qwen.sh
 
 ## 运维脚本
 
-systemd 服务（默认单元名 `audiollm-demo`）监听 `172.16.0.3:8080`（HTTP，无 TLS）。对外 REST / WebSocket / 静态页 Base URL 为 `http://172.16.0.3:8080`；WebSocket 使用 `ws://172.16.0.3:8080/<endpoint>`。
+systemd 服务（默认单元名 `audiollm-demo`）监听 `172.16.0.3:8082`（HTTP，无 TLS）。对外 REST / WebSocket / 静态页 Base URL 为 `http://172.16.0.3:8082`；WebSocket 使用 `ws://172.16.0.3:8082/<endpoint>`。
 
-如果你通过 systemd 部署本服务，可以用 `scripts/restart_service.sh` 一键重启并查看日志，改完后端代码后无需手动敲 `systemctl`：
+如果当前机器还没有安装该 unit，先安装仓库内模板：
+
+```bash
+sudo cp deploy/audiollm-demo.service /etc/systemd/system/audiollm-demo.service
+sudo systemctl daemon-reload
+sudo systemctl enable audiollm-demo
+```
+
+模板默认使用 `/home/ubuntu/workspace/audiollm-server/.venv/bin/uvicorn` 在 `8082` 启动 HTTP 服务；如果仓库路径、用户、虚拟环境或端口不同，先改 `deploy/audiollm-demo.service` 再复制。端口冲突时只需要调整模板里的 `Environment=PORT=...`。
+
+安装后可以用 `scripts/restart_service.sh` 一键重启并查看日志，改完后端代码后无需手动敲 `systemctl`：
 
 ```bash
 scripts/restart_service.sh            # 重启并打印最近 30 行日志
@@ -454,7 +464,7 @@ ASR 热词偏置来自 `config.yaml -> services.recall` 指向的 Triton 召回�
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `PORT` | `8443` | `start.sh` 自签 HTTPS 端口；systemd 固定为 `8080`（HTTP） |
+| `PORT` | `8443` | `start.sh` 自签 HTTPS 端口；systemd 固定为 `8082`（HTTP） |
 | `RAG_ASR_MANAGEMENT_BASE_URL` | 空 | 可选 RAG-ASR HTTP 管理服务根地址；为空时保持旧热词管理/本地 enrollment 行为，灰度时可设为如 `http://127.0.0.1:18080`；启用 `enable_triton_enrollment_store=true` 前必须可达 |
 
 ---

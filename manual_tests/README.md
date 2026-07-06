@@ -32,7 +32,7 @@ manual_tests/audio/sample.wav
 ```bash
 .venv/bin/python manual_tests/scripts/test_audio_analyze.py \
   manual_tests/audio/sample.wav \
-  --base-url http://172.16.0.3:8080 \
+  --base-url http://172.16.0.3:8082 \
   --language zh \
   --hotwords "挚音科技,语音识别"
 ```

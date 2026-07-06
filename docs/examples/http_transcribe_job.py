@@ -54,7 +54,7 @@ def main() -> int:
     parser.add_argument("audio", type=Path, help="WAV audio file (compressed formats: convert to WAV first)")
     parser.add_argument(
         "--base-url",
-        default="http://172.16.0.3:8080",
+        default="http://172.16.0.3:8082",
         help="HTTP base URL",
     )
     parser.add_argument("--language", default="", help="Language hint, empty = auto detect")

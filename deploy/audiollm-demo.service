@@ -1,0 +1,24 @@
+[Unit]
+Description=AudioLLM FastAPI demo service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/workspace/audiollm-server
+Environment=PYTHONUNBUFFERED=1
+Environment=PORT=8082
+EnvironmentFile=-/home/ubuntu/workspace/audiollm-server/.env
+ExecStart=/home/ubuntu/workspace/audiollm-server/.venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port ${PORT}
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=30
+KillSignal=SIGINT
+KillMode=control-group
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
