@@ -188,7 +188,7 @@ rest:
 
 ### 调参（config.yaml `defaults.transcribe`）
 
-默认值经过实测扫参验证（并发、时延、吞吐与容量上界数据见[性能报告](transcription-jobs-benchmark.md)）：
+默认值经过实测扫参验证（并发、时延、吞吐与容量上界数据见[性能报告](../benchmarks/transcription-jobs-benchmark.md)）：
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
@@ -205,11 +205,11 @@ rest:
 
 全局 `silence_duration_ms`（350 ms）是为实时端点的低延迟调的：停顿阈值越短，`final` 出得越快。离线转写没有这个延迟约束，更长的阈值能把被短暂停顿打碎的句子合并成更完整的段落。该参数只作用于本接口的切分，实时端点不受影响；调大全局 `silence_duration_ms` 则会同时拉高所有实时端点的 final 延迟，不要为纪要场景去动它。
 
-实测参考（32.5 分钟 8 麦阵列会议录音，AISHELL-4 风格）：350 ms 下切出 636 段、段长 p50 仅 1.5 秒，对纪要偏碎；800 ms 切 303 段、p50 3.2 秒，且因每段请求开销摊薄，转写还快约 11%（完整扫参见[性能报告](transcription-jobs-benchmark.md)第 5 节）。多人快节奏讨论本身停顿少，段仍会偏短，属正常现象。
+实测参考（32.5 分钟 8 麦阵列会议录音，AISHELL-4 风格）：350 ms 下切出 636 段、段长 p50 仅 1.5 秒，对纪要偏碎；800 ms 切 303 段、p50 3.2 秒，且因每段请求开销摊薄，转写还快约 11%（完整扫参见[性能报告](../benchmarks/transcription-jobs-benchmark.md)第 5 节）。多人快节奏讨论本身停顿少，段仍会偏短，属正常现象。
 
 ## Python 示例
 
-完整脚本见 [examples/http_transcribe_job.py](examples/http_transcribe_job.py)（依赖 `pip install requests`）：
+完整脚本见 [examples/http_transcribe_job.py](../examples/http_transcribe_job.py)（依赖 `pip install requests`）：
 
 ```bash
 python docs/examples/http_transcribe_job.py meeting.wav \

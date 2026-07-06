@@ -19,7 +19,7 @@ Two protocols ship here:
   structure. The current ASR stack only produces whole-sentence text, so the
   word-level ``ws[].cw[]`` fields are filled with one cw per sentence and the
   per-word timing/score fields carry segment-level approximations / defaults
-  (see ``docs/tuling-ast-v3-protocol.md``).
+  (see ``docs/protocols/tuling-ast-v3-protocol.md``).
 """
 
 from __future__ import annotations
@@ -126,7 +126,7 @@ _LANG_TO_CODE: dict[str, str] = {
 
 # Generic, non-zero error code. The AST v3 spec only pins code 0 = success and
 # leaves the failure code space to the implementation, so we document this in
-# docs/tuling-ast-v3-protocol.md rather than inventing a per-error taxonomy.
+# docs/protocols/tuling-ast-v3-protocol.md rather than inventing a per-error taxonomy.
 _ERROR_CODE = -1
 
 # Safety cap while locating the WAV ``data`` chunk in a header-prefixed stream;

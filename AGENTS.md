@@ -133,16 +133,16 @@ class Config:
 
 | 后端路由 | 文档 |
 |---|---|
-| `@app.websocket("/transcribe-streaming")` | `docs/transcribe-streaming-protocol.md` + `docs/api-reference.md` 速览 |
-| `@app.websocket("/tuling/ast/v3")` | `docs/tuling-ast-v3-protocol.md` + `docs/api-reference.md` 速览 |
+| `@app.websocket("/transcribe-streaming")` | `docs/protocols/transcribe-streaming-protocol.md` + `docs/api-reference.md` 速览 |
+| `@app.websocket("/tuling/ast/v3")` | `docs/protocols/tuling-ast-v3-protocol.md` + `docs/api-reference.md` 速览 |
 | `@app.websocket("/astv3-test-proxy")` | `docs/api-reference.md` |
-| `@app.websocket("/emotion-segmented-streaming")` | `docs/emotion-segmented-streaming-protocol.md` + `docs/api-reference.md` 速览 |
+| `@app.websocket("/emotion-segmented-streaming")` | `docs/protocols/emotion-segmented-streaming-protocol.md` + `docs/api-reference.md` 速览 |
 | `@app.post("/api/asr/upload")` | `docs/api-reference.md` |
-| `@app.post("/api/asr/transcriptions")` + `@app.get("/api/asr/transcriptions/{job_id}")` | `docs/transcription-jobs-api.md` + `docs/api-reference.md` 速览 |
-| `@app.post("/api/asr/enrollment")` | `docs/api-reference.md` + `docs/transcribe-streaming-protocol.md` 注册接口章节 |
+| `@app.post("/api/asr/transcriptions")` + `@app.get("/api/asr/transcriptions/{job_id}")` | `docs/api/transcription-jobs-api.md` + `docs/api-reference.md` 速览 |
+| `@app.post("/api/asr/enrollment")` | `docs/api-reference.md` + `docs/protocols/transcribe-streaming-protocol.md` 注册接口章节 |
 | `@app.delete("/api/asr/enrollment/{id}")` | 同上 |
 | `@app.get("/api/asr/hotword-pool")` + `@app.post("/api/asr/hotword-pool")` + `@app.delete("/api/asr/hotword-pool")` + `@app.post("/api/asr/hotword-pool/reload")` | `docs/api-reference.md` |
-| `@app.post("/api/audio/analyze")` | `docs/audio-analyze-api.md` + `docs/public-audio-analyze-api.md` |
+| `@app.post("/api/audio/analyze")` | `docs/api/audio-analyze-api.md` + `docs/api/public-audio-analyze-api.md` |
 | `@app.post("/api/emotion/jobs")` + `@app.get("/api/emotion/jobs/{job_id}")` | `docs/api-reference.md` |
 | `@app.post("/api/emotion-spec/jobs")` + `@app.get("/api/emotion-spec/jobs/{job_id}")` | 已知漂移，见下节 |
 

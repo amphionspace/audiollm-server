@@ -24,7 +24,7 @@
 
 ## 调用示例
 
-完整脚本见 [examples/rest_upload.py](examples/rest_upload.py)。
+完整脚本见 [examples/rest_upload.py](../examples/rest_upload.py)。
 
 ```bash
 python docs/examples/rest_upload.py analyze sample.wav \
@@ -92,6 +92,6 @@ python docs/examples/rest_upload.py analyze sample.wav \
 
 ## 相关文档
 
-- [API 总览](api-reference.md)
-- [通用 ASR 上传](transcribe-streaming-protocol.md#rest-上传接口)
-- [整段情感识别 HTTP](emotion-streaming-protocol.md)
+- [API 总览](../api-reference.md)
+- [通用 ASR 上传](../protocols/transcribe-streaming-protocol.md#rest-上传接口)
+- [整段情感识别 HTTP](../protocols/emotion-streaming-protocol.md)

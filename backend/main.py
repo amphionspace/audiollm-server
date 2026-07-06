@@ -114,7 +114,7 @@ async def tuling_ast_v3_ws(websocket: WebSocket):
     stream, and engine are the shared ones. ``emit_timing`` lets the engine
     surface segment ``bg``/``ed`` to the protocol.
 
-    See ``docs/tuling-ast-v3-protocol.md``.
+    See ``docs/protocols/tuling-ast-v3-protocol.md``.
     """
     await websocket.accept()
     logger.info("Tuling AST v3 connected (/tuling/ast/v3)")
@@ -204,7 +204,7 @@ async def astv3_test_proxy_ws(websocket: WebSocket):
     the browser's same-origin (wss://) connection and relays every frame, in both
     directions, to/from that upstream without inspecting the AST v3 envelope. It
     is a transparent byte pump, so the on-the-wire contract is identical to
-    ``/tuling/ast/v3`` (see ``docs/tuling-ast-v3-protocol.md``).
+    ``/tuling/ast/v3`` (see ``docs/protocols/tuling-ast-v3-protocol.md``).
 
     Temporary test scaffolding: the upstream address is hard-coded.
     """

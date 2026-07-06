@@ -26,11 +26,11 @@
 | `/tuling/ast/v3` | 通用流式 ASR（讯飞图灵 AST v3 协议） | 对接讯飞 tuling-ast-sdk 或按 AST v3 信封集成 | `payload.result` 词图（msgtype sentence / Progressive） |
 | `/astv3-test-proxy` | AST v3 同源代理（测试用） | 仅供 HTTPS 前端规避 mixed content，透明转发到写死的远程 AST v3 后端 | 同 `/tuling/ast/v3`（透明转发） |
 
-`/transcribe-streaming` 的 `final` / `final_asr` 消息除文本外会带当前语音分段的 `audio_b64`（WAV base64）、`duration_sec` 和 `effective_hotwords`（本段音频经 RAG-ASR/Triton 实际召回的热词列表，不含临时请求热词），主前端用音频字段做分段回放、可用 `effective_hotwords` 展示本段召回命中。k2 模式下该音频是同一段送入 LLM ASR 的 k2 段缓冲，不再经过本地 VAD 段首/段尾二次裁剪；完整字段见 [实时转写 WebSocket 协议](transcribe-streaming-protocol.md)。服务端开启 `debug_dump_enabled`（`defaults.debug`，运维级、不在客户端覆写白名单）后，`ready` 带 `session_id`/`dump_dir`、`final` 带 `dump_id`，并把每段音频+元信息落盘到 `<dump_dir>/<session_id>/<seg_id>.{wav,json}`，前端在气泡上显示可复制的 `dump_id`，用于回放/最终结果对账，详见协议文档“调试落盘”小节。
+`/transcribe-streaming` 的 `final` / `final_asr` 消息除文本外会带当前语音分段的 `audio_b64`（WAV base64）、`duration_sec` 和 `effective_hotwords`（本段音频经 RAG-ASR/Triton 实际召回的热词列表，不含临时请求热词），主前端用音频字段做分段回放、可用 `effective_hotwords` 展示本段召回命中。k2 模式下该音频是同一段送入 LLM ASR 的 k2 段缓冲，不再经过本地 VAD 段首/段尾二次裁剪；完整字段见 [实时转写 WebSocket 协议](protocols/transcribe-streaming-protocol.md)。服务端开启 `debug_dump_enabled`（`defaults.debug`，运维级、不在客户端覆写白名单）后，`ready` 带 `session_id`/`dump_dir`、`final` 带 `dump_id`，并把每段音频+元信息落盘到 `<dump_dir>/<session_id>/<seg_id>.{wav,json}`，前端在气泡上显示可复制的 `dump_id`，用于回放/最终结果对账，详见协议文档“调试落盘”小节。
 
-`/tuling/ast/v3` 与上面两个任务接口的线上协议不同：音频以 base64 放在 JSON 帧，`header.status`（0/1/2）驱动状态机，无 `ready`/`start`/`stop`，结果为词图结构。模型组合上也不同：本端点恒为 primary-only（强制关闭副模型/本地 Qwen/融合，客户端无法经 `parameter.asr_config` 重开），主模型由 `astv3_vllm_*` 指定（当前留空，回退全局 primary `vllm_base_url`），而 `/transcribe-streaming` 仍按 `config.yaml` 走双模型。临时热词放 `payload.text.text`；热词池隔离只用首帧 `parameter.asr_config.hotword_pool_id`；目标说话人先经 `POST /api/asr/enrollment` 注册，再把 id 放进首帧 `parameter.asr_config.enrollment_id`。`header.resIdList` 仅记录并忽略。它不遵循下文“WebSocket 调用流程”，详见 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md)。
+`/tuling/ast/v3` 与上面两个任务接口的线上协议不同：音频以 base64 放在 JSON 帧，`header.status`（0/1/2）驱动状态机，无 `ready`/`start`/`stop`，结果为词图结构。模型组合上也不同：本端点恒为 primary-only（强制关闭副模型/本地 Qwen/融合，客户端无法经 `parameter.asr_config` 重开），主模型由 `astv3_vllm_*` 指定（当前留空，回退全局 primary `vllm_base_url`），而 `/transcribe-streaming` 仍按 `config.yaml` 走双模型。临时热词放 `payload.text.text`；热词池隔离只用首帧 `parameter.asr_config.hotword_pool_id`；目标说话人先经 `POST /api/asr/enrollment` 注册，再把 id 放进首帧 `parameter.asr_config.enrollment_id`。`header.resIdList` 仅记录并忽略。它不遵循下文“WebSocket 调用流程”，详见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。
 
-`/astv3-test-proxy` 是为「实时语音识别（测试用）」前端页面临时搭的同源 WebSocket 代理。该页经 HTTPS 提供，浏览器 mixed-content 策略禁止它直接打开明文 `ws://` 的远程 AST v3 后端；由后端在同源 `wss://`（经反向代理）接入后，把每一帧原样双向转发到写死的上游 `ws://159.138.9.106:18082/tuling/ast/v3`。它不解析 AST v3 信封，线上协议与 `/tuling/ast/v3` 完全一致（见 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md)）；上游连接失败时服务端以 close code 1011 关闭连接。临时测试设施：上游地址写死、前端不暴露任何可选项，外部集成请直接使用 `/tuling/ast/v3`。
+`/astv3-test-proxy` 是为「实时语音识别（测试用）」前端页面临时搭的同源 WebSocket 代理。该页经 HTTPS 提供，浏览器 mixed-content 策略禁止它直接打开明文 `ws://` 的远程 AST v3 后端；由后端在同源 `wss://`（经反向代理）接入后，把每一帧原样双向转发到写死的上游 `ws://159.138.9.106:18082/tuling/ast/v3`。它不解析 AST v3 信封，线上协议与 `/tuling/ast/v3` 完全一致（见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)）；上游连接失败时服务端以 close code 1011 关闭连接。临时测试设施：上游地址写死、前端不暴露任何可选项，外部集成请直接使用 `/tuling/ast/v3`。
 
 ### REST 上传接口
 
@@ -81,13 +81,13 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 }
 ```
 
-各任务可以在此基础上增加字段，例如 ASR 的 `language` / `hotword_pool_id` / `hotwords` / `enrollment_id`、情感识别的 `mode`。`hotword_pool_id` 是热词池隔离 ID，默认 `default`；`hotwords` 是临时请求热词字段，当前 ASR 偏置来自该热词池召回。`/transcribe-streaming` 携带 `enrollment_id` 时会切换为目标说话人模式，详见 [通用流式 ASR WebSocket](transcribe-streaming-protocol.md)。
+各任务可以在此基础上增加字段，例如 ASR 的 `language` / `hotword_pool_id` / `hotwords` / `enrollment_id`、情感识别的 `mode`。`hotword_pool_id` 是热词池隔离 ID，默认 `default`；`hotwords` 是临时请求热词字段，当前 ASR 偏置来自该热词池召回。`/transcribe-streaming` 携带 `enrollment_id` 时会切换为目标说话人模式，详见 [通用流式 ASR WebSocket](protocols/transcribe-streaming-protocol.md)。
 
 ### 临时配置覆写
 
 参数取值优先级（后者覆盖前者）：`backend/config.py` 内置默认 → `config.yaml` 服务端默认（实际生效默认值，重启生效）→ 客户端临时覆写（仅当前连接生效、不落盘）。`config.py` 内置默认与 `config.yaml` 不一致时以 `config.yaml` 为准，内置默认仅为文件缺字段时的兜底。
 
-客户端临时覆写对任务型 WebSocket 端点统一生效，承载位置不同：`/transcribe-streaming` 与 `/emotion-segmented-streaming` 用 `start.config`，`/tuling/ast/v3` 用首帧 `parameter.asr_config`（见 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md)）。两者都只接受扁平字段名（与 `config.yaml` 是否分组无关）。
+客户端临时覆写对任务型 WebSocket 端点统一生效，承载位置不同：`/transcribe-streaming` 与 `/emotion-segmented-streaming` 用 `start.config`，`/tuling/ast/v3` 用首帧 `parameter.asr_config`（见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)）。两者都只接受扁平字段名（与 `config.yaml` 是否分组无关）。
 
 覆写字段受服务端白名单（`backend/config.py` 的 `CLIENT_OVERRIDABLE_FIELDS`）约束：只放调参类字段；模型地址（`*_vllm_base_url`，避免 SSRF）、模型 prompt 模板（`*_prompt_template`）、密钥（`text_cleanup_api_key*`）、连接池与任务队列等进程级基础设施字段不可覆写。白名单外字段、未知字段与非法值都会被忽略并保持服务端默认，不会中断连接。完整白名单按类别如下：
 
@@ -133,7 +133,7 @@ ASR 模型组合开关的语义矩阵（`enable_dual_asr_fusion=true` 但 `enabl
 }
 ```
 
-`/tuling/ast/v3` 没有 `start` 消息，等价覆写是把上面 `config` 里的字段放进首帧 `parameter.asr_config`（另可选 `language`），详见 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md)。
+`/tuling/ast/v3` 没有 `start` 消息，等价覆写是把上面 `config` 里的字段放进首帧 `parameter.asr_config`（另可选 `language`），详见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。
 
 ## REST 上传调用
 
@@ -245,7 +245,7 @@ curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
 }
 ```
 
-`segments[*].start_ms` / `end_ms` 为段级近似时间戳（非词级对齐）。单段失败重试一次后以 `error` 占位、不拖垮整个任务；结果内存保留 `transcribe_job_ttl_sec`（默认 1 小时）。完整的请求/响应字段表、状态机、部分失败语义、错误码、`config.yaml` 调参（`defaults.transcribe` 分组）与切段停顿调参建议见 [长音频离线转写 API](transcription-jobs-api.md)，命令行客户端见 `docs/examples/http_transcribe_job.py`。
+`segments[*].start_ms` / `end_ms` 为段级近似时间戳（非词级对齐）。单段失败重试一次后以 `error` 占位、不拖垮整个任务；结果内存保留 `transcribe_job_ttl_sec`（默认 1 小时）。完整的请求/响应字段表、状态机、部分失败语义、错误码、`config.yaml` 调参（`defaults.transcribe` 分组）与切段停顿调参建议见 [长音频离线转写 API](api/transcription-jobs-api.md)，命令行客户端见 `docs/examples/http_transcribe_job.py`。
 
 ### 目标说话人注册
 
@@ -284,7 +284,7 @@ curl -X POST http://172.16.0.3:8082/api/asr/enrollment \
 
 `enrollment_id` 不可用（demo 本地缓存过期 / 重启 / 被 LRU 淘汰 / 删除，或 RAG-ASR 下沉链路缺失对应落盘文件、embedding 与当前模型/adapter 不兼容）后再被使用时，默认兼容语义是静默回退为普通 ASR、不返回 error：WS 路径仅记 WARN（见“WebSocket 错误消息”），REST `/api/asr/upload` 响应 `enrollment_used` 为 `false`。集成方应对失效有预期，必要时重新注册并更新所携带的 id。
 
-`asr_enrollment_min_sec` / `asr_enrollment_max_sec` / `asr_enrollment_ttl_sec` 虽在客户端覆写白名单内（见“临时配置覆写”），但注册是独立的 REST 调用、恒按服务端默认执行；流式端点首帧覆写这些值不会改变已注册 id 的行为。通用流式端点的 `start.enrollment_id` / `update_hotwords.enrollment_id` 用法与 TS-ASR 双音频 prompt 模板见 [通用流式 ASR WebSocket](transcribe-streaming-protocol.md)；AST v3 集成只需按本节注册，并按 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md) 把 id 放入 `parameter.asr_config.enrollment_id`。
+`asr_enrollment_min_sec` / `asr_enrollment_max_sec` / `asr_enrollment_ttl_sec` 虽在客户端覆写白名单内（见“临时配置覆写”），但注册是独立的 REST 调用、恒按服务端默认执行；流式端点首帧覆写这些值不会改变已注册 id 的行为。通用流式端点的 `start.enrollment_id` / `update_hotwords.enrollment_id` 用法与 TS-ASR 双音频 prompt 模板见 [通用流式 ASR WebSocket](protocols/transcribe-streaming-protocol.md)；AST v3 集成只需按本节注册，并按 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md) 把 id 放入 `parameter.asr_config.enrollment_id`。
 
 ### 热词池管理
 
@@ -432,10 +432,10 @@ REST 接口使用标准 HTTP 状态码：
 
 ## 相关文档
 
-- [公网非实时音频分析 API](public-audio-analyze-api.md)
-- [非实时音频分析 API](audio-analyze-api.md)
-- [长音频离线转写 API](transcription-jobs-api.md)
-- [通用流式 ASR WebSocket](transcribe-streaming-protocol.md)
-- [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md)
-- [整段情感识别 HTTP（异步）](emotion-streaming-protocol.md)
-- [分段情感识别 WebSocket](emotion-segmented-streaming-protocol.md)
+- [公网非实时音频分析 API](api/public-audio-analyze-api.md)
+- [非实时音频分析 API](api/audio-analyze-api.md)
+- [长音频离线转写 API](api/transcription-jobs-api.md)
+- [通用流式 ASR WebSocket](protocols/transcribe-streaming-protocol.md)
+- [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)
+- [整段情感识别 HTTP（异步）](protocols/emotion-streaming-protocol.md)
+- [分段情感识别 WebSocket](protocols/emotion-segmented-streaming-protocol.md)

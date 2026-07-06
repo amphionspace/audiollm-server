@@ -143,7 +143,7 @@ payload 与整段情感接口一致：
 
 ## Python WebSocket 示例
 
-完整可运行脚本见仓库内 [tests/test_emotion_ws_client.py](../tests/test_emotion_ws_client.py)。
+完整可运行脚本见仓库内 [tests/test_emotion_ws_client.py](../../tests/test_emotion_ws_client.py)。
 
 ```bash
 pip install websockets numpy
@@ -155,6 +155,6 @@ python tests/test_emotion_ws_client.py sample.wav \
 
 ## 相关文档
 
-- [API 总览](api-reference.md)
+- [API 总览](../api-reference.md)
 - [整段情感识别](emotion-streaming-protocol.md)
 - [通用流式 ASR](transcribe-streaming-protocol.md)

@@ -219,7 +219,7 @@ Client                                      Server
 
 ## 可覆写配置
 
-`start.config` 仅对当前连接生效、不落盘，只接受扁平字段名。覆写字段受服务端白名单（`backend/config.py` 的 `CLIENT_OVERRIDABLE_FIELDS`）约束：白名单外字段（如模型地址 `*_vllm_base_url`、密钥、连接池/队列等基础设施项）、未知字段与非法值都会被忽略并保持服务端默认，不会中断连接。完整白名单与 `/tuling/ast/v3` 的 `parameter.asr_config` 共用，按类别速览见 [API 总览](api-reference.md) 的“临时配置覆写”。
+`start.config` 仅对当前连接生效、不落盘，只接受扁平字段名。覆写字段受服务端白名单（`backend/config.py` 的 `CLIENT_OVERRIDABLE_FIELDS`）约束：白名单外字段（如模型地址 `*_vllm_base_url`、密钥、连接池/队列等基础设施项）、未知字段与非法值都会被忽略并保持服务端默认，不会中断连接。完整白名单与 `/tuling/ast/v3` 的 `parameter.asr_config` 共用，按类别速览见 [API 总览](../api-reference.md) 的“临时配置覆写”。
 
 当服务端启用 `k2_enabled=true` 时，本端点的 partial 来自外部 k2 流式 ASR，final 仍由本服务 LLM ASR 产生。k2 只做纯识别，不接热词、不接目标说话人、不返回 token timestamps；热词召回、目标说话人过滤与文本规范化只作用于 final。此时切段权威是 k2 endpoint，本服务只保留有界缓冲，并在 partial/final 进入下游前用 `k2_voice_gate_*` 确认有人声证据；voice gate 只做放行/丢弃，不裁剪段首/段尾。VAD 与伪流式间隔类覆写仍会被接受但不再决定切点或首字时机；`enable_pseudo_stream=false` 仍会抑制 partial 下发。
 
@@ -240,7 +240,7 @@ Client                                      Server
 
 ## Python WebSocket 示例
 
-完整可运行脚本见 [examples/ws_transcribe.py](examples/ws_transcribe.py)。
+完整可运行脚本见 [examples/ws_transcribe.py](../examples/ws_transcribe.py)。
 
 ```bash
 pip install websockets numpy
@@ -286,7 +286,7 @@ python docs/examples/ws_transcribe.py sample.wav \
 
 ### Python REST 示例
 
-完整可运行脚本见 [examples/rest_upload.py](examples/rest_upload.py)。
+完整可运行脚本见 [examples/rest_upload.py](../examples/rest_upload.py)。
 
 ```bash
 pip install requests
@@ -497,6 +497,6 @@ final 段 prompt 中实际注入的是去重限量后的临时 `hotwords`（默�
 
 ## 相关文档
 
-- [API 总览](api-reference.md)
+- [API 总览](../api-reference.md)
 - [整段情感识别](emotion-streaming-protocol.md)
 - [分段情感识别](emotion-segmented-streaming-protocol.md)
