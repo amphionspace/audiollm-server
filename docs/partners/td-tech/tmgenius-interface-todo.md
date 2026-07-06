@@ -150,8 +150,8 @@
 ## 11. 文档、示例和错误码补齐
 
 - 同步更新：
-  - `docs/tuling-ast-v3-protocol.md`
-  - `docs/api-reference.md`
+  - [`../../tuling-ast-v3-protocol.md`](../../tuling-ast-v3-protocol.md)
+  - [`../../api-reference.md`](../../api-reference.md)
   - `tests/test_ast_v3_ws_client.py`
 - 测试客户端的 `--enrollment-id` 需要改为写入 `parameter.asr_config.enrollment_id`，并同时设置 `enrollment_enable=true`。
 - 注册接口错误码补充 `unsupported_format`，用于 WAV/MP3/PCM 之外的格式。
