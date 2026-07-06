@@ -11,3 +11,5 @@
 | [实时转写 AST v3 WebSocket API](../../tuling-ast-v3-protocol.md) | 本服务当前 `/tuling/ast/v3` 实现文档 |
 
 当前角色分离对接口径：本版本暂不支持角色分离，但接受 `parameter.asr_config.enable_role_separation` 字段；无论客户端传 `true` 还是 `false`，服务端均正常识别，`sentence` 结果中的 `cw[].rl` 固定返回整数 `0`，`Progressive` 结果不返回 `cw[].rl`。
+
+声纹对外契约口径：声纹启用由 `parameter.asr_config.enrollment_enable` 和 `parameter.asr_config.enrollment_id` 共同决定，`enrollment_enable` 默认 `false`；AST v3 响应应返回 `enrollment_used` / `enrollment_applied` 表示本次声纹是否实际生效；`GET /api/asr/enrollment/{enrollment_id}` 用于查询声纹 ID 当前是否可用。内部实现跟进项统一维护在 TODO 文档。

@@ -558,7 +558,7 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 }
 ```
 
-> `enrollment_id` 失效不触发 error，服务端静默回退普通 ASR 并记录 WARN 日志，CAgent 应通过响应中 `rl` 字段缺失或业务层检测来判断是否需要重新注册。
+> `enrollment_id` 失效不触发 error，服务端静默回退普通 ASR 并记录 WARN 日志。`rl` 仅为角色分离兼容字段，当前固定为 `0`，不能用于判断声纹是否生效；CAgent 需要通过声纹状态查询或后续补充的 `enrollment_used` / `enrollment_applied` 判断是否需要重新注册。
 
 ---
 
@@ -611,7 +611,7 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 }
 ```
 
-当声纹 ID 过期、被删除、不存在或服务端回退普通 ASR 时，应明确返回 `false`，避免 CAgent 只能依赖日志判断。
+当声纹 ID 不存在、被删除、embedding 不兼容或服务端回退普通 ASR 时，应明确返回 `false`，避免 CAgent 只能依赖日志判断。
 
 ### 3. 热词管理接口
 

@@ -15,7 +15,7 @@
 本文档基于对方《TMGenius 语音识别接口》V0.2 及鼎桥《开发指南-实时转写服务AST.3.4.4.1081-增加角色分离》参考文档，经安菲翁评审后整理为建议契约。接口分三个功能域：
 
 1. **实时转写**：WebSocket 流式语音识别（AST v3 协议）。
-2. **声纹管理**：目标说话人注册、删除。
+2. **声纹管理**：目标说话人注册、查询、删除。
 3. **热词管理**：按 `hotword_pool_id` 隔离的热词池查询、添加、指定删除、清空及重载。
 
 CAgent 收到小乔端 ASR 请求后作为代理层调用本文档接口；小乔不直接访问 TMGenius。
@@ -130,6 +130,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 - `enrollment_enable=true` 且 `enrollment_id` 非空时启用声纹。
 - `enrollment_enable=true` 但 `enrollment_id` 为空时，应返回参数错误，不进入静默普通 ASR。
 - 服务端应在识别结果或会话状态中返回 `enrollment_used` 或 `enrollment_applied`，表示声纹是否实际生效。
+- `cw[].rl` 只用于角色分离字段兼容，不表示声纹是否命中或启用。
 
 ### 6. 音频格式
 
@@ -195,10 +196,12 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 | `header.traceId` | String | 日志追踪 ID |
 | `header.status` | Int | 识别状态：`0` 开始 / `1` 识别中 / `2` 结束 |
 | `payload.result.msgtype` | String | `sentence` 最终结果 / `Progressive` 中间结果 |
-| `payload.result.enrollment_used` | Boolean | 声纹是否实际生效 |
+| `payload.result.enrollment_used` | Boolean | 声纹是否实际生效；声纹未启用、ID 不可用或回退普通 ASR 时为 `false` |
 | `payload.result.bg` / `ed` | Int | 句子开始 / 结束时间，单位 ms |
 | `payload.result.ws` | Array | 词语列表 |
 | `payload.result.ws[].cw[].rl` | Int | 角色编号；当前版本仅在 `sentence` 中固定返回 `0`，`Progressive` 不返回 |
+
+声纹生效状态说明：`enrollment_used` / `enrollment_applied` 用于确认本次识别是否实际应用了声纹；`cw[].rl` 只用于角色分离字段兼容，当前固定为 `0`，不表示声纹状态。
 
 ---
 
@@ -250,7 +253,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 
 该接口也可用于查询已生效声纹、定位数据不一致：如果 CAgent 保存了某个 `enrollment_id`，但查询返回 `available=false`，说明该 ID 在当前服务端不可用，可能是未注册、已删除、落盘文件缺失、embedding 与当前模型/adapter 不兼容，或路由到没有共享同一 RAG-ASR 本地存储的实例导致。若不同实例或管理服务对同一 `enrollment_id` 返回不同 `available`，可以直接暴露实例间存储或路由不一致问题。
 
-需要注意：该接口只负责诊断和暴露状态，不负责同步声纹数据，也不保证查询后实际 ASR 一定使用成功。最终仍需在 ASR 响应中返回 `enrollment_used`，用于确认本次识别是否实际应用了声纹。
+需要注意：该接口只负责诊断和暴露状态，不负责同步声纹数据，也不保证查询后实际 ASR 一定使用成功。最终仍需在 ASR 响应中返回 `enrollment_used` / `enrollment_applied`，用于确认本次识别是否实际应用了声纹。
 
 响应示例：
 
@@ -290,7 +293,7 @@ RAG-ASR 管理服务模式下，查询结果以管理服务为准；RAG-ASR 查�
 | 重启 | RAG-ASR 管理服务重启后仍可从本地落盘文件读取；前提是路由到同一持久化目录或共享存储 |
 | 容量 | RAG-ASR `enrollment_cache_max_entries` 只限制内存热缓存，不删除磁盘文件 |
 | 删除 | 删除接口会删除对应 `.pt` 与 `.json` 文件；未知 ID 也可按幂等成功处理 |
-| 失效 | 文件缺失、显式删除或 embedding 与当前模型/adapter 不兼容时，应在 ASR 响应中体现 `enrollment_used=false`，避免只依赖日志判断 |
+| 失效 | 文件缺失、显式删除或 embedding 与当前模型/adapter 不兼容时，应在 ASR 响应中体现 `enrollment_used=false` 或 `enrollment_applied=false`，避免只依赖日志判断 |
 
 若 TMGenius / RAG-ASR 多实例部署，需要说明是否使用共享持久化目录或会话粘滞；否则同一 `enrollment_id` 可能在不同实例不可用。
 
