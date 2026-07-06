@@ -225,7 +225,7 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 
 支持只转写指定说话人的语音，复用与 `/transcribe-streaming` 相同的注册机制，分两步：
 
-1. 注册：通过 `POST /api/asr/enrollment` 上传 1-8 秒目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le），拿到 `enrollment_id`（见 [API 总览](api-reference.md) 的注册接口）。默认本地缓存注册音频；灰度打开 `enable_triton_enrollment_store=true` 且配置 RAG-ASR 管理服务后，新注册音频会转发给 RAG-ASR 保存 embedding tensor 和元数据。
+1. 注册：通过 `POST /api/asr/enrollment` 上传 1-8 秒目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le），拿到 `enrollment_id`（见 [API 总览](api-reference.md) 的注册接口）。默认 demo 本地缓存注册音频；打开 `enable_triton_enrollment_store=true` 且配置 RAG-ASR 管理服务后，新注册音频会转发给 RAG-ASR，并由 RAG-ASR 将 embedding tensor 和元数据落盘到本地 `enrollment_store_dir`（默认 `var/enrollments`）。
 2. 携带：在首帧（status=0）把该 id 放进 `parameter.asr_config.enrollment_id`。
 
 ```json
@@ -248,7 +248,7 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 说明：
 
 - enrollment_id 仅在首帧读取，整段会话沿用同一目标说话人。
-- 若 `parameter.asr_config.enrollment_id` 未注册或已过期，服务端默认静默回退为普通 ASR（仅记 WARN，不返回 error），避免长连接因陈旧 id 中断。默认本地缓存下 enrollment_id 有 TTL（默认 3600 秒、每次使用续期）且服务重启即失效；下沉链路中缺失 RAG-ASR embedding 也按同一兼容语义处理。完整生命周期（存储/有效期/容量/删除）见 [API 总览](api-reference.md) 注册接口的“生命周期”。
+- 若 `parameter.asr_config.enrollment_id` 不可用，服务端默认静默回退为普通 ASR（仅记 WARN，不返回 error），避免长连接因陈旧 id 中断。默认 demo 本地缓存下 enrollment_id 有 TTL（默认 3600 秒、每次使用续期）且服务重启即失效；启用 RAG-ASR 管理服务后，embedding tensor 与元数据会落盘到 RAG-ASR 的 `enrollment_store_dir`（默认 `var/enrollments`），重启不丢，但文件缺失或与当前模型/adapter 不兼容时也按同一兼容语义回退。完整生命周期（存储/有效期/容量/删除）见 [API 总览](api-reference.md) 注册接口的“生命周期”。
 - `header.resIdList` 不再作为目标说话人字段；若存在仅记录并忽略。
 - 未携带 `parameter.asr_config.enrollment_id` 时为普通 ASR。
 

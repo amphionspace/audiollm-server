@@ -114,7 +114,7 @@
 
 - 新增 `GET /api/asr/enrollment/{enrollment_id}`。
 - 用于让 CAgent 查询已保存的 `enrollment_id` 当前是否还能直接用于声纹 ASR。
-- 可用于查询已生效声纹、定位数据不一致：不同实例或管理服务对同一 `enrollment_id` 返回不同 `available` 时，说明注册、缓存、同步或路由存在不一致。
+- 可用于查询已生效声纹、定位数据不一致：不同实例或管理服务对同一 `enrollment_id` 返回不同 `available` 时，说明落盘存储、模型兼容性或路由存在不一致。
 - 该接口只负责诊断和暴露状态，不负责同步声纹数据，也不保证查询后实际 ASR 一定使用成功；最终仍以 ASR 响应中的 `enrollment_used` 为准。
 - 响应字段固定为简化结构：
 
@@ -132,12 +132,12 @@
   - `reason`：状态原因，`available=true` 时为 `ok`。
 - `available=false` 的常见 `reason`：
   - `not_found`：服务端找不到该 ID。
-  - `expired`：TTL 已过期。
-  - `deleted_or_evicted`：已删除或被 LRU 淘汰。
+  - `incompatible`：落盘 embedding 与当前模型、adapter 或 projector 维度不兼容。
+  - `deleted`：已显式删除。
   - `upstream_unavailable`：外部 enrollment 管理服务不可用。
 - 查询接口不返回原始注册音频、PCM、embedding 或其他声纹敏感材料。
-- 默认内存缓存模式下，查询接口不应刷新 TTL；只有实际 ASR 使用成功才续期。
-- 外部管理服务模式下，查询结果以管理服务为准。
+- RAG-ASR 管理服务模式下，查询结果以管理服务为准；RAG-ASR 将 projector frames tensor 和 JSON 元数据落盘到 `enrollment_store_dir/<scope>/<enrollment_id>.pt/.json`（默认 `var/enrollments`），查询/使用会更新 `last_used_at`，当前不做 TTL 自动过期。
+- 若仍使用 demo 进程内 fallback 缓存，则该缓存会受 TTL、重启和 LRU 容量限制。
 
 ## 10. AST v3 音频和语种字段
 

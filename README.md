@@ -405,7 +405,7 @@ final 转写默认做逆文本规范化（口语数字→阿拉伯数字）与�
 
 ASR 热词偏置来自 `config.yaml -> services.recall` 指向的 Triton 召回服务。客户端只使用 `hotword_pool_id` 指定热词池；未传时使用配置里的 `hotword_pool_id` 默认值（默认 `default`）。final 段只在该热词池内召回 top-K 热词，再让少量请求临时 `hotwords` 优先进入主 ASR prompt，并过滤精确重复或整词同音（忽略声调）的召回词。当主模型为 `amphion_asr_1.7b` 且未启用目标说话人时，服务端还会把 Triton 返回的 projector 帧作为 `audio_embeds` 发送给 vLLM，避免重复跑音频 encoder。伪流式 partial 不执行召回、不注入热词、也不走 encoder bypass，只使用纯 vLLM raw-audio 推理。
 
-`config.yaml -> services.recall_management` 是可选管理面。若其上游 `RAG_ASR_MANAGEMENT_BASE_URL` 非空，热词池查询、添加、指定删除、整池清空、reload 和 `enable_triton_enrollment_store=true` 的注册写入会转发到 RAG-ASR HTTP 管理服务；未配置时保持旧 Triton 兼容路径和本地 enrollment store，默认不改变现网行为。灰度打开下沉链路前，应先确认 RAG-ASR `scripts/serve_http.sh` 已作为独立服务运行，并使用包含模型依赖、FastAPI/uvicorn 的 Python 3.10 执行环境；否则 demo 会退回旧管理路径或在注册写入时得到上游错误。
+`config.yaml -> services.recall_management` 是可选管理面。若其上游 `RAG_ASR_MANAGEMENT_BASE_URL` 非空，热词池查询、添加、指定删除、整池清空、reload 和 `enable_triton_enrollment_store=true` 的注册写入会转发到 RAG-ASR HTTP 管理服务；RAG-ASR 会把 enrollment projector frames tensor 与元数据落盘到本地 `enrollment_store_dir`（默认 `var/enrollments`），不保存原始注册音频。未配置时保持旧 Triton 兼容路径和 demo 本地进程内 enrollment store，默认不改变现网行为。灰度打开下沉链路前，应先确认 RAG-ASR `scripts/serve_http.sh` 已作为独立服务运行，并使用包含模型依赖、FastAPI/uvicorn 的 Python 3.10 执行环境；否则 demo 会退回旧管理路径或在注册写入时得到上游错误。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -414,7 +414,7 @@ ASR 热词偏置来自 `config.yaml -> services.recall` 指向的 Triton 召回�
 | `hotword_pool_id` | string | `default` | 未显式传 `hotword_pool_id` 时使用的默认热词池 ID |
 | `recall_custom_hotword_limit` | int | `8` | 每次请求最多保留多少个临时 `hotwords` 优先进入 prompt；去重、覆盖同音召回词、不写入热词池 |
 | `enable_encoder_bypass` | bool | `true` | 是否使用 Triton `AUDIO_EMBEDS_B64` 走 vLLM encoder bypass；仅 1.7B 单音频路径生效 |
-| `enable_triton_enrollment_store` | bool | `false` | 是否把新注册音频转发到 RAG-ASR 管理链路保存 embedding tensor；默认关闭以保持本地注册音频缓存行为 |
+| `enable_triton_enrollment_store` | bool | `false` | 是否把新注册音频转发到 RAG-ASR 管理链路保存落盘 embedding tensor 和元数据；默认关闭以保持 demo 本地注册音频缓存行为 |
 
 #### 长音频离线转写（`POST /api/asr/transcriptions`）
 

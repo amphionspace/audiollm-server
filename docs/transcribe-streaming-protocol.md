@@ -282,7 +282,7 @@ python docs/examples/ws_transcribe.py sample.wav \
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `text` | string | 最终转写文本；与流式 final 一致，默认已做 ITN 与车牌规范化（开关见上文“文本规范化（仅 final）”） |
-| `enrollment_used` | boolean | 本次推理是否实际使用了目标说话人。`enrollment_id` 已过期或不存在时为 `false` |
+| `enrollment_used` | boolean | 本次推理是否实际使用了目标说话人。`enrollment_id` 不存在、demo 本地缓存已过期、RAG-ASR 落盘文件缺失或 embedding 不兼容时为 `false` |
 
 ### Python REST 示例
 
@@ -299,7 +299,7 @@ python docs/examples/rest_upload.py asr sample.wav \
 
 ## 目标说话人注册接口
 
-`POST /api/asr/enrollment` 上传一段 1-8 秒的目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le）。默认配置下服务端把音频规范化为 16 kHz mono WAV、写入进程内缓存，并返回不透明的 `enrollment_id`；当 `enable_triton_enrollment_store=true` 且配置了 RAG-ASR 管理服务时，新注册音频会临时转发给 RAG-ASR 保存 embedding tensor 和元数据，本服务不再持久化注册人原始音频。后续 WebSocket `start` / `update_hotwords` 或 `/api/asr/upload` 携带该 id 时，主模型 prompt 自动切换为 TS-ASR 双音频形态（先 enrollment 后 target），具体文本位置由服务端 `prompt_template` 随模型选择。
+`POST /api/asr/enrollment` 上传一段 1-8 秒的目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le）。默认配置下服务端把音频规范化为 16 kHz mono WAV、写入 demo 进程内缓存，并返回不透明的 `enrollment_id`；当 `enable_triton_enrollment_store=true` 且配置了 RAG-ASR 管理服务时，新注册音频会转发给 RAG-ASR，RAG-ASR 将 projector frames tensor 和元数据落盘到 `enrollment_store_dir/<enrollment_scope_id>/<enrollment_id>.pt/.json`（默认 `var/enrollments`），本服务和 RAG-ASR 都不保存原始注册音频。后续 WebSocket `start` / `update_hotwords` 或 `/api/asr/upload` 携带该 id 时，主模型 prompt 自动切换为 TS-ASR 双音频形态（先 enrollment 后 target），具体文本位置由服务端 `prompt_template` 随模型选择。
 
 ### 请求
 
@@ -320,7 +320,7 @@ HTTP 200。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `enrollment_id` | string | 后续请求复用的不透明 id；TTL 默认 3600 秒，每次成功 `get` 刷新过期时间 |
+| `enrollment_id` | string | 后续请求复用的不透明 id；demo 本地缓存 TTL 默认 3600 秒。RAG-ASR 下沉链路为本地磁盘持久化，无 TTL 自动过期 |
 | `duration_sec` | number | 最终注册音频时长（裁剪后）；下沉链路中该时长来自 RAG-ASR 元数据 |
 
 ### 错误响应
@@ -355,8 +355,8 @@ HTTP 400，`detail` 为结构化对象：
 |---|---|---|
 | asr_enrollment_min_sec | 1.0 | 最小时长，低于此值返回 too_short |
 | asr_enrollment_max_sec | 8.0 | 最大时长，超出尾截 |
-| asr_enrollment_ttl_sec | 3600 | 缓存 TTL；最近一次 get 后重新计时 |
-| asr_enrollment_max_entries | 256 | 本地进程内缓存条目上限；下沉链路由 RAG-ASR enrollment cache/store 管理 |
+| asr_enrollment_ttl_sec | 3600 | demo 本地进程内缓存 TTL；最近一次 get 后重新计时。RAG-ASR 下沉链路不使用该 TTL 自动删除落盘 embedding |
+| asr_enrollment_max_entries | 256 | demo 本地进程内缓存条目上限；RAG-ASR 的 enrollment cache 上限只影响内存热缓存，不删除磁盘文件 |
 
 ### 与 fusion 的关系
 

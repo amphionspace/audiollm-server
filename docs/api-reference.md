@@ -276,13 +276,13 @@ curl -X POST http://172.16.0.3:8080/api/asr/enrollment \
 
 | 项目 | 行为 |
 |---|---|
-| 存储 | 默认 `enable_triton_enrollment_store=false` 时为进程内内存缓存，服务重启全部失效，不跨实例共享；灰度打开后，新注册音频会转发到 RAG-ASR 管理服务，由 RAG-ASR 持久化 embedding tensor 和元数据，不保存原始注册音频 |
-| 有效期 | TTL 由 `asr_enrollment_ttl_sec`（默认 3600 秒）控制；每次被成功使用都会续期，持续使用不会过期 |
-| 断连 | WebSocket 断开不删除，重连后仍可复用（受 TTL 约束） |
-| 容量 | 上限 `asr_enrollment_max_entries`（默认 256），超出按最近最少使用（LRU）淘汰最旧条目 |
-| 删除 | `DELETE /api/asr/enrollment/{enrollment_id}` 立即清除；未知 id 也返回 204，可安全重试 |
+| 存储 | 默认 `enable_triton_enrollment_store=false` 时为 demo 进程内内存缓存，服务重启全部失效，不跨实例共享；打开后，新注册音频会转发到 RAG-ASR 管理服务，由 RAG-ASR 将 projector frames tensor 与 JSON 元数据落盘到 `enrollment_store_dir/<enrollment_scope_id>/<enrollment_id>.pt/.json`（默认 `var/enrollments`），不保存原始注册音频 |
+| 有效期 | demo 进程内缓存由 `asr_enrollment_ttl_sec`（默认 3600 秒）控制并在使用时续期；RAG-ASR 落盘存储当前不做 TTL 自动过期，查询/使用会更新元数据 `last_used_at`（受 RAG-ASR `enrollment_metadata_touch_interval_sec` 节流） |
+| 断连 / 重启 | WebSocket 断开不删除。demo 进程内缓存重启即丢；RAG-ASR 落盘存储在管理服务重启后仍可按同一 `enrollment_scope_id` + `enrollment_id` 读取 |
+| 容量 | demo 进程内缓存上限 `asr_enrollment_max_entries`（默认 256），超出按 LRU 淘汰；RAG-ASR 的 `enrollment_cache_max_entries` 只是内存热缓存上限，不删除磁盘上的 enrollment 文件 |
+| 删除 | `DELETE /api/asr/enrollment/{enrollment_id}` 立即清除；RAG-ASR 下沉链路会删除对应 `.pt` 与 `.json` 文件。未知 id 也返回 204，可安全重试 |
 
-`enrollment_id` 失效（过期 / 重启 / 被 LRU 淘汰 / 删除，或灰度下沉链路中 RAG-ASR 管理服务缺失对应 embedding）后再被使用时，默认兼容语义是静默回退为普通 ASR、不返回 error：WS 路径仅记 WARN（见“WebSocket 错误消息”），REST `/api/asr/upload` 响应 `enrollment_used` 为 `false`。集成方应对失效有预期，必要时重新注册并更新所携带的 id。
+`enrollment_id` 不可用（demo 本地缓存过期 / 重启 / 被 LRU 淘汰 / 删除，或 RAG-ASR 下沉链路缺失对应落盘文件、embedding 与当前模型/adapter 不兼容）后再被使用时，默认兼容语义是静默回退为普通 ASR、不返回 error：WS 路径仅记 WARN（见“WebSocket 错误消息”），REST `/api/asr/upload` 响应 `enrollment_used` 为 `false`。集成方应对失效有预期，必要时重新注册并更新所携带的 id。
 
 `asr_enrollment_min_sec` / `asr_enrollment_max_sec` / `asr_enrollment_ttl_sec` 虽在客户端覆写白名单内（见“临时配置覆写”），但注册是独立的 REST 调用、恒按服务端默认执行；流式端点首帧覆写这些值不会改变已注册 id 的行为。通用流式端点的 `start.enrollment_id` / `update_hotwords.enrollment_id` 用法与 TS-ASR 双音频 prompt 模板见 [通用流式 ASR WebSocket](transcribe-streaming-protocol.md)；AST v3 集成只需按本节注册，并按 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md) 把 id 放入 `parameter.asr_config.enrollment_id`。
 

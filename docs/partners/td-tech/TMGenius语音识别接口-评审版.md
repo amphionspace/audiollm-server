@@ -48,12 +48,12 @@ CAgent 收到小乔端的 ASR 请求后作为代理层调用本文档接口；�
 
 | 项目   | 行为                                                                 |
 | ------ | -------------------------------------------------------------------- |
-| 存储   | 进程内内存缓存，服务重启全部失效，不跨实例共享                       |
-| 有效期 | TTL 默认 3600 秒；每次被成功使用续期，持续使用不过期                 |
-| 容量   | 上限默认 256 条，超出按 LRU 淘汰最旧条目                             |
-| 失效   | `enrollment_id` 失效后服务端静默回退为普通 ASR，不返回错误           |
+| 存储   | RAG-ASR 管理服务将 projector frames tensor 与 JSON 元数据落盘到 `enrollment_store_dir/<scope>/<enrollment_id>.pt/.json`，默认 `var/enrollments`；不保存原始注册音频 |
+| 有效期 | RAG-ASR 落盘存储当前不做 TTL 自动过期；查询/使用会更新 `last_used_at` |
+| 容量   | RAG-ASR `enrollment_cache_max_entries` 只限制内存热缓存，不删除磁盘文件 |
+| 失效   | 文件缺失、显式删除或 embedding 与当前模型/adapter 不兼容后，服务端静默回退为普通 ASR，不返回错误 |
 
-> **CAgent 职责**：TMGenius 不持久化声纹，CAgent 需维护 `userId → enrollmentId` 映射，在 TMGenius 重启后按需重新调用注册接口。
+> **CAgent 职责**：CAgent 需维护 `userId → enrollmentId` 映射；RAG-ASR 本地落盘存在时，TMGenius/RAG-ASR 重启后通常无需重新注册。若路由到未共享同一 `enrollment_store_dir` 的实例、文件被删除或模型/adapter 不兼容，则需重新注册。
 
 ---
 
@@ -292,7 +292,7 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 | ----------- | ---- |
 | 204 | 删除成功（含未知 ID） |
 
-> `enrollment_id` 失效（TTL 超期 / 重启 / LRU 淘汰）后再被 AST v3 使用时，服务端静默回退为普通 ASR，不返回错误。CAgent 应在检测到回退后重新调用注册接口。
+> `enrollment_id` 不可用（未注册、已删除、落盘文件缺失或 embedding 与当前模型/adapter 不兼容）后再被 AST v3 使用时，服务端静默回退为普通 ASR，不返回错误。CAgent 应在检测到回退后重新调用注册接口。
 
 ---
 
@@ -728,7 +728,7 @@ GET /api/asr/enrollment/{enrollment_id}
 
 该接口用于让 CAgent 在只保存 `enrollment_id` 的情况下，判断该 ID 当前是否还能直接用于声纹 ASR。接口不返回原始注册音频、PCM、embedding 或其他声纹敏感材料。
 
-该接口也可用于查询已生效声纹、定位数据不一致：如果 CAgent 保存了某个 `enrollment_id`，但查询返回 `available=false`，说明该 ID 在当前服务端不可用，可能是未同步、已过期、被淘汰、服务重启或路由到不同实例导致。若不同实例或管理服务对同一 `enrollment_id` 返回不同 `available`，可以直接暴露实例间缓存 / 存储不一致问题。
+该接口也可用于查询已生效声纹、定位数据不一致：如果 CAgent 保存了某个 `enrollment_id`，但查询返回 `available=false`，说明该 ID 在当前服务端不可用，可能是未注册、已删除、落盘文件缺失、embedding 与当前模型/adapter 不兼容，或路由到没有共享同一 RAG-ASR 本地存储的实例导致。若不同实例或管理服务对同一 `enrollment_id` 返回不同 `available`，可以直接暴露实例间存储或路由不一致问题。
 
 需要注意：该接口只负责诊断和暴露状态，不负责同步声纹数据，也不保证查询后实际 ASR 一定使用成功。最终仍需在 ASR 响应中返回 `enrollment_used`，用于确认本次识别是否实际应用了声纹。
 
@@ -755,11 +755,11 @@ GET /api/asr/enrollment/{enrollment_id}
 | reason | 说明 |
 | ---- | ---- |
 | `not_found` | 服务端找不到该 ID |
-| `expired` | TTL 已过期 |
-| `deleted_or_evicted` | 已删除或被 LRU 淘汰 |
+| `incompatible` | 落盘 embedding 与当前模型、adapter 或 projector 维度不兼容 |
+| `deleted` | 已显式删除 |
 | `upstream_unavailable` | 外部 enrollment 管理服务不可用 |
 
-默认进程内缓存模式下，查询接口不应刷新 TTL；只有实际 ASR 使用成功才续期。外部管理服务模式下，查询结果以管理服务为准。
+RAG-ASR 管理服务模式下，查询结果以管理服务为准；RAG-ASR 查询/使用会更新元数据 `last_used_at`，但当前不做 TTL 自动过期。若仍使用 demo 进程内 fallback 缓存，则该缓存会受 TTL、重启和 LRU 容量限制。
 
 ### 10. 热词管理接口的 hotword_pool_id
 
