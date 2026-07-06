@@ -12,7 +12,7 @@ REST 上传版本见本文末尾的 `/api/asr/upload`，注册音频接口见 `/
 |---|---|
 | 协议 | WebSocket |
 | 路径 | `/transcribe-streaming` |
-| 完整 URL | `ws://172.16.0.3:8080/transcribe-streaming?language=<lang>` |
+| 完整 URL | `ws://172.16.0.3:8082/transcribe-streaming?language=<lang>` |
 | 鉴权 | 无内置鉴权，无需自定义请求头 |
 | 音频输入 | 二进制 PCM 帧，16 kHz、mono、signed 16-bit little-endian |
 | 分段策略 | 服务端 VAD 自动切段 |
@@ -246,7 +246,7 @@ Client                                      Server
 pip install websockets numpy
 
 python docs/examples/ws_transcribe.py sample.wav \
-  --url ws://172.16.0.3:8080/transcribe-streaming \
+  --url ws://172.16.0.3:8082/transcribe-streaming \
   --language zh \
   --hotwords "挚音科技,张硕" \
 ```
@@ -292,7 +292,7 @@ python docs/examples/ws_transcribe.py sample.wav \
 pip install requests
 
 python docs/examples/rest_upload.py asr sample.wav \
-  --base-url http://172.16.0.3:8080 \
+  --base-url http://172.16.0.3:8082 \
   --language zh \
   --hotwords "挚音科技,张硕" \
 ```
@@ -367,7 +367,7 @@ HTTP 400，`detail` 为结构化对象：
 ```python
 import requests
 
-base = "http://172.16.0.3:8080"
+base = "http://172.16.0.3:8082"
 with open("speaker_enroll.wav", "rb") as f:
     r = requests.post(
         f"{base}/api/asr/enrollment",

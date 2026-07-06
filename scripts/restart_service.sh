@@ -9,6 +9,8 @@
 set -euo pipefail
 
 SERVICE="${SERVICE:-audiollm-demo}"
+SERVICE="${SERVICE%.service}"
+UNIT="${SERVICE}.service"
 FOLLOW=0
 for arg in "$@"; do
   case "$arg" in
@@ -26,9 +28,48 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! systemctl list-unit-files "${SERVICE}.service" >/dev/null 2>&1; then
+unit_file_exists() {
+  local dir
+  for dir in \
+    /etc/systemd/system \
+    /run/systemd/system \
+    /usr/local/lib/systemd/system \
+    /usr/lib/systemd/system \
+    /lib/systemd/system; do
+    [ -e "${dir}/${UNIT}" ] && return 0
+  done
+  return 1
+}
+
+print_related_units() {
+  local dir file printed=0
+  shopt -s nullglob
+  for dir in \
+    /etc/systemd/system \
+    /run/systemd/system \
+    /usr/local/lib/systemd/system \
+    /usr/lib/systemd/system \
+    /lib/systemd/system; do
+    for file in "${dir}"/*.service; do
+      case "${file##*/}" in
+        *audio*|*llm*|*asr*|*vllm*|*k2*|*qwen*|*amphion*|*demo*)
+          if [ "${printed}" -eq 0 ]; then
+            echo "Related installed service units:" >&2
+            printed=1
+          fi
+          echo "  ${file##*/}" >&2
+          ;;
+      esac
+    done
+  done
+  shopt -u nullglob
+}
+
+if ! unit_file_exists; then
   echo "Service '${SERVICE}' is not installed." >&2
-  echo "Expected unit file at: /etc/systemd/system/${SERVICE}.service" >&2
+  echo "Expected unit file named '${UNIT}' in a systemd unit directory." >&2
+  print_related_units
+  echo "Set SERVICE=<unit-name> if this deployment uses a different service." >&2
   exit 1
 fi
 

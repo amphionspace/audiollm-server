@@ -14,7 +14,7 @@ Examples:
     python test_emotion_ws_client.py audio.wav
     python test_emotion_ws_client.py audio.wav --config emotion_request_timeout=20
     python test_emotion_ws_client.py audio.wav \
-        --url ws://172.16.0.3:8080/emotion-segmented-streaming
+        --url ws://172.16.0.3:8082/emotion-segmented-streaming
 """
 
 import argparse
@@ -208,7 +208,7 @@ def main():
     parser.add_argument("audio_file", help="Path to audio file (WAV or raw PCM s16le 16kHz)")
     parser.add_argument(
         "--url",
-        default="ws://172.16.0.3:8080/emotion-segmented-streaming",
+        default="ws://172.16.0.3:8082/emotion-segmented-streaming",
         help="WebSocket URL",
     )
     parser.add_argument("--chunk-ms", type=int, default=80, help="Chunk size in ms (default: 80)")

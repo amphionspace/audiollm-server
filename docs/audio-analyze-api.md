@@ -28,7 +28,7 @@
 
 ```bash
 python docs/examples/rest_upload.py analyze sample.wav \
-  --base-url http://172.16.0.3:8080 \
+  --base-url http://172.16.0.3:8082 \
   --language zh \
   --hotwords "挚音科技,张硕" \
 ```

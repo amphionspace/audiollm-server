@@ -405,19 +405,19 @@ AST v3 规范仅约定 code 0 为成功，其余码段交由实现方定义。�
 pip install websockets numpy
 
 python docs/examples/ws_ast_v3.py sample.wav \
-  --url ws://172.16.0.3:8080/tuling/ast/v3 \
+  --url ws://172.16.0.3:8082/tuling/ast/v3 \
   --hotwords "挚音科技,张硕"
 ```
 
 目标说话人：先注册拿到 id，再用 `--enrollment-id` 传入（脚本会写进首帧 `parameter.asr_config.enrollment_id`）：
 
 ```bash
-curl -X POST http://172.16.0.3:8080/api/asr/enrollment -F "audio=@speaker_enroll.wav"
+curl -X POST http://172.16.0.3:8082/api/asr/enrollment -F "audio=@speaker_enroll.wav"
 # 也支持 speaker_enroll.mp3；raw PCM 请使用 16 kHz mono s16le。
 # {"enrollment_id": "ule8QilVjZql30Q9oy9kiQ", "duration_sec": 3.0}
 
 python docs/examples/ws_ast_v3.py sample.wav \
-  --url ws://172.16.0.3:8080/tuling/ast/v3 \
+  --url ws://172.16.0.3:8082/tuling/ast/v3 \
   --enrollment-id "ule8QilVjZql30Q9oy9kiQ"
 ```
 
