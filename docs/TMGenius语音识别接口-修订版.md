@@ -2,9 +2,9 @@
 
 | 属性 | 值 |
 | ---- | ---- |
-| 文档版本 | V0.2-review |
+| 文档版本 | V0.3-review |
 | 创建日期 | 2026-07-03 |
-| 修订日期 | 2026-07-04 |
+| 修订日期 | 2026-07-06 |
 | 状态 | 安菲翁评审修订建议 |
 | 调用方 | CAgent |
 
@@ -12,7 +12,7 @@
 
 ## 说明
 
-本文档基于对方《TMGenius 语音识别接口》V0.2，经安菲翁评审后整理为建议契约。接口分三个功能域：
+本文档基于对方《TMGenius 语音识别接口》V0.2 及鼎桥《开发指南-实时转写服务AST.3.4.4.1081-增加角色分离》参考文档，经安菲翁评审后整理为建议契约。接口分三个功能域：
 
 1. **实时转写**：WebSocket 流式语音识别（AST v3 协议）。
 2. **声纹管理**：目标说话人注册、删除。
@@ -81,6 +81,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
     "asr_config": {
       "language": "zh",
       "hotword_pool_id": "default",
+      "enable_role_separation": false,
       "enrollment_enable": true,
       "enrollment_id": "enrollment_id_abc"
     }
@@ -106,12 +107,22 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 | `header.status` | Int | 是 | 流式状态：`0` 开始 / `1` 中间 / `2` 结束 |
 | `parameter.asr_config.language` | String | 否 | 语种，建议使用 `zh` / `zh_en` 或双方确认的枚举 |
 | `parameter.asr_config.hotword_pool_id` | String | 否 | 热词池 ID，缺省为 `default` |
+| `parameter.asr_config.enable_role_separation` | Boolean | 否 | 角色分离开关，默认 `false`；当前版本暂不支持角色分离，但接受该字段 |
 | `parameter.asr_config.enrollment_enable` | Boolean | 否 | 是否启用声纹，默认 `false` |
 | `parameter.asr_config.enrollment_id` | String | 否 | 主讲人声纹 ID，由 `POST /api/asr/enrollment` 返回 |
 | `payload.audio.audio` | String | 是 | base64 编码音频数据 |
 | `payload.text.text` | String | 否 | 会话热词，逗号分隔，仅当前连接生效，不写入热词池 |
 
-### 4. 声纹启用规则
+### 4. 角色分离兼容规则
+
+当前版本暂不支持角色分离，但为兼容鼎桥 AST 3.4.4.1081 字段，按以下规则处理：
+
+- `parameter.asr_config.enable_role_separation` 默认 `false`。
+- 客户端传 `enable_role_separation=false` 时，服务端不做角色分离，所有 `sentence` 结果的 `cw[].rl` 固定返回整数 `0`。
+- 客户端传 `enable_role_separation=true` 时，服务端仍正常识别，不返回不支持错误；当前版本仍不做角色分离，`sentence` 结果的 `cw[].rl` 固定返回整数 `0`。
+- `cw[].rl` 仅在 `msgtype=sentence` 的最终结果中返回；`msgtype=Progressive` 的中间结果不返回该字段。
+
+### 5. 声纹启用规则
 
 - `header.resIdList[0]` 直接废弃，不作为兼容字段继续使用。
 - `enrollment_enable` 默认 `false`。
@@ -120,7 +131,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 - `enrollment_enable=true` 但 `enrollment_id` 为空时，应返回参数错误，不进入静默普通 ASR。
 - 服务端应在识别结果或会话状态中返回 `enrollment_used` 或 `enrollment_applied`，表示声纹是否实际生效。
 
-### 5. 音频格式
+### 6. 音频格式
 
 `payload.audio.audio` 中 base64 的原始内容建议统一为：
 
@@ -130,13 +141,13 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 
 如服务端允许首帧携带 WAV header，需要在文档中单独标明；否则按 raw PCM 对接。
 
-### 6. 语种字段
+### 7. 语种字段
 
 - CAgent 推荐使用 `parameter.asr_config.language` 表示语种。
 - `parameter.engine.wdec_param_LanguageTypeChoice` 不作为推荐接入字段。
 - 如需保留 `parameter.engine.wdec_param_LanguageTypeChoice`，双方需明确是否实际生效、取值映射和优先级。
 
-### 7. 响应
+### 8. 响应
 
 ```json
 {
@@ -162,6 +173,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
           "cw": [
             {
               "lg": "zh",
+              "rl": 0,
               "w": "你好",
               "wp": "n",
               "wb": 17,
@@ -186,6 +198,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 | `payload.result.enrollment_used` | Boolean | 声纹是否实际生效 |
 | `payload.result.bg` / `ed` | Int | 句子开始 / 结束时间，单位 ms |
 | `payload.result.ws` | Array | 词语列表 |
+| `payload.result.ws[].cw[].rl` | Int | 角色编号；当前版本仅在 `sentence` 中固定返回 `0`，`Progressive` 不返回 |
 
 ---
 
@@ -440,6 +453,8 @@ POST /api/asr/hotword-pool/reload?hotword_pool_id=default
 
 参数错误应明确返回错误，不应静默回退。WebSocket error 后，需要说明连接是否继续。
 
+角色分离例外：`parameter.asr_config.enable_role_separation=true` 不视为参数错误，当前版本按普通识别继续处理，并在 `sentence` 中返回 `cw[].rl=0`。
+
 示例：
 
 ```json
@@ -462,3 +477,12 @@ POST /api/asr/hotword-pool/reload?hotword_pool_id=default
 - 操作审计日志。
 - `traceId` / `requestId` 贯穿。
 - 记录调用方、操作类型、`hotword_pool_id`、`enrollment_id` 和操作结果。
+
+---
+
+## 变更记录
+
+| 版本 | 日期 | 说明 |
+| ---- | ---- | ---- |
+| V0.3-review | 2026-07-06 | 增加鼎桥 AST 3.4.4.1081 角色分离字段兼容口径：接受 `enable_role_separation`，`sentence` 返回 `cw[].rl=0`，`Progressive` 不返回 `cw[].rl` |
+| V0.2-review | 2026-07-04 | 补充声纹管理、热词池清空和重载、错误语义等评审建议 |
