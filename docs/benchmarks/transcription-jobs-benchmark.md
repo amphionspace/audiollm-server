@@ -3,7 +3,7 @@
 日期：2026-06-11
 测试脚本：`scripts/bench_transcribe_jobs.py`（每场景独立临时 config + 重启服务、并发提交、轮询计时、段分布统计）
 原始数据：`bench_results/transcribe_jobs_h20_fix_tothread_20260611_173037.json`、`bench_results/transcribe_jobs_h20_saturation_20260611_173338.json`
-接口文档：[transcription-jobs-api.md](transcription-jobs-api.md)
+接口文档：[transcription-jobs-api.md](../api/transcription-jobs-api.md)
 
 ## 1. 测试环境
 

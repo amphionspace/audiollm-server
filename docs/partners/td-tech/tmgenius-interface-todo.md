@@ -164,7 +164,7 @@
 ## 12. 文档、示例和错误码补齐
 
 - 同步更新：
-  - [`../../tuling-ast-v3-protocol.md`](../../tuling-ast-v3-protocol.md)
+  - [`../../protocols/tuling-ast-v3-protocol.md`](../../protocols/tuling-ast-v3-protocol.md)
   - [`../../api-reference.md`](../../api-reference.md)
   - `tests/test_ast_v3_ws_client.py`
 - 测试客户端的 `--enrollment-id` 已写入 `parameter.asr_config.enrollment_id`；待实现 `enrollment_enable` 后需要同步设置 `enrollment_enable=true`。

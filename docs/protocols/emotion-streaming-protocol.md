@@ -139,7 +139,7 @@ Client                                      Server
 
 ## Python 示例
 
-完整可运行脚本见 [examples/http_emotion_job.py](examples/http_emotion_job.py)。
+完整可运行脚本见 [examples/http_emotion_job.py](../examples/http_emotion_job.py)。
 
 ```bash
 pip install requests
@@ -157,5 +157,5 @@ python docs/examples/http_emotion_job.py sample.wav \
 
 ## 相关文档
 
-- [API 总览](api-reference.md)
+- [API 总览](../api-reference.md)
 - [分段情感识别 WebSocket](emotion-segmented-streaming-protocol.md)

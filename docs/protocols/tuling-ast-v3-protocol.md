@@ -169,7 +169,7 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 
 这三项只在注册接口 `POST /api/asr/enrollment`（独立的 REST 调用，按服务端默认执行）生效。AST v3 首帧经 `parameter.asr_config.enrollment_id` 携带的是已注册 id，本端点既不重新注册、也不消费这些值，因此在 `parameter.asr_config` 里覆写这些生命周期参数不会改变本连接的目标说话人行为。
 
-共享白名单还包含情感类字段（`emotion_*`，如 `emotion_task_mode`、`emotion_request_timeout` 等），仅对情感端点有效，对本 ASR 端点无效。完整白名单与各字段按类别速览见 [API 总览](api-reference.md) 的“临时配置覆写”。
+共享白名单还包含情感类字段（`emotion_*`，如 `emotion_task_mode`、`emotion_request_timeout` 等），仅对情感端点有效，对本 ASR 端点无效。完整白名单与各字段按类别速览见 [API 总览](../api-reference.md) 的“临时配置覆写”。
 
 ### 首字延迟优化（低延迟场景）
 
@@ -225,7 +225,7 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 
 支持只转写指定说话人的语音，复用与 `/transcribe-streaming` 相同的注册机制，分两步：
 
-1. 注册：通过 `POST /api/asr/enrollment` 上传 1-8 秒目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le），拿到 `enrollment_id`（见 [API 总览](api-reference.md) 的注册接口）。默认 demo 本地缓存注册音频；打开 `enable_triton_enrollment_store=true` 且配置 RAG-ASR 管理服务后，新注册音频会转发给 RAG-ASR，并由 RAG-ASR 将 embedding tensor 和元数据落盘到本地 `enrollment_store_dir`（默认 `var/enrollments`）。
+1. 注册：通过 `POST /api/asr/enrollment` 上传 1-8 秒目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le），拿到 `enrollment_id`（见 [API 总览](../api-reference.md) 的注册接口）。默认 demo 本地缓存注册音频；打开 `enable_triton_enrollment_store=true` 且配置 RAG-ASR 管理服务后，新注册音频会转发给 RAG-ASR，并由 RAG-ASR 将 embedding tensor 和元数据落盘到本地 `enrollment_store_dir`（默认 `var/enrollments`）。
 2. 携带：在首帧（status=0）把该 id 放进 `parameter.asr_config.enrollment_id`。
 
 ```json
@@ -248,7 +248,7 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 说明：
 
 - enrollment_id 仅在首帧读取，整段会话沿用同一目标说话人。
-- 若 `parameter.asr_config.enrollment_id` 不可用，服务端默认静默回退为普通 ASR（仅记 WARN，不返回 error），避免长连接因陈旧 id 中断。默认 demo 本地缓存下 enrollment_id 有 TTL（默认 3600 秒、每次使用续期）且服务重启即失效；启用 RAG-ASR 管理服务后，embedding tensor 与元数据会落盘到 RAG-ASR 的 `enrollment_store_dir`（默认 `var/enrollments`），重启不丢，但文件缺失或与当前模型/adapter 不兼容时也按同一兼容语义回退。完整生命周期（存储/有效期/容量/删除）见 [API 总览](api-reference.md) 注册接口的“生命周期”。
+- 若 `parameter.asr_config.enrollment_id` 不可用，服务端默认静默回退为普通 ASR（仅记 WARN，不返回 error），避免长连接因陈旧 id 中断。默认 demo 本地缓存下 enrollment_id 有 TTL（默认 3600 秒、每次使用续期）且服务重启即失效；启用 RAG-ASR 管理服务后，embedding tensor 与元数据会落盘到 RAG-ASR 的 `enrollment_store_dir`（默认 `var/enrollments`），重启不丢，但文件缺失或与当前模型/adapter 不兼容时也按同一兼容语义回退。完整生命周期（存储/有效期/容量/删除）见 [API 总览](../api-reference.md) 注册接口的“生命周期”。
 - `header.resIdList` 不再作为目标说话人字段；若存在仅记录并忽略。
 - 未携带 `parameter.asr_config.enrollment_id` 时为普通 ASR。
 
@@ -399,7 +399,7 @@ AST v3 规范仅约定 code 0 为成功，其余码段交由实现方定义。�
 
 ## Python 示例
 
-完整可运行脚本见 [examples/ws_ast_v3.py](examples/ws_ast_v3.py)，集成测试客户端见 [tests/test_ast_v3_ws_client.py](../tests/test_ast_v3_ws_client.py)。
+完整可运行脚本见 [examples/ws_ast_v3.py](../examples/ws_ast_v3.py)，集成测试客户端见 [tests/test_ast_v3_ws_client.py](../../tests/test_ast_v3_ws_client.py)。
 
 ```bash
 pip install websockets numpy
@@ -429,7 +429,7 @@ python docs/examples/ws_ast_v3.py sample.wav \
 
 ## 相关文档
 
-- [API 总览](api-reference.md)
-- [AST v3 多并发性能与极限压测报告](tuling-ast-v3-benchmark.md)
+- [API 总览](../api-reference.md)
+- [AST v3 多并发性能与极限压测报告](../benchmarks/tuling-ast-v3-benchmark.md)
 - [通用流式 ASR WebSocket](transcribe-streaming-protocol.md)
 - [分段情感识别 WebSocket](emotion-segmented-streaming-protocol.md)

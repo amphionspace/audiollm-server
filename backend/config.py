@@ -246,7 +246,7 @@ class Config:
     # 第一个 partial。因一段语音内 snapshot 单调增长(audio_buffer 只增不减),过了
     # 门槛后续 partial 必然更长,该门槛只对每段的首个 partial 真正 binding,故它实质
     # 是首字延迟旋钮 —— 与 vad_start_frames 一起按 max 决定首字(见
-    # docs/tuling-ast-v3-protocol.md "首字延迟优化")。从 min_segment_duration_ms 解耦
+    # docs/protocols/tuling-ast-v3-protocol.md "首字延迟优化")。从 min_segment_duration_ms 解耦
     # 的原因:后者一参多职(还管 final 段过滤、flush 残余过滤),直接调它会放松短噪声
     # 段过滤。这里的 dataclass 默认 350(= min_segment_duration_ms)是"文件缺字段时的
     # 中性兜底";随附的 config.yaml 显式设 200,即默认部署选择全局低延迟首字

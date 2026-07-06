@@ -94,7 +94,7 @@ graph LR
 | POST | `/api/emotion/jobs` | 提交 WAV，返回 `202` + `job_id` |
 | GET | `/api/emotion/jobs/{job_id}` | 轮询任务状态与 `final_emotion` 结果 |
 
-协议见 [docs/emotion-streaming-protocol.md](docs/emotion-streaming-protocol.md)（异步 HTTP，非 WebSocket）。
+协议见 [docs/protocols/emotion-streaming-protocol.md](docs/protocols/emotion-streaming-protocol.md)（异步 HTTP，非 WebSocket）。
 
 ## WebSocket 接口
 
@@ -102,8 +102,8 @@ graph LR
 
 | 端点 | 任务 | VAD | 输出 | 协议文档 |
 |---|---|---|---|---|
-| `/transcribe-streaming` | 个性化语音识别 | 是 | partial / final（每段语音一条） | [docs/transcribe-streaming-protocol.md](docs/transcribe-streaming-protocol.md) |
-| `/emotion-segmented-streaming` | 按段流式情感识别（同模型，逐段返回） | 是 | final_emotion（每个 VAD 段一条） | [docs/emotion-segmented-streaming-protocol.md](docs/emotion-segmented-streaming-protocol.md) |
+| `/transcribe-streaming` | 个性化语音识别 | 是 | partial / final（每段语音一条） | [docs/protocols/transcribe-streaming-protocol.md](docs/protocols/transcribe-streaming-protocol.md) |
+| `/emotion-segmented-streaming` | 按段流式情感识别（同模型，逐段返回） | 是 | final_emotion（每个 VAD 段一条） | [docs/protocols/emotion-segmented-streaming-protocol.md](docs/protocols/emotion-segmented-streaming-protocol.md) |
 
 新增任务的命名约定：每个任务一个独立 WebSocket 端点（`/<task>-streaming`），共享同一套 `start` / `stop` / `update_hotwords` 控制消息与 `config` 覆写机制；任务专属字段（如 ASR 的 `language`/`hotwords`、情感的输出标签集）只出现在对应端点的协议文档中。
 
@@ -214,7 +214,7 @@ python tests/test_ws_client.py audio.wav --hotwords "武新华,挚音科技"
 python tests/test_ws_client.py audio.wav --language en --chunk-ms 100
 ```
 
-完整协议规范见 [docs/transcribe-streaming-protocol.md](docs/transcribe-streaming-protocol.md)。
+完整协议规范见 [docs/protocols/transcribe-streaming-protocol.md](docs/protocols/transcribe-streaming-protocol.md)。
 
 ---
 
@@ -428,7 +428,7 @@ ASR 热词偏置来自 `config.yaml -> services.recall` 指向的 Triton 召回�
 
 #### 长音频离线转写（`POST /api/asr/transcriptions`）
 
-接口说明见 [docs/transcription-jobs-api.md](docs/transcription-jobs-api.md)。推理用哪个模型、是否双模型融合由 `config.yaml` 的 `rest.routes.transcribe` 块独立声明（省略则跟随共享 `rest.upstreams` 绑定），下表为 `defaults.transcribe` 调参：
+接口说明见 [docs/api/transcription-jobs-api.md](docs/api/transcription-jobs-api.md)。推理用哪个模型、是否双模型融合由 `config.yaml` 的 `rest.routes.transcribe` 块独立声明（省略则跟随共享 `rest.upstreams` 绑定），下表为 `defaults.transcribe` 调参：
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|

@@ -4,7 +4,7 @@
   // AST v3 test page module ("实时语音识别（测试用）").
   //
   // UI mirrors the realtime ASR page (frontend/app.js) but the transport is
-  // the iFlytek Tuling AST v3 envelope protocol (docs/tuling-ast-v3-protocol.md)
+  // the iFlytek Tuling AST v3 envelope protocol (docs/protocols/tuling-ast-v3-protocol.md)
   // against a hard-coded remote backend, instead of the native
   // /transcribe-streaming protocol. The differences that drive this rewrite:
   //
@@ -425,7 +425,7 @@
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const frame = {
         header: { traceId, bizId, status: 0 },
-        // 低延迟调参：首帧 asr_config 覆写仅对本连接生效、不落盘，字段属与 /transcribe-streaming 共用的覆写白名单（见 docs/tuling-ast-v3-protocol.md 配置覆写）。
+        // 低延迟调参：首帧 asr_config 覆写仅对本连接生效、不落盘，字段属与 /transcribe-streaming 共用的覆写白名单（见 docs/protocols/tuling-ast-v3-protocol.md 配置覆写）。
         parameter: {
           asr_config: {
             language: apiLangFromUi(srcLangUi),

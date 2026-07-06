@@ -9,4 +9,4 @@
 ## 相关通用文档
 
 - [API 总览](../api-reference.md)
-- [实时转写 AST v3 WebSocket API](../tuling-ast-v3-protocol.md)
+- [实时转写 AST v3 WebSocket API](../protocols/tuling-ast-v3-protocol.md)
