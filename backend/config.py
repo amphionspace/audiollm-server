@@ -116,6 +116,9 @@ class Config:
     #          partial noise gate functional. Inconsistent combinations
     #          (fusion=True, secondary=False) are downgraded at load time.
     enable_dual_asr_fusion: bool = True
+    # AST v3 compatibility switch accepted from clients. Current service does
+    # not perform role separation; sentence cw.rl remains fixed at 0.
+    enable_role_separation: bool = False
 
     # ---- ASR: per-endpoint primary override (/tuling/ast/v3) -------------
     # The AST v3 endpoint serves a *different* primary model than the global
@@ -500,6 +503,7 @@ CLIENT_OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     "enable_primary_asr",
     "enable_secondary_asr",
     "enable_dual_asr_fusion",
+    "enable_role_separation",
     "primary_asr_timeout",
     "asr_request_timeout",
     "debug_show_dual_asr",

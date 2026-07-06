@@ -533,6 +533,15 @@ def test_recall_knobs_client_overridable() -> None:
     assert out.recall_top_k == 3
 
 
+def test_role_separation_switch_is_compatibility_only() -> None:
+    cfg = load_config()
+    assert cfg.enable_role_separation is False
+    assert "enable_role_separation" in CLIENT_OVERRIDABLE_FIELDS
+
+    out = cfg.override_client(enable_role_separation=True)
+    assert out.enable_role_separation is True
+
+
 def test_asr_segment_voice_gate_client_overridable() -> None:
     fields = {
         "asr_segment_voice_gate_enabled",

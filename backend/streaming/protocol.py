@@ -435,6 +435,7 @@ class AstV3Protocol:
                             "lg": lg,
                             "ng": "0.00",
                             "ph": "phone",
+                            "rl": 0,
                             "sc": "0.00",
                             "w": text,
                             "wb": bg_f,

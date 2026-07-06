@@ -96,6 +96,7 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 | VAD / 分段 | vad_threshold、silence_duration_ms、vad_smoothing_alpha、vad_start_frames、vad_pre_speech_ms、vad_keep_tail_ms、min_segment_duration_ms |
 | 伪流式 | enable_pseudo_stream、pseudo_stream_interval_ms、pseudo_stream_first_partial_ms |
 | ASR 模型组合 / 超时 | enable_primary_asr、enable_secondary_asr、enable_dual_asr_fusion、primary_asr_timeout、asr_request_timeout、debug_show_dual_asr |
+| AST v3 协议兼容 | enable_role_separation |
 | 融合阈值 | fusion_similarity_threshold、fusion_min_primary_score、fusion_max_repetition_ratio、fusion_disagreement_threshold、fusion_hotword_boost、fusion_primary_score_margin |
 | 热词召回 | enable_hotword_recall、recall_top_k |
 | TS-ASR | asr_enrollment_min_sec、asr_enrollment_max_sec、asr_enrollment_ttl_sec |
@@ -106,6 +107,8 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 服务端可启用 `k2_enabled=true` 让 `/transcribe-streaming` 与 `/tuling/ast/v3` 的 partial 改由外部 k2 gRPC 流式 ASR 产生；final 仍走本服务 LLM ASR。k2 只做纯识别，不接热词、不接目标说话人、不返回 token timestamps。`k2_target`、`k2_max_segment_sec`、`k2_idle_keep_ms`、`k2_voice_gate_*` 等均为服务端配置，不在临时覆写白名单内。k2 模式下，切段权威是 k2 endpoint，本服务只用 `k2_idle_keep_ms` 限制起音前旧静音、用 `k2_max_segment_sec` 防止无 endpoint 时缓冲无限增长，并用 `k2_voice_gate_*` 在 partial/final 进入下游前确认有人声证据；voice gate 只决定放行或丢弃，不再用本地 VAD 裁剪段首/段尾。上表 VAD / 伪流式间隔字段仍会被接受，但不再决定这两个端点的切点或首字时机；`enable_pseudo_stream=false` 仍会抑制 partial 下发。
 
 final 文本规范化开关（enable_asr_itn、asr_itn_enable_0_to_9、enable_asr_plate_normalize）与解码退化重复折叠开关（enable_asr_repetition_fix）为服务端配置，不在上表白名单内，客户端无法临时覆写。语义与示例见各协议文档的“文本规范化”小节与 [README 文本规范化](../README.md)。
+
+`enable_role_separation` 仅用于 `/tuling/ast/v3` 协议字段兼容。当前版本不支持角色分离；客户端传 true 或 false 都正常识别，sentence 的 `cw[].rl` 固定返回 0，Progressive 不返回 `cw[].rl`。
 
 ASR 模型组合开关的语义矩阵（`enable_dual_asr_fusion=true` 但 `enable_secondary_asr=false` 会在 load 时自动降级为 false）：
 
@@ -273,13 +276,13 @@ curl -X POST http://172.16.0.3:8080/api/asr/enrollment \
 
 | 项目 | 行为 |
 |---|---|
-| 存储 | 默认 `enable_triton_enrollment_store=false` 时为进程内内存缓存，服务重启全部失效，不跨实例共享；灰度打开后，新注册音频会转发到 RAG-ASR 管理服务，由 RAG-ASR 持久化 embedding tensor 和元数据，不保存原始注册音频 |
-| 有效期 | TTL 由 `asr_enrollment_ttl_sec`（默认 3600 秒）控制；每次被成功使用都会续期，持续使用不会过期 |
-| 断连 | WebSocket 断开不删除，重连后仍可复用（受 TTL 约束） |
-| 容量 | 上限 `asr_enrollment_max_entries`（默认 256），超出按最近最少使用（LRU）淘汰最旧条目 |
-| 删除 | `DELETE /api/asr/enrollment/{enrollment_id}` 立即清除；未知 id 也返回 204，可安全重试 |
+| 存储 | 默认 `enable_triton_enrollment_store=false` 时为 demo 进程内内存缓存，服务重启全部失效，不跨实例共享；打开后，新注册音频会转发到 RAG-ASR 管理服务，由 RAG-ASR 将 projector frames tensor 与 JSON 元数据落盘到 `enrollment_store_dir/<enrollment_scope_id>/<enrollment_id>.pt/.json`（默认 `var/enrollments`），不保存原始注册音频 |
+| 有效期 | demo 进程内缓存由 `asr_enrollment_ttl_sec`（默认 3600 秒）控制并在使用时续期；RAG-ASR 落盘存储当前不做 TTL 自动过期，查询/使用会更新元数据 `last_used_at`（受 RAG-ASR `enrollment_metadata_touch_interval_sec` 节流） |
+| 断连 / 重启 | WebSocket 断开不删除。demo 进程内缓存重启即丢；RAG-ASR 落盘存储在管理服务重启后仍可按同一 `enrollment_scope_id` + `enrollment_id` 读取 |
+| 容量 | demo 进程内缓存上限 `asr_enrollment_max_entries`（默认 256），超出按 LRU 淘汰；RAG-ASR 的 `enrollment_cache_max_entries` 只是内存热缓存上限，不删除磁盘上的 enrollment 文件 |
+| 删除 | `DELETE /api/asr/enrollment/{enrollment_id}` 立即清除；RAG-ASR 下沉链路会删除对应 `.pt` 与 `.json` 文件。未知 id 也返回 204，可安全重试 |
 
-`enrollment_id` 失效（过期 / 重启 / 被 LRU 淘汰 / 删除，或灰度下沉链路中 RAG-ASR 管理服务缺失对应 embedding）后再被使用时，默认兼容语义是静默回退为普通 ASR、不返回 error：WS 路径仅记 WARN（见“WebSocket 错误消息”），REST `/api/asr/upload` 响应 `enrollment_used` 为 `false`。集成方应对失效有预期，必要时重新注册并更新所携带的 id。
+`enrollment_id` 不可用（demo 本地缓存过期 / 重启 / 被 LRU 淘汰 / 删除，或 RAG-ASR 下沉链路缺失对应落盘文件、embedding 与当前模型/adapter 不兼容）后再被使用时，默认兼容语义是静默回退为普通 ASR、不返回 error：WS 路径仅记 WARN（见“WebSocket 错误消息”），REST `/api/asr/upload` 响应 `enrollment_used` 为 `false`。集成方应对失效有预期，必要时重新注册并更新所携带的 id。
 
 `asr_enrollment_min_sec` / `asr_enrollment_max_sec` / `asr_enrollment_ttl_sec` 虽在客户端覆写白名单内（见“临时配置覆写”），但注册是独立的 REST 调用、恒按服务端默认执行；流式端点首帧覆写这些值不会改变已注册 id 的行为。通用流式端点的 `start.enrollment_id` / `update_hotwords.enrollment_id` 用法与 TS-ASR 双音频 prompt 模板见 [通用流式 ASR WebSocket](transcribe-streaming-protocol.md)；AST v3 集成只需按本节注册，并按 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md) 把 id 放入 `parameter.asr_config.enrollment_id`。
 

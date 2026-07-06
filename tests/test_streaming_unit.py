@@ -1257,6 +1257,7 @@ def test_ast_v3_asr_config_injects_config_and_language():
                     "enrollment_id": "enr-abc",
                     "vad_threshold": 0.3,
                     "enable_pseudo_stream": False,
+                    "enable_role_separation": True,
                 }
             },
         )
@@ -1266,7 +1267,11 @@ def test_ast_v3_asr_config_injects_config_and_language():
     assert ctrl["language"] == "en"
     assert ctrl["hotword_pool_id"] == "tenant-a"
     assert ctrl["enrollment_id"] == "enr-abc"
-    assert ctrl["config"] == {"vad_threshold": 0.3, "enable_pseudo_stream": False}
+    assert ctrl["config"] == {
+        "vad_threshold": 0.3,
+        "enable_pseudo_stream": False,
+        "enable_role_separation": True,
+    }
 
 
 def test_ast_v3_no_asr_config_omits_config_and_language():
@@ -1406,6 +1411,7 @@ def test_ast_v3_final_frame_units_and_counters():
     cw = r["ws"][0]["cw"][0]
     assert cw["w"] == "你好" and cw["lg"] == "zh"
     assert cw["wb"] == 14 and cw["we"] == 323 and cw["wp"] == "n"
+    assert cw["rl"] == 0
 
     f2 = p.encode_outbound({"type": "final", "text": "兄弟", "language": "zh"})
     assert f2["payload"]["result"]["segId"] == 1
@@ -1419,7 +1425,9 @@ def test_ast_v3_partial_progressive_shares_seg_id():
     r = part["payload"]["result"]
     assert r["msgtype"] == "Progressive"
     assert r["segId"] == 0  # same segment the upcoming sentence will carry
-    assert r["ws"][0]["cw"][0]["w"] == "你"
+    cw = r["ws"][0]["cw"][0]
+    assert cw["w"] == "你"
+    assert "rl" not in cw
     # sentence-only fields are omitted for Progressive
     assert "sn" not in r and "vad" not in r and "bg" not in r
 
@@ -1529,6 +1537,7 @@ async def test_session_ast_v3_asr_config_overrides_and_whitelist():
                     "asr_config": {
                         "hotword_pool_id": "tenant-a",
                         "vad_threshold": 0.37,
+                        "enable_role_separation": True,
                         "vllm_base_url": "http://evil:1",
                     }
                 },
@@ -1545,6 +1554,7 @@ async def test_session_ast_v3_asr_config_overrides_and_whitelist():
     await session.cleanup()
 
     assert session.cfg.vad_threshold == 0.37  # whitelisted -> applied
+    assert session.cfg.enable_role_separation is True
     assert session.cfg.vllm_base_url == base_url_before  # infra field dropped
     assert session.ctx.hotword_pool_id == "tenant-a"
     assert stream.cfg.vad_threshold == 0.37  # stream reconfigured with new cfg

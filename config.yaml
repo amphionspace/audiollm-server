@@ -91,6 +91,7 @@ defaults:
     enable_primary_asr: true
     enable_secondary_asr: true            # 端点未绑 secondary 上游时, 投影强制 false
     enable_dual_asr_fusion: false         # final 是否双模型融合(需 secondary 在线)
+    enable_role_separation: false         # AST v3 兼容开关; 当前不做角色分离, sentence cw.rl 固定 0
     primary_asr_timeout: 4.0              # primary 软降级上限(非 HTTP 超时)
     debug_show_dual_asr: false            # 出站附带双 ASR 调试字段(当前主前端不展示)
     asr_segment_voice_gate_enabled: true   # LLM ASR final 前整段人声证据门控，抑制非人声噪音幻觉

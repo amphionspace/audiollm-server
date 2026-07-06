@@ -131,6 +131,12 @@ VAD / 分段（凡按帧计的字段，其帧时长由 VAD 后端 hop 决定：t
 | pseudo_stream_interval_ms | int | 500 | 相邻中间结果之间的最小间隔（仅节流首个之后的刷新，不影响首字） | 生效 |
 | pseudo_stream_first_partial_ms | int | 200 | 每段语音首个 partial 的触发门槛，从 min_segment_duration_ms 解耦（dataclass 兜底 350，config.yaml 默认设 200 走低延迟）；与 vad_start_frames 按 max 决定首字，min_segment_duration_ms 仍独立控制 final 段短噪声过滤 | 生效 |
 
+AST v3 协议兼容：
+
+| 字段 | 类型 | 默认 | 含义 | 本端点 |
+|---|---|---|---|---|
+| enable_role_separation | bool | false | 客户端角色分离开关。当前版本暂不支持角色分离；无论传 true 或 false，服务端都正常识别 | 接受但不改变识别行为；sentence 的 `cw[].rl` 固定返回 0 |
+
 ASR 模型组合 / 超时：
 
 | 字段 | 类型 | 默认 | 含义 | 本端点 |
@@ -219,7 +225,7 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 
 支持只转写指定说话人的语音，复用与 `/transcribe-streaming` 相同的注册机制，分两步：
 
-1. 注册：通过 `POST /api/asr/enrollment` 上传 1-8 秒目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le），拿到 `enrollment_id`（见 [API 总览](api-reference.md) 的注册接口）。默认本地缓存注册音频；灰度打开 `enable_triton_enrollment_store=true` 且配置 RAG-ASR 管理服务后，新注册音频会转发给 RAG-ASR 保存 embedding tensor 和元数据。
+1. 注册：通过 `POST /api/asr/enrollment` 上传 1-8 秒目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le），拿到 `enrollment_id`（见 [API 总览](api-reference.md) 的注册接口）。默认 demo 本地缓存注册音频；打开 `enable_triton_enrollment_store=true` 且配置 RAG-ASR 管理服务后，新注册音频会转发给 RAG-ASR，并由 RAG-ASR 将 embedding tensor 和元数据落盘到本地 `enrollment_store_dir`（默认 `var/enrollments`）。
 2. 携带：在首帧（status=0）把该 id 放进 `parameter.asr_config.enrollment_id`。
 
 ```json
@@ -242,7 +248,7 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 说明：
 
 - enrollment_id 仅在首帧读取，整段会话沿用同一目标说话人。
-- 若 `parameter.asr_config.enrollment_id` 未注册或已过期，服务端默认静默回退为普通 ASR（仅记 WARN，不返回 error），避免长连接因陈旧 id 中断。默认本地缓存下 enrollment_id 有 TTL（默认 3600 秒、每次使用续期）且服务重启即失效；下沉链路中缺失 RAG-ASR embedding 也按同一兼容语义处理。完整生命周期（存储/有效期/容量/删除）见 [API 总览](api-reference.md) 注册接口的“生命周期”。
+- 若 `parameter.asr_config.enrollment_id` 不可用，服务端默认静默回退为普通 ASR（仅记 WARN，不返回 error），避免长连接因陈旧 id 中断。默认 demo 本地缓存下 enrollment_id 有 TTL（默认 3600 秒、每次使用续期）且服务重启即失效；启用 RAG-ASR 管理服务后，embedding tensor 与元数据会落盘到 RAG-ASR 的 `enrollment_store_dir`（默认 `var/enrollments`），重启不丢，但文件缺失或与当前模型/adapter 不兼容时也按同一兼容语义回退。完整生命周期（存储/有效期/容量/删除）见 [API 总览](api-reference.md) 注册接口的“生命周期”。
 - `header.resIdList` 不再作为目标说话人字段；若存在仅记录并忽略。
 - 未携带 `parameter.asr_config.enrollment_id` 时为普通 ASR。
 
@@ -301,6 +307,7 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 | ws[].cw | Array | 词语识别候选 |
 | cw[].w | String | 识别文本；msgtype=sentence（最终结果）默认已做 ITN 与车牌规范化，msgtype=Progressive（中间结果）保持口语形式。见“文本规范化”一节 |
 | cw[].lg | String | 语种，如 zh |
+| cw[].rl | int | 角色编号；当前版本暂不支持角色分离，仅在 msgtype=sentence 中固定返回 0，msgtype=Progressive 不返回该字段 |
 | cw[].wb | int | 词开始位置，单位 10 ms 帧（数值 ×10 为毫秒） |
 | cw[].we | int | 词结束位置，单位 10 ms 帧 |
 | cw[].wp | String | 顺滑词类型：s 顺滑词，n 普通字符，p 标点，g 语义分段标志 |
@@ -329,7 +336,7 @@ result 示例（最终结果）：
       "cw": [
         {
           "lg": "zh", "ng": "0.00", "ph": "phone", "sc": "0.00",
-          "w": "你好兄弟", "wb": 14, "wc": "0.00", "we": 323, "wp": "n"
+          "rl": 0, "w": "你好兄弟", "wb": 14, "wc": "0.00", "we": 323, "wp": "n"
         }
       ]
     }
@@ -360,6 +367,7 @@ result 示例（最终结果）：
 | cw.sc / cw.wc / cw.ng | 固定字符串 0.00 |
 | cw.ph | 固定字符串 phone |
 | cw.lg | 取段级检测/传入语种映射的短码 |
+| cw.rl | 仅 sentence 返回，固定整数 0；当前不做角色分离，Progressive 不返回该字段 |
 
 段级 bg/ed 为近似值：它基于流累计消费的样本数，会忽略 VAD 静音判定延迟与尾部裁剪，误差通常在百毫秒量级。
 
@@ -369,6 +377,7 @@ result 示例（最终结果）：
 |---|---|
 | resIdList | 已废弃，仅记录并忽略；目标说话人请使用 `parameter.asr_config.enrollment_id` |
 | parameter.engine | 讯飞引擎透传参数（如 wdec_param_LanguageTypeChoice、wrec_param_language_name）在本服务无对应能力，仅记录日志，不影响识别；如需按连接调参请改用 parameter.asr_config（见配置覆写章节） |
+| 角色分离 | 当前版本暂不支持角色分离；`parameter.asr_config.enable_role_separation` 会被接受但不改变识别行为，sentence 中 `cw[].rl` 固定为 0，Progressive 不返回 `cw[].rl` |
 | 词级时间戳 | 见降级说明，非逐词真实值 |
 | 鉴权 | 无内置鉴权，需在网关层实现访问控制 |
 
