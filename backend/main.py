@@ -723,28 +723,49 @@ def _count_or_len(payload: dict, count_key: str, list_key: str) -> int:
     return 0
 
 
-def _with_hotword_review_aliases(payload: dict) -> dict:
-    """Add TD-Tech review-contract count aliases without removing legacy keys."""
+def _hotword_review_response(payload: dict) -> dict:
+    """Project upstream hotword results onto the TD-Tech review contract."""
     if not isinstance(payload, dict):
         return payload
-    result = dict(payload)
-    action = str(result.get("action") or "").lower()
-    if action == "add" or "added" in result or "skipped_duplicates" in result:
-        result.setdefault("added_count", _count_or_len(result, "added", "hotwords"))
-        result.setdefault(
-            "duplicate_count",
-            _count_or_len(result, "skipped_duplicates", "duplicates"),
-        )
-        result.setdefault("invalid_count", _count_or_len(result, "invalid_count", "invalid"))
-        if "ignored_hotwords" not in result and isinstance(result.get("invalid"), list):
-            result["ignored_hotwords"] = result["invalid"]
-    if action == "delete" or "deleted" in result or "missing" in result:
-        result.setdefault("deleted_count", _count_or_len(result, "deleted", "hotwords"))
-        result.setdefault("missing_count", _count_or_len(result, "missing_count", "missing"))
-        result.setdefault("invalid_count", _count_or_len(result, "invalid_count", "invalid"))
-        if "missing_hotwords" not in result and isinstance(result.get("missing"), list):
-            result["missing_hotwords"] = result["missing"]
-    return result
+    action = str(payload.get("action") or "").lower()
+    common = {
+        "action": payload.get("action") or action,
+        "status": payload.get("status", "ok"),
+        "hotword_pool_id": payload.get("hotword_pool_id"),
+        "total_count": payload.get("total_count", 0),
+    }
+    if payload.get("message") is not None:
+        common["message"] = payload.get("message")
+    if action == "add" or "added" in payload or "skipped_duplicates" in payload:
+        ignored = payload.get("ignored_hotwords")
+        if not isinstance(ignored, list):
+            ignored = payload.get("invalid")
+        if not isinstance(ignored, list):
+            ignored = []
+        return {
+            **common,
+            "action": "add",
+            "hotwords": payload.get("hotwords", []),
+            "added_count": _count_or_len(payload, "added", "hotwords"),
+            "duplicate_count": _count_or_len(payload, "skipped_duplicates", "duplicates"),
+            "invalid_count": _count_or_len(payload, "invalid_count", "invalid"),
+            "ignored_hotwords": ignored,
+        }
+    if action == "delete" or "deleted" in payload or "missing" in payload:
+        missing = payload.get("missing_hotwords")
+        if not isinstance(missing, list):
+            missing = payload.get("missing")
+        if not isinstance(missing, list):
+            missing = []
+        return {
+            **common,
+            "action": "delete",
+            "hotwords": payload.get("hotwords", []),
+            "deleted_count": _count_or_len(payload, "deleted", "hotwords"),
+            "missing_count": _count_or_len(payload, "missing_count", "missing"),
+            "missing_hotwords": missing,
+        }
+    return payload
 
 
 @app.get("/api/asr/hotword-pool")
@@ -783,7 +804,7 @@ async def asr_hotword_pool_add(body: dict = Body(...)):
         cfg,
     )
     try:
-        return _with_hotword_review_aliases(
+        return _hotword_review_response(
             await add_recall_hotwords(
                 _hotword_pool_payload(body),
                 hotword_pool_id=resolved_hotword_pool_id,
@@ -807,7 +828,7 @@ async def asr_hotword_pool_delete(body: dict = Body(...)):
         cfg,
     )
     try:
-        return _with_hotword_review_aliases(
+        return _hotword_review_response(
             await delete_recall_hotwords(
                 _hotword_pool_payload(body),
                 hotword_pool_id=resolved_hotword_pool_id,

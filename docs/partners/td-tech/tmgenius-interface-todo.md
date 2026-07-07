@@ -94,19 +94,20 @@
 - 所有热词管理 REST 接口都应支持 `hotword_pool_id`，包括查询、添加、删除、`POST /delete`、清空和 reload。
 - 大批量导入和 reload 使用的文件或管理服务存储也必须按 `hotword_pool_id` 隔离，不能让多个池共享同一个 `hotword_pool.txt`。
 
-## 7. 热词增删响应增强
+## 7. 热词增删响应字段
 
-- 添加热词响应建议包含：
+- 添加热词响应使用以下字段作为唯一对外契约：
   - `added_count`
   - `duplicate_count`
   - `invalid_count`
-  - `ignored_hotwords` 或 `invalid_hotwords`
+  - `ignored_hotwords`
   - `total_count`
-- 删除热词响应建议包含：
+- 删除热词响应使用以下字段作为唯一对外契约：
   - `deleted_count`
   - `missing_count`
   - `missing_hotwords`
   - `total_count`
+- 不再对外透出上游兼容字段 `added`、`skipped_duplicates`、`duplicates`、`deleted`、`missing`、`invalid`。
 - 目标是避免非法词、重复词、未命中词被静默过滤后，后台无法感知真实生效结果。
 
 ## 8. 热词池作用域修正

@@ -32,16 +32,19 @@ async def test_hotword_pool_add_proxies_to_recall(monkeypatch):
     assert seen["hotword_pool_id"] == "tenant-a"
     assert result == {
         "status": "ok",
-        "added": 2,
+        "action": "add",
+        "hotword_pool_id": None,
+        "hotwords": [],
         "total_count": 2,
         "added_count": 2,
         "duplicate_count": 0,
         "invalid_count": 0,
+        "ignored_hotwords": [],
     }
 
 
 @pytest.mark.asyncio
-async def test_hotword_pool_add_includes_review_contract_count_aliases(monkeypatch):
+async def test_hotword_pool_add_uses_review_contract_fields_only(monkeypatch):
     async def fake_add(words, *, hotword_pool_id=None):
         return {
             "status": "ok",
@@ -64,6 +67,10 @@ async def test_hotword_pool_add_includes_review_contract_count_aliases(monkeypat
     assert result["duplicate_count"] == 1
     assert result["invalid_count"] == 1
     assert result["ignored_hotwords"] == ["x"]
+    assert "added" not in result
+    assert "skipped_duplicates" not in result
+    assert "duplicates" not in result
+    assert "invalid" not in result
 
 
 @pytest.mark.asyncio
@@ -85,16 +92,18 @@ async def test_hotword_pool_delete_compat_route_proxies_to_recall(monkeypatch):
     assert seen["hotword_pool_id"] == "tenant-a"
     assert result == {
         "status": "ok",
-        "deleted": 1,
+        "action": "delete",
+        "hotword_pool_id": None,
+        "hotwords": [],
         "total_count": 0,
         "deleted_count": 1,
         "missing_count": 0,
-        "invalid_count": 0,
+        "missing_hotwords": [],
     }
 
 
 @pytest.mark.asyncio
-async def test_hotword_pool_delete_includes_review_contract_count_aliases(monkeypatch):
+async def test_hotword_pool_delete_uses_review_contract_fields_only(monkeypatch):
     async def fake_delete(words, *, hotword_pool_id=None):
         return {
             "status": "ok",
@@ -115,7 +124,9 @@ async def test_hotword_pool_delete_includes_review_contract_count_aliases(monkey
     assert result["deleted_count"] == 1
     assert result["missing_count"] == 1
     assert result["missing_hotwords"] == ["张三"]
-    assert result["invalid_count"] == 1
+    assert "deleted" not in result
+    assert "missing" not in result
+    assert "invalid" not in result
 
 
 @pytest.mark.asyncio
