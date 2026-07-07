@@ -10,6 +10,6 @@
 | [TMGenius 接口对接 TODO](tmgenius-interface-todo.md) | 对接口径、待确认项和实现 TODO |
 | [实时转写 AST v3 WebSocket API](../../protocols/tuling-ast-v3-protocol.md) | 本服务当前 `/tuling/ast/v3` 实现文档 |
 
-当前角色分离对接口径：本版本暂不支持角色分离，但接受 `parameter.asr_config.enable_role_separation` 字段；无论客户端传 `true` 还是 `false`，服务端均正常识别，`sentence` 结果中的 `cw[].rl` 固定返回整数 `0`，`Progressive` 结果不返回 `cw[].rl`。
+当前角色分离对接口径：本版本暂不做真实角色分离，但接受 `parameter.asr_config.enable_role_separation` 字段；该字段默认 `true`，省略等价于开启，并且优先级高于声纹。开启时 `sentence` 结果中的 `cw[].rl` 固定返回整数 `0` 作为兼容占位，`Progressive` 不返回 `cw[].rl`；关闭时 `sentence` 和 `Progressive` 均不返回 `cw[].rl`。
 
-声纹对外契约口径：声纹启用由 `parameter.asr_config.enrollment_enable` 和 `parameter.asr_config.enrollment_id` 共同决定，`enrollment_enable` 默认 `false`；AST v3 响应应返回 `enrollment_used` / `enrollment_applied` 表示本次声纹是否实际生效；`GET /api/asr/enrollment/{enrollment_id}` 用于查询声纹 ID 当前是否可用。内部实现跟进项统一维护在 TODO 文档。
+声纹对外契约口径：声纹仅在 `enable_role_separation=false && enrollment_enable=true && enrollment_id` 非空时启用，`enrollment_enable` 默认 `false`；AST v3 响应返回 `enrollment_applied` 表示本次是否实际携带可用声纹材料，REST 上传响应使用 `enrollment_used`；`GET /api/asr/enrollment/{enrollment_id}` 用于查询声纹 ID 当前是否可用。内部实现状态统一维护在 TODO 文档。

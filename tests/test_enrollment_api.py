@@ -99,6 +99,79 @@ def test_enrollment_api_triton_store_does_not_use_local_store(monkeypatch):
     assert captured["pcm_len"] == int(SAMPLE_RATE * 1.2)
 
 
+def test_enrollment_status_local_found_and_not_found(monkeypatch):
+    monkeypatch.setattr(main_mod, "load_config", lambda: Config())
+
+    with TestClient(main_mod.app) as client:
+        create = client.post(
+            "/api/asr/enrollment",
+            files={"audio": ("speaker.wav", _wav_bytes(), "audio/wav")},
+        )
+        enrollment_id = create.json()["enrollment_id"]
+
+        found = client.get(f"/api/asr/enrollment/{enrollment_id}")
+        missing = client.get("/api/asr/enrollment/missing-speaker")
+
+    assert found.status_code == 200
+    assert found.json() == {
+        "enrollment_id": enrollment_id,
+        "available": True,
+        "reason": "ok",
+    }
+    assert missing.status_code == 200
+    assert missing.json() == {
+        "enrollment_id": "missing-speaker",
+        "available": False,
+        "reason": "not_found",
+    }
+
+
+def test_enrollment_status_triton_store(monkeypatch):
+    async def fake_get(**kwargs):
+        assert kwargs["enrollment_id"] == "speaker-1"
+        assert kwargs["enrollment_scope_id"] == "default"
+        return {"status": "ok", "available": True, "reason": "ok"}
+
+    monkeypatch.setattr(
+        main_mod,
+        "load_config",
+        lambda: Config(enable_triton_enrollment_store=True),
+    )
+    monkeypatch.setattr(main_mod, "get_triton_enrollment", fake_get)
+
+    with TestClient(main_mod.app) as client:
+        resp = client.get("/api/asr/enrollment/speaker-1")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "enrollment_id": "speaker-1",
+        "available": True,
+        "reason": "ok",
+    }
+
+
+def test_enrollment_status_triton_upstream_unavailable(monkeypatch):
+    async def fake_get(**_kwargs):
+        raise RuntimeError("management down")
+
+    monkeypatch.setattr(
+        main_mod,
+        "load_config",
+        lambda: Config(enable_triton_enrollment_store=True),
+    )
+    monkeypatch.setattr(main_mod, "get_triton_enrollment", fake_get)
+
+    with TestClient(main_mod.app) as client:
+        resp = client.get("/api/asr/enrollment/speaker-1")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "enrollment_id": "speaker-1",
+        "available": False,
+        "reason": "upstream_unavailable",
+    }
+
+
 def test_enrollment_api_accepts_raw_pcm(monkeypatch):
     monkeypatch.setattr(main_mod, "load_config", lambda: Config())
     with TestClient(main_mod.app) as client:

@@ -1255,9 +1255,10 @@ def test_ast_v3_asr_config_injects_config_and_language():
                     "language": "en",
                     "hotword_pool_id": "tenant-a",
                     "enrollment_id": "enr-abc",
+                    "enrollment_enable": True,
+                    "enable_role_separation": False,
                     "vad_threshold": 0.3,
                     "enable_pseudo_stream": False,
-                    "enable_role_separation": True,
                 }
             },
         )
@@ -1270,8 +1271,81 @@ def test_ast_v3_asr_config_injects_config_and_language():
     assert ctrl["config"] == {
         "vad_threshold": 0.3,
         "enable_pseudo_stream": False,
-        "enable_role_separation": True,
     }
+
+
+@pytest.mark.parametrize(
+    ("asr_config", "expected_enrollment"),
+    [
+        ({"enrollment_id": "enr-abc"}, None),
+        (
+            {
+                "enable_role_separation": True,
+                "enrollment_enable": True,
+                "enrollment_id": "enr-abc",
+            },
+            None,
+        ),
+        (
+            {
+                "enable_role_separation": False,
+                "enrollment_enable": False,
+                "enrollment_id": "enr-abc",
+            },
+            None,
+        ),
+        (
+            {
+                "enable_role_separation": False,
+                "enrollment_enable": True,
+                "enrollment_id": "enr-abc",
+            },
+            "enr-abc",
+        ),
+    ],
+)
+def test_ast_v3_enrollment_enable_matrix(asr_config, expected_enrollment):
+    p = AstV3Protocol()
+    acts = p.decode_inbound(
+        _ast_frame(
+            header={"status": 0},
+            parameter={"asr_config": asr_config},
+        )
+    )
+    ctrl = acts[0].ctrl
+    assert ctrl["type"] == "start"
+    if expected_enrollment:
+        assert ctrl["enrollment_id"] == expected_enrollment
+    else:
+        assert "enrollment_id" not in ctrl
+
+
+def test_ast_v3_enrollment_enable_requires_id_when_role_separation_off():
+    p = AstV3Protocol()
+    acts = p.decode_inbound(
+        _ast_frame(
+            header={"status": 0},
+            parameter={
+                "asr_config": {
+                    "enable_role_separation": False,
+                    "enrollment_enable": True,
+                }
+            },
+            payload={"audio": {"audio": _b64_pcm(80)}},
+        )
+    )
+    assert acts == [
+        ControlAction(
+            {
+                "type": "error",
+                "code": "invalid_enrollment",
+                "message": (
+                    "parameter.asr_config.enrollment_id is required when "
+                    "enrollment_enable=true and enable_role_separation=false"
+                ),
+            }
+        )
+    ]
 
 
 def test_ast_v3_no_asr_config_omits_config_and_language():
@@ -1310,7 +1384,13 @@ def test_ast_v3_asr_config_enrollment_id_maps_to_start():
     acts = p.decode_inbound(
         _ast_frame(
             header={"status": 0, "resIdList": ["ignored"]},
-            parameter={"asr_config": {"enrollment_id": "enr-abc"}},
+            parameter={
+                "asr_config": {
+                    "enable_role_separation": False,
+                    "enrollment_enable": True,
+                    "enrollment_id": "enr-abc",
+                }
+            },
         )
     )
     assert acts[0].ctrl["enrollment_id"] == "enr-abc"
@@ -1412,6 +1492,8 @@ def test_ast_v3_final_frame_units_and_counters():
     assert cw["w"] == "你好" and cw["lg"] == "zh"
     assert cw["wb"] == 14 and cw["we"] == 323 and cw["wp"] == "n"
     assert cw["rl"] == 0
+    assert r["enrollment_applied"] is False
+    assert r["enrollment_fallback_reason"] == "disabled"
 
     f2 = p.encode_outbound({"type": "final", "text": "兄弟", "language": "zh"})
     assert f2["payload"]["result"]["segId"] == 1
@@ -1428,8 +1510,24 @@ def test_ast_v3_partial_progressive_shares_seg_id():
     cw = r["ws"][0]["cw"][0]
     assert cw["w"] == "你"
     assert "rl" not in cw
+    assert r["enrollment_applied"] is False
+    assert r["enrollment_fallback_reason"] == "disabled"
     # sentence-only fields are omitted for Progressive
     assert "sn" not in r and "vad" not in r and "bg" not in r
+
+
+def test_ast_v3_role_separation_false_omits_sentence_rl():
+    p = AstV3Protocol()
+    p.decode_inbound(
+        _ast_frame(
+            header={"status": 0},
+            parameter={"asr_config": {"enable_role_separation": False}},
+        )
+    )
+    sentence = p.encode_outbound({"type": "final", "text": "你好", "language": "zh"})
+    progressive = p.encode_outbound({"type": "partial", "text": "你", "language": "zh"})
+    assert "rl" not in sentence["payload"]["result"]["ws"][0]["cw"][0]
+    assert "rl" not in progressive["payload"]["result"]["ws"][0]["cw"][0]
 
 
 def test_ast_v3_suppresses_empty_final_ready_and_extract():
@@ -1537,7 +1635,6 @@ async def test_session_ast_v3_asr_config_overrides_and_whitelist():
                     "asr_config": {
                         "hotword_pool_id": "tenant-a",
                         "vad_threshold": 0.37,
-                        "enable_role_separation": True,
                         "vllm_base_url": "http://evil:1",
                     }
                 },
@@ -1554,10 +1651,41 @@ async def test_session_ast_v3_asr_config_overrides_and_whitelist():
     await session.cleanup()
 
     assert session.cfg.vad_threshold == 0.37  # whitelisted -> applied
-    assert session.cfg.enable_role_separation is True
     assert session.cfg.vllm_base_url == base_url_before  # infra field dropped
     assert session.ctx.hotword_pool_id == "tenant-a"
     assert stream.cfg.vad_threshold == 0.37  # stream reconfigured with new cfg
+
+
+@pytest.mark.asyncio
+async def test_session_ast_v3_invalid_enrollment_sends_error_and_stops():
+    stream = _ScriptedStream(feed_events=[], flush_events=[])
+    engine = _RecorderEngine()
+    ws = FakeWebSocket(
+        [
+            _ast_frame(
+                header={"traceId": "tid", "status": 0},
+                parameter={
+                    "asr_config": {
+                        "enable_role_separation": False,
+                        "enrollment_enable": True,
+                    }
+                },
+                payload={"audio": {"audio": _b64_pcm(160)}},
+            )
+        ]
+    )
+    session = StreamingSession(
+        ws, stream=stream, engine=engine, protocol=AstV3Protocol()
+    )
+    await session.run()
+    await session.cleanup()
+
+    error = next(msg for msg in ws.sent if msg["header"]["code"] != 0)
+    assert error["header"]["message"].startswith(
+        "parameter.asr_config.enrollment_id is required"
+    )
+    assert not engine.starts
+    assert stream.feed_calls == []
 
 
 @pytest.mark.asyncio

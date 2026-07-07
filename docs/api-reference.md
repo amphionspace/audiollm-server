@@ -28,7 +28,7 @@
 
 `/transcribe-streaming` 的 `final` / `final_asr` 消息除文本外会带当前语音分段的 `audio_b64`（WAV base64）、`duration_sec` 和 `effective_hotwords`（本段音频经 RAG-ASR/Triton 实际召回的热词列表，不含临时请求热词），主前端用音频字段做分段回放、可用 `effective_hotwords` 展示本段召回命中。k2 模式下该音频是同一段送入 LLM ASR 的 k2 段缓冲，不再经过本地 VAD 段首/段尾二次裁剪；完整字段见 [实时转写 WebSocket 协议](protocols/transcribe-streaming-protocol.md)。服务端开启 `debug_dump_enabled`（`defaults.debug`，运维级、不在客户端覆写白名单）后，`ready` 带 `session_id`/`dump_dir`、`final` 带 `dump_id`，并把每段音频+元信息落盘到 `<dump_dir>/<session_id>/<seg_id>.{wav,json}`，前端在气泡上显示可复制的 `dump_id`，用于回放/最终结果对账，详见协议文档“调试落盘”小节。
 
-`/tuling/ast/v3` 与上面两个任务接口的线上协议不同：音频以 base64 放在 JSON 帧，`header.status`（0/1/2）驱动状态机，无 `ready`/`start`/`stop`，结果为词图结构。模型组合上也不同：本端点恒为 primary-only（强制关闭副模型/本地 Qwen/融合，客户端无法经 `parameter.asr_config` 重开），主模型由 `astv3_vllm_*` 指定（当前留空，回退全局 primary `vllm_base_url`），而 `/transcribe-streaming` 仍按 `config.yaml` 走双模型。临时热词放 `payload.text.text`；热词池隔离只用首帧 `parameter.asr_config.hotword_pool_id`；目标说话人先经 `POST /api/asr/enrollment` 注册，再把 id 放进首帧 `parameter.asr_config.enrollment_id`。`header.resIdList` 仅记录并忽略。它不遵循下文“WebSocket 调用流程”，详见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。
+`/tuling/ast/v3` 与上面两个任务接口的线上协议不同：音频以 base64 放在 JSON 帧，`header.status`（0/1/2）驱动状态机，无 `ready`/`start`/`stop`，结果为词图结构。模型组合上也不同：本端点恒为 primary-only（强制关闭副模型/本地 Qwen/融合，客户端无法经 `parameter.asr_config` 重开），主模型由 `astv3_vllm_*` 指定（当前留空，回退全局 primary `vllm_base_url`），而 `/transcribe-streaming` 仍按 `config.yaml` 走双模型。临时热词放 `payload.text.text`；热词池隔离只用首帧 `parameter.asr_config.hotword_pool_id`；目标说话人先经 `POST /api/asr/enrollment` 注册，再在首帧设置 `enable_role_separation=false`、`enrollment_enable=true` 和 `enrollment_id`。`header.resIdList` 仅记录并忽略。它不遵循下文“WebSocket 调用流程”，详见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。
 
 `/astv3-test-proxy` 是为「实时语音识别（测试用）」前端页面临时搭的同源 WebSocket 代理。该页经 HTTPS 提供，浏览器 mixed-content 策略禁止它直接打开明文 `ws://` 的远程 AST v3 后端；由后端在同源 `wss://`（经反向代理）接入后，把每一帧原样双向转发到写死的上游 `ws://159.138.9.106:18082/tuling/ast/v3`。它不解析 AST v3 信封，线上协议与 `/tuling/ast/v3` 完全一致（见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)）；上游连接失败时服务端以 close code 1011 关闭连接。临时测试设施：上游地址写死、前端不暴露任何可选项，外部集成请直接使用 `/tuling/ast/v3`。
 
@@ -40,13 +40,14 @@
 | POST | `/api/asr/transcriptions` | 异步长音频离线转写（202 + 轮询，会议纪要场景） | `audio`、`language`、`hotwords`、`hotword_pool_id` |
 | GET | `/api/asr/transcriptions/{job_id}` | 查询转写任务状态、进度与分段结果 | — |
 | POST | `/api/asr/enrollment` | 上传目标说话人音频（1-8 秒）注册 | `audio` |
+| GET | `/api/asr/enrollment/{enrollment_id}` | 查询声纹 ID 是否可用于后续 ASR | — |
 | DELETE | `/api/asr/enrollment/{enrollment_id}` | 删除注册音频 | — |
 | GET | `/api/asr/hotword-pool` | 查询热词池 | `hotword_pool_id`、`query`、`limit`、`offset` |
 | POST | `/api/asr/hotword-pool` | 向热词池添加热词 | JSON `hotword_pool_id`、`hotwords` |
 | DELETE | `/api/asr/hotword-pool` | 从热词池删除热词 | JSON `hotword_pool_id`、`hotwords` |
 | POST | `/api/asr/hotword-pool/delete` | 从热词池删除热词，兼容不稳定支持 DELETE body 的客户端 | JSON `hotword_pool_id`、`hotwords` |
 | POST | `/api/asr/hotword-pool/clear` | 清空指定热词池 | JSON 或 query `hotword_pool_id` |
-| POST | `/api/asr/hotword-pool/reload` | 让 RAG-ASR 从热词池文件 reload 热词 | `hotword_pool_id` |
+| POST | `/api/asr/hotword-pool/reload` | 让 RAG-ASR 从热词池文件 reload 热词 | JSON 或 query `hotword_pool_id` |
 | POST | `/api/emotion/jobs` | 异步整段情感识别（202 + 轮询） | `audio`、`mode`、`language` |
 | GET | `/api/emotion/jobs/{job_id}` | 查询情感任务状态与结果 | — |
 | POST | `/api/audio/analyze` | 非实时聚合分析：ASR 原始结果、文本清洗、情感标签和情感描述 | `audio`、`language`、`hotwords`、`enrollment_id` |
@@ -96,7 +97,7 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 | VAD / 分段 | vad_threshold、silence_duration_ms、vad_smoothing_alpha、vad_start_frames、vad_pre_speech_ms、vad_keep_tail_ms、min_segment_duration_ms |
 | 伪流式 | enable_pseudo_stream、pseudo_stream_interval_ms、pseudo_stream_first_partial_ms |
 | ASR 模型组合 / 超时 | enable_primary_asr、enable_secondary_asr、enable_dual_asr_fusion、primary_asr_timeout、asr_request_timeout、debug_show_dual_asr |
-| AST v3 协议兼容 | enable_role_separation |
+| AST v3 协议字段 | enable_role_separation（AST v3 下不作为普通 Config 覆写，而是参与声纹矩阵与 `cw[].rl` 出参） |
 | 融合阈值 | fusion_similarity_threshold、fusion_min_primary_score、fusion_max_repetition_ratio、fusion_disagreement_threshold、fusion_hotword_boost、fusion_primary_score_margin |
 | 热词召回 | enable_hotword_recall、recall_top_k |
 | TS-ASR | asr_enrollment_min_sec、asr_enrollment_max_sec、asr_enrollment_ttl_sec |
@@ -108,7 +109,7 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 
 final 文本规范化开关（enable_asr_itn、asr_itn_enable_0_to_9、enable_asr_plate_normalize）与解码退化重复折叠开关（enable_asr_repetition_fix）为服务端配置，不在上表白名单内，客户端无法临时覆写。语义与示例见各协议文档的“文本规范化”小节与 [README 文本规范化](../README.md)。
 
-`enable_role_separation` 仅用于 `/tuling/ast/v3` 协议字段兼容。当前版本不支持角色分离；客户端传 true 或 false 都正常识别，sentence 的 `cw[].rl` 固定返回 0，Progressive 不返回 `cw[].rl`。
+`enable_role_separation` 在 `/tuling/ast/v3` 中是协议字段：默认 true，省略等价于开启，并且优先级高于 `enrollment_enable/enrollment_id`。当前版本不做真实角色分离；开启时 sentence 的 `cw[].rl` 固定返回 0 作为兼容占位，关闭时 sentence/Progressive 均不返回 `cw[].rl`。完整声纹矩阵见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。
 
 ASR 模型组合开关的语义矩阵（`enable_dual_asr_fusion=true` 但 `enable_secondary_asr=false` 会在 load 时自动降级为 false）：
 
@@ -249,7 +250,7 @@ curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
 
 ### 目标说话人注册
 
-`POST /api/asr/enrollment` 上传一段目标说话人音频，返回不透明的 `enrollment_id` 供后续请求复用：`/transcribe-streaming` 放进 `start.enrollment_id`、`/tuling/ast/v3` 放进首帧 `parameter.asr_config.enrollment_id`、REST 的 `/api/asr/upload` 与 `/api/audio/analyze` 作为表单字段 `enrollment_id`。
+`POST /api/asr/enrollment` 上传一段目标说话人音频，返回不透明的 `enrollment_id` 供后续请求复用：`/transcribe-streaming` 放进 `start.enrollment_id`、`/tuling/ast/v3` 需在首帧同时设置 `parameter.asr_config.enable_role_separation=false`、`enrollment_enable=true` 和 `enrollment_id`、REST 的 `/api/asr/upload` 与 `/api/audio/analyze` 作为表单字段 `enrollment_id`。
 
 ```bash
 curl -X POST http://172.16.0.3:8082/api/asr/enrollment \
@@ -282,9 +283,11 @@ curl -X POST http://172.16.0.3:8082/api/asr/enrollment \
 | 容量 | demo 进程内缓存上限 `asr_enrollment_max_entries`（默认 256），超出按 LRU 淘汰；RAG-ASR 的 `enrollment_cache_max_entries` 只是内存热缓存上限，不删除磁盘上的 enrollment 文件 |
 | 删除 | `DELETE /api/asr/enrollment/{enrollment_id}` 立即清除；RAG-ASR 下沉链路会删除对应 `.pt` 与 `.json` 文件。未知 id 也返回 204，可安全重试 |
 
-`enrollment_id` 不可用（demo 本地缓存过期 / 重启 / 被 LRU 淘汰 / 删除，或 RAG-ASR 下沉链路缺失对应落盘文件、embedding 与当前模型/adapter 不兼容）后再被使用时，默认兼容语义是静默回退为普通 ASR、不返回 error：WS 路径仅记 WARN（见“WebSocket 错误消息”），REST `/api/asr/upload` 响应 `enrollment_used` 为 `false`。集成方应对失效有预期，必要时重新注册并更新所携带的 id。
+`enrollment_id` 不可用（demo 本地缓存过期 / 重启 / 被 LRU 淘汰 / 删除，或 RAG-ASR 下沉链路缺失对应落盘文件、embedding 与当前模型/adapter 不兼容）后再被使用时，默认兼容语义是回退为普通 ASR：AST v3 结果返回 `enrollment_applied=false` 并尽量给出 `enrollment_fallback_reason`，REST `/api/asr/upload` 响应 `enrollment_used=false`。集成方应对失效有预期，必要时重新注册并更新所携带的 id。
 
-`asr_enrollment_min_sec` / `asr_enrollment_max_sec` / `asr_enrollment_ttl_sec` 虽在客户端覆写白名单内（见“临时配置覆写”），但注册是独立的 REST 调用、恒按服务端默认执行；流式端点首帧覆写这些值不会改变已注册 id 的行为。通用流式端点的 `start.enrollment_id` / `update_hotwords.enrollment_id` 用法与 TS-ASR 双音频 prompt 模板见 [通用流式 ASR WebSocket](protocols/transcribe-streaming-protocol.md)；AST v3 集成只需按本节注册，并按 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md) 把 id 放入 `parameter.asr_config.enrollment_id`。
+`GET /api/asr/enrollment/{enrollment_id}` 可查询该 ID 当前是否可直接用于后续 ASR。响应固定为 `{ "enrollment_id": "...", "available": true/false, "reason": "ok|not_found|incompatible|deleted|upstream_unavailable" }`，不返回原始注册音频、PCM、embedding 或其他声纹敏感材料。该接口只负责诊断，不保证查询后的实际识别一定应用声纹；最终仍以本次 AST v3 结果中的 `enrollment_applied` 或 REST 响应中的 `enrollment_used` 为准。
+
+`asr_enrollment_min_sec` / `asr_enrollment_max_sec` / `asr_enrollment_ttl_sec` 虽在客户端覆写白名单内（见“临时配置覆写”），但注册是独立的 REST 调用、恒按服务端默认执行；流式端点首帧覆写这些值不会改变已注册 id 的行为。通用流式端点的 `start.enrollment_id` / `update_hotwords.enrollment_id` 用法与 TS-ASR 双音频 prompt 模板见 [通用流式 ASR WebSocket](protocols/transcribe-streaming-protocol.md)；AST v3 集成只需按本节注册，并按 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md) 发送 `enable_role_separation=false`、`enrollment_enable=true` 和 `enrollment_id`。
 
 ### 热词池管理
 
@@ -302,6 +305,9 @@ curl -X POST http://172.16.0.3:8082/api/asr/hotword-pool/clear \
   -H 'content-type: application/json' \
   -d '{"hotword_pool_id":"tenant-a"}'
 curl -X POST 'http://172.16.0.3:8082/api/asr/hotword-pool/reload?hotword_pool_id=tenant-a'
+curl -X POST http://172.16.0.3:8082/api/asr/hotword-pool/reload \
+  -H 'content-type: application/json' \
+  -d '{"hotword_pool_id":"tenant-a"}'
 ```
 
 | 接口 | 请求 | 响应 |
@@ -311,7 +317,7 @@ curl -X POST 'http://172.16.0.3:8082/api/asr/hotword-pool/reload?hotword_pool_id
 | `DELETE /api/asr/hotword-pool` | JSON `{ "hotword_pool_id": "tenant-a", "hotwords": ["词1", "词2"] }` | 删除数量、缺失项、当前总量 |
 | `POST /api/asr/hotword-pool/delete` | JSON `{ "hotword_pool_id": "tenant-a", "hotwords": ["词1", "词2"] }` | 与 `DELETE /api/asr/hotword-pool` 相同 |
 | `POST /api/asr/hotword-pool/clear` | JSON 或 query 参数 `hotword_pool_id` | 清空指定热词池后的总量；不影响其他池 |
-| `POST /api/asr/hotword-pool/reload` | query 参数 `hotword_pool_id` | 从 RAG-ASR 对应热词池文件重载后的总量 |
+| `POST /api/asr/hotword-pool/reload` | JSON 或 query 参数 `hotword_pool_id`；两者同时存在且不一致时返回 400 | 从 RAG-ASR 对应热词池文件重载后的总量 |
 
 ### 情感上传
 
@@ -393,7 +399,7 @@ python tests/test_emotion_ws_client.py sample.wav \
 
 部分错误事件还会带 `id`（语音段标识）或服务端自定义 `code`。客户端应至少记录完整错误 payload，并在收到错误后停止发送音频或主动关闭连接。
 
-`enrollment_id` 在 WebSocket 路径上失效不会触发 `error`：服务端会静默回退到普通 ASR 并在日志里记录原因。客户端可在 `/api/asr/enrollment` 重新注册并通过 `update_hotwords` 携带新 id 续传。
+AST v3 中 `enrollment_enable=true` 但缺少 `enrollment_id` 属于参数错误，会返回 code 非 0 的 error 帧并结束本次会话。已启用但不可用的 `enrollment_id` 不触发 error；服务端回退普通 ASR，并在结果中返回 `enrollment_applied=false` 与可用时的 `enrollment_fallback_reason`。客户端可用 `GET /api/asr/enrollment/{id}` 判断是否需要重新注册。
 
 ### REST 错误响应
 
