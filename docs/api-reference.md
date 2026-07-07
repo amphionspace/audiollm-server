@@ -313,11 +313,13 @@ curl -X POST http://172.16.0.3:8082/api/asr/hotword-pool/reload \
 | 接口 | 请求 | 响应 |
 |---|---|---|
 | `GET /api/asr/hotword-pool` | query 参数 `hotword_pool_id`、`query`、`limit`、`offset` | RAG-ASR 返回的 `status`、`hotwords`、`total_count`、分页元信息 |
-| `POST /api/asr/hotword-pool` | JSON `{ "hotword_pool_id": "tenant-a", "hotwords": ["词1", "词2"] }` | 新增数量、重复/非法项、当前总量 |
-| `DELETE /api/asr/hotword-pool` | JSON `{ "hotword_pool_id": "tenant-a", "hotwords": ["词1", "词2"] }` | 删除数量、缺失项、当前总量 |
+| `POST /api/asr/hotword-pool` | JSON `{ "hotword_pool_id": "tenant-a", "hotwords": ["词1", "词2"] }` | `added_count`、`duplicate_count`、`invalid_count`、`ignored_hotwords`、`total_count` |
+| `DELETE /api/asr/hotword-pool` | JSON `{ "hotword_pool_id": "tenant-a", "hotwords": ["词1", "词2"] }` | `deleted_count`、`missing_count`、`missing_hotwords`、`total_count` |
 | `POST /api/asr/hotword-pool/delete` | JSON `{ "hotword_pool_id": "tenant-a", "hotwords": ["词1", "词2"] }` | 与 `DELETE /api/asr/hotword-pool` 相同 |
 | `POST /api/asr/hotword-pool/clear` | JSON 或 query 参数 `hotword_pool_id` | 清空指定热词池后的总量；不影响其他池 |
 | `POST /api/asr/hotword-pool/reload` | JSON 或 query 参数 `hotword_pool_id`；两者同时存在且不一致时返回 400 | 从 RAG-ASR 对应热词池文件重载后的总量 |
+
+热词添加 / 删除响应不透出上游内部兼容字段 `added`、`skipped_duplicates`、`duplicates`、`deleted`、`missing`、`invalid`；客户端应只依赖上表列出的对外字段。
 
 ### 情感上传
 

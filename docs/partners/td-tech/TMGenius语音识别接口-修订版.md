@@ -457,6 +457,10 @@ POST /api/asr/hotword-pool/reload?hotword_pool_id=default
 
 非法词、重复词、不存在词可以不报错，但响应中必须体现统计或明细，便于 CAgent 和后台页面展示真实生效情况。
 
+热词添加 / 删除响应以本节列出的 `*_count`、`ignored_hotwords`、`missing_hotwords`
+字段为唯一对外契约；上游内部兼容字段如 `added`、`skipped_duplicates`、`duplicates`、
+`deleted`、`missing`、`invalid` 不再透出给 CAgent。
+
 ---
 
 ## 错误语义、鉴权和审计

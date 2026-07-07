@@ -30,7 +30,47 @@ async def test_hotword_pool_add_proxies_to_recall(monkeypatch):
 
     assert seen["words"] == ["挚音科技", "张硕"]
     assert seen["hotword_pool_id"] == "tenant-a"
-    assert result == {"status": "ok", "added": 2, "total_count": 2}
+    assert result == {
+        "status": "ok",
+        "action": "add",
+        "hotword_pool_id": None,
+        "hotwords": [],
+        "total_count": 2,
+        "added_count": 2,
+        "duplicate_count": 0,
+        "invalid_count": 0,
+        "ignored_hotwords": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_hotword_pool_add_uses_review_contract_fields_only(monkeypatch):
+    async def fake_add(words, *, hotword_pool_id=None):
+        return {
+            "status": "ok",
+            "action": "add",
+            "added": 2,
+            "skipped_duplicates": 1,
+            "invalid": ["x"],
+            "duplicates": ["挚音科技"],
+            "hotwords": words,
+            "total_count": 3,
+        }
+
+    monkeypatch.setattr(main_mod, "add_recall_hotwords", fake_add)
+
+    result = await main_mod.asr_hotword_pool_add(
+        {"hotword_pool_id": "tenant-a", "hotwords": ["挚音科技", "张硕"]}
+    )
+
+    assert result["added_count"] == 2
+    assert result["duplicate_count"] == 1
+    assert result["invalid_count"] == 1
+    assert result["ignored_hotwords"] == ["x"]
+    assert "added" not in result
+    assert "skipped_duplicates" not in result
+    assert "duplicates" not in result
+    assert "invalid" not in result
 
 
 @pytest.mark.asyncio
@@ -50,7 +90,43 @@ async def test_hotword_pool_delete_compat_route_proxies_to_recall(monkeypatch):
 
     assert seen["words"] == ["挚音科技"]
     assert seen["hotword_pool_id"] == "tenant-a"
-    assert result == {"status": "ok", "deleted": 1, "total_count": 0}
+    assert result == {
+        "status": "ok",
+        "action": "delete",
+        "hotword_pool_id": None,
+        "hotwords": [],
+        "total_count": 0,
+        "deleted_count": 1,
+        "missing_count": 0,
+        "missing_hotwords": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_hotword_pool_delete_uses_review_contract_fields_only(monkeypatch):
+    async def fake_delete(words, *, hotword_pool_id=None):
+        return {
+            "status": "ok",
+            "action": "delete",
+            "deleted": 1,
+            "missing": ["张三"],
+            "invalid": ["x"],
+            "hotwords": words,
+            "total_count": 2,
+        }
+
+    monkeypatch.setattr(main_mod, "delete_recall_hotwords", fake_delete)
+
+    result = await main_mod.asr_hotword_pool_delete(
+        {"hotword_pool_id": "tenant-a", "hotwords": ["挚音科技", "张三"]}
+    )
+
+    assert result["deleted_count"] == 1
+    assert result["missing_count"] == 1
+    assert result["missing_hotwords"] == ["张三"]
+    assert "deleted" not in result
+    assert "missing" not in result
+    assert "invalid" not in result
 
 
 @pytest.mark.asyncio

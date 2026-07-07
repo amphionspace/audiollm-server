@@ -63,7 +63,7 @@ CAgent 收到小乔端的 ASR 请求后作为代理层调用本文档接口；�
 
 接口前缀：`/api/asr/hotword-pool`
 
-统一响应信封：`{action, status, message, hotwords, hotword_count, total_count}`，`status="ok"` 为成功；`message.message` 含文字说明（如 `added N hotwords` / `deleted N hotwords` / `cleared N hotwords` / `reloaded hotword pool: X -> Y`）。
+热词添加 / 删除响应以 `*_count` 统计字段为唯一对外契约，不透出上游内部兼容字段 `added`、`skipped_duplicates`、`duplicates`、`deleted`、`missing`、`invalid`。`status="ok"` 为成功；`message` 为可读说明。
 
 | 方法   | 路径                             | 作用                                             | 请求体 / 参数                                                           |
 | ------ | -------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------- |
@@ -304,15 +304,18 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 
 接口前缀：`/api/asr/hotword-pool`
 
-**统一响应信封**
+**响应字段**
 
 ```json
 {
   "action": "add",
   "status": "ok",
-  "message": {"message": "added 2 hotwords"},
+  "message": "added 2 hotwords",
   "hotwords": ["张维安", "新华路派出所"],
-  "hotword_count": 2,
+  "added_count": 2,
+  "duplicate_count": 0,
+  "invalid_count": 0,
+  "ignored_hotwords": [],
   "total_count": 150
 }
 ```
@@ -321,9 +324,14 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 | ---- | ---- | ---- |
 | action | String | 操作类型：`add` / `delete` / `list` / `reload` |
 | status | String | `ok` 成功；非 ok 为失败 |
-| message.message | String | 文字说明，如 `added N hotwords` / `deleted N hotwords` / `reloaded hotword pool: X -> Y` |
+| message | String | 文字说明，如 `added N hotwords` / `deleted N hotwords` / `reloaded hotword pool: X -> Y` |
 | hotwords | Array | 本次操作涉及的热词列表 |
-| hotword_count | Int | 本次操作实际生效的热词数 |
+| added_count / deleted_count | Int | 添加 / 删除实际生效的热词数 |
+| duplicate_count / invalid_count | Int | 添加请求中的重复词 / 非法词数量 |
+| missing_count | Int | 删除请求中不存在的热词数量 |
+| ignored_hotwords / missing_hotwords | Array | 添加时被忽略的非法词；删除时未命中的词 |
+| cleared / reloaded | Int | 清空或 reload 实际影响的热词数 |
+| matched_count | Int | 查询命中的热词数 |
 | total_count | Int | 操作后热词池内总数 |
 
 ***
@@ -346,9 +354,9 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 {
   "action": "list",
   "status": "ok",
-  "message": {"message": "returned 2 hotwords"},
+  "message": "returned 2 hotwords",
   "hotwords": ["张维安", "新华路派出所"],
-  "hotword_count": 2,
+  "matched_count": 2,
   "total_count": 150
 }
 ```
@@ -386,9 +394,12 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 {
   "action": "add",
   "status": "ok",
-  "message": {"message": "added 3 hotwords"},
+  "message": "added 2 hotwords",
   "hotwords": ["张维安", "新华路派出所", "狄志明"],
-  "hotword_count": 3,
+  "added_count": 2,
+  "duplicate_count": 1,
+  "invalid_count": 0,
+  "ignored_hotwords": [],
   "total_count": 153
 }
 ```
@@ -431,9 +442,11 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 {
   "action": "delete",
   "status": "ok",
-  "message": {"message": "deleted 2 hotwords"},
+  "message": "deleted 1 hotwords",
   "hotwords": ["张维安", "狄志明"],
-  "hotword_count": 2,
+  "deleted_count": 1,
+  "missing_count": 1,
+  "missing_hotwords": ["狄志明"],
   "total_count": 151
 }
 ```
@@ -469,9 +482,9 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 {
   "action": "clear",
   "status": "ok",
-  "message": {"message": "cleared 151 hotwords"},
+  "message": "cleared 151 hotwords",
   "hotwords": [],
-  "hotword_count": 0,
+  "cleared": 151,
   "total_count": 0
 }
 ```
@@ -500,9 +513,9 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 {
   "action": "reload",
   "status": "ok",
-  "message": {"message": "reloaded hotword pool: 0 -> 100000"},
+  "message": "reloaded hotword pool: 0 -> 100000",
   "hotwords": [],
-  "hotword_count": 0,
+  "reloaded": 100000,
   "total_count": 100000
 }
 ```

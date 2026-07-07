@@ -1684,6 +1684,7 @@ async def test_session_ast_v3_invalid_enrollment_sends_error_and_stops():
     assert error["header"]["message"].startswith(
         "parameter.asr_config.enrollment_id is required"
     )
+    assert [msg["header"]["status"] for msg in ws.sent] == [1]
     assert not engine.starts
     assert stream.feed_calls == []
 
