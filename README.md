@@ -218,19 +218,11 @@ python tests/test_ws_client.py audio.wav --language en --chunk-ms 100
 
 ---
 
-## 启动双 vLLM 推理服务
+## vLLM 推理服务
 
-启动 Amphion（默认端口 8000）：
+本仓库只负责调用 OpenAI 兼容的 vLLM HTTP 服务；模型服务的启动与部署脚本维护在相邻仓库 `/home/ubuntu/workspace/open-audio-llm`。
 
-```bash
-MODEL_PATH=/path/to/Amphion-3B bash scripts/start_vllm_amphion.sh
-```
-
-在另一个终端启动 Qwen（端口 8001）：
-
-```bash
-MODEL_PATH=/path/to/Qwen3-ASR-1.7B bash scripts/start_vllm_qwen.sh
-```
+启动本服务前，请确认 `config.yaml -> upstreams` 中配置的 vLLM 地址已经可访问，例如默认主 ASR `http://localhost:8009`、副 ASR `http://localhost:8001`、情感模型 `http://localhost:8222`。
 
 ---
 
@@ -501,7 +493,7 @@ frontend/                    # 静态 Web 前端（两个 Demo 页面 + 共享�
   emotion.html / emotion-app.js  # 情感识别演示
   sidebar.js                 #   注入侧边栏导航与 EN/中 语言切换
   i18n.js                    #   极简前端 i18n（data-i18n / data-i18n-attr-* 等）
-scripts/                     # vLLM 服务启动脚本
+scripts/                     # 项目维护、构建与压测辅助脚本
 tests/                       # 测试工具（ASR / 情感客户端脚本）
 docs/                        # 协议文档（每个端点一份）
 ```
