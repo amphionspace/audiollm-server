@@ -188,6 +188,7 @@ class StreamingSession:
         self._stopped = False
         self._sent_any_response = False
         self._ws_closed = False
+        self._suppress_terminal = False
 
     # ------------------------------------------------------------------
     # Public lifecycle
@@ -225,9 +226,10 @@ class StreamingSession:
             # Protocols that frame an explicit end-of-session marker (e.g. AST
             # v3's header.status=2) emit it here, after every queued segment
             # has drained. Native framing returns None and sends nothing.
-            terminal = self.protocol.encode_terminal()
-            if terminal is not None:
-                await self._send_wire(terminal)
+            if not self._suppress_terminal:
+                terminal = self.protocol.encode_terminal()
+                if terminal is not None:
+                    await self._send_wire(terminal)
 
     async def cleanup(self) -> None:
         if self._partial_task and not self._partial_task.done():
@@ -334,6 +336,7 @@ class StreamingSession:
                     "message": str(ctrl.get("message") or "invalid request"),
                 }
             )
+            self._suppress_terminal = True
             return True
         if msg_type == "stop":
             await self._handle_stop()

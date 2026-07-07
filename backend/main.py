@@ -713,6 +713,40 @@ def _recall_error(exc: Exception) -> HTTPException:
     )
 
 
+def _count_or_len(payload: dict, count_key: str, list_key: str) -> int:
+    value = payload.get(count_key)
+    if isinstance(value, int):
+        return value
+    items = payload.get(list_key)
+    if isinstance(items, list):
+        return len(items)
+    return 0
+
+
+def _with_hotword_review_aliases(payload: dict) -> dict:
+    """Add TD-Tech review-contract count aliases without removing legacy keys."""
+    if not isinstance(payload, dict):
+        return payload
+    result = dict(payload)
+    action = str(result.get("action") or "").lower()
+    if action == "add" or "added" in result or "skipped_duplicates" in result:
+        result.setdefault("added_count", _count_or_len(result, "added", "hotwords"))
+        result.setdefault(
+            "duplicate_count",
+            _count_or_len(result, "skipped_duplicates", "duplicates"),
+        )
+        result.setdefault("invalid_count", _count_or_len(result, "invalid_count", "invalid"))
+        if "ignored_hotwords" not in result and isinstance(result.get("invalid"), list):
+            result["ignored_hotwords"] = result["invalid"]
+    if action == "delete" or "deleted" in result or "missing" in result:
+        result.setdefault("deleted_count", _count_or_len(result, "deleted", "hotwords"))
+        result.setdefault("missing_count", _count_or_len(result, "missing_count", "missing"))
+        result.setdefault("invalid_count", _count_or_len(result, "invalid_count", "invalid"))
+        if "missing_hotwords" not in result and isinstance(result.get("missing"), list):
+            result["missing_hotwords"] = result["missing"]
+    return result
+
+
 @app.get("/api/asr/hotword-pool")
 async def asr_hotword_pool_list(
     query: str = "",
@@ -749,9 +783,11 @@ async def asr_hotword_pool_add(body: dict = Body(...)):
         cfg,
     )
     try:
-        return await add_recall_hotwords(
-            _hotword_pool_payload(body),
-            hotword_pool_id=resolved_hotword_pool_id,
+        return _with_hotword_review_aliases(
+            await add_recall_hotwords(
+                _hotword_pool_payload(body),
+                hotword_pool_id=resolved_hotword_pool_id,
+            )
         )
     except HTTPException:
         raise
@@ -771,9 +807,11 @@ async def asr_hotword_pool_delete(body: dict = Body(...)):
         cfg,
     )
     try:
-        return await delete_recall_hotwords(
-            _hotword_pool_payload(body),
-            hotword_pool_id=resolved_hotword_pool_id,
+        return _with_hotword_review_aliases(
+            await delete_recall_hotwords(
+                _hotword_pool_payload(body),
+                hotword_pool_id=resolved_hotword_pool_id,
+            )
         )
     except HTTPException:
         raise
