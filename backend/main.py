@@ -34,6 +34,11 @@ from .asr.recall import (
     add_hotwords as add_recall_hotwords,
 )
 from .asr.recall import (
+    clear_hotword_pool,
+    list_hotword_pool,
+    reload_hotword_pool,
+)
+from .asr.recall import (
     delete_enrollment as delete_triton_enrollment,
 )
 from .asr.recall import (
@@ -41,11 +46,6 @@ from .asr.recall import (
 )
 from .asr.recall import (
     get_enrollment as get_triton_enrollment,
-)
-from .asr.recall import (
-    list_hotword_pool,
-    clear_hotword_pool,
-    reload_hotword_pool,
 )
 from .asr.recall import (
     upsert_enrollment as upsert_triton_enrollment,
@@ -448,6 +448,32 @@ async def _resolve_enrollment_for_request(
     return None, None
 
 
+def _public_enrollment_status(
+    enrollment_id: str,
+    summary: dict[str, object] | None,
+) -> dict[str, object]:
+    if not summary:
+        return {
+            "enrollment_id": enrollment_id,
+            "available": False,
+            "reason": "not_found",
+        }
+    available_raw = summary.get("available")
+    if isinstance(available_raw, bool):
+        available = available_raw
+    else:
+        status = str(summary.get("status", "") or "").strip().lower()
+        available = status in {"ok", "available", "found"}
+    reason = str(summary.get("reason") or summary.get("code") or "").strip()
+    if not reason:
+        reason = "ok" if available else "not_found"
+    return {
+        "enrollment_id": enrollment_id,
+        "available": available,
+        "reason": reason,
+    }
+
+
 async def _run_dual_asr_upload(
     wav_b64: str,
     *,
@@ -562,6 +588,38 @@ async def asr_enrollment_delete(enrollment_id: str):
     else:
         get_enrollment_store().delete(enrollment_id)
     return JSONResponse(status_code=204, content=None)
+
+
+@app.get("/api/asr/enrollment/{enrollment_id}")
+async def asr_enrollment_get(enrollment_id: str):
+    """Return a public availability summary for an enrollment id.
+
+    This is a diagnostic/status API only: it never exposes raw enrollment
+    audio, PCM, embedding tensors, or private metadata.
+    """
+    cfg = load_config()
+    ident = str(enrollment_id or "").strip()
+    if cfg.enable_triton_enrollment_store:
+        try:
+            summary = await get_triton_enrollment(
+                enrollment_id=ident,
+                enrollment_scope_id=_enrollment_store_owner_id(cfg),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Triton enrollment status lookup failed: %s", exc)
+            return {
+                "enrollment_id": ident,
+                "available": False,
+                "reason": "upstream_unavailable",
+            }
+        return _public_enrollment_status(ident, summary)
+
+    entry = get_enrollment_store().get(ident)
+    return {
+        "enrollment_id": ident,
+        "available": entry is not None,
+        "reason": "ok" if entry is not None else "not_found",
+    }
 
 
 def _hotword_pool_payload(body: dict) -> list[str]:
@@ -729,6 +787,7 @@ async def asr_hotword_pool_clear(
     user_id: str | None = None,
     body: dict | None = Body(default=None),
 ):
+    body = body if isinstance(body, dict) else None
     _reject_legacy_hotword_user_id(user_id)
     _reject_legacy_hotword_user_id(
         body.get("user_id") if body is not None and "user_id" in body else None
@@ -749,10 +808,16 @@ async def asr_hotword_pool_clear(
 async def asr_hotword_pool_reload(
     hotword_pool_id: str = "",
     user_id: str | None = None,
+    body: dict | None = Body(default=None),
 ):
+    body = body if isinstance(body, dict) else None
     _reject_legacy_hotword_user_id(user_id)
+    _reject_legacy_hotword_user_id(
+        body.get("user_id") if body is not None and "user_id" in body else None
+    )
     cfg = load_config()
-    resolved_hotword_pool_id = _resolve_hotword_pool_id(
+    resolved_hotword_pool_id = _resolve_hotword_pool_id_from_body_or_query(
+        body,
         hotword_pool_id,
         cfg,
     )

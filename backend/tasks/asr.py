@@ -196,7 +196,17 @@ class AsrTaskEngine(BaseTaskEngine):
             "audio_b64": wav_b64,
             "duration_sec": audio_duration,
             "effective_hotwords": returned_effective_hotwords,
+            "enrollment_applied": self._enrollment_applied_for_final(
+                primary_result,
+                ctx,
+            ),
         }
+        fallback_reason = self._enrollment_fallback_reason_for_final(
+            primary_result,
+            ctx,
+        )
+        if fallback_reason:
+            payload["enrollment_fallback_reason"] = fallback_reason
         if dump_id:
             payload["dump_id"] = dump_id
         if seg.id:
@@ -301,14 +311,17 @@ class AsrTaskEngine(BaseTaskEngine):
         if ctx.dumper is not None:
             ctx.dumper.record_partial(snap.id, text)
 
-        await ctx.send_json(
-            {
-                "type": "partial",
-                "text": text,
-                "language": ctx.language,
-                **({"id": snap.id} if snap.id else {}),
-            }
-        )
+        payload = {
+            "type": "partial",
+            "text": text,
+            "language": ctx.language,
+            **({"id": snap.id} if snap.id else {}),
+        }
+        if ctx.enrollment_b64 or ctx.enrollment_id or ctx.enrollment_fallback_reason:
+            payload["enrollment_applied"] = bool(ctx.enrollment_b64)
+        if ctx.enrollment_fallback_reason:
+            payload["enrollment_fallback_reason"] = ctx.enrollment_fallback_reason
+        await ctx.send_json(payload)
 
     # ------------------------------------------------------------------
     # Stop guarantee: always emit a final after stop (possibly empty).
@@ -546,3 +559,24 @@ class AsrTaskEngine(BaseTaskEngine):
         if isinstance(primary_result, dict):
             return [str(word) for word in primary_result.get("effective_hotwords") or []]
         return []
+
+    @staticmethod
+    def _enrollment_applied_for_final(primary_result, ctx: SessionContext) -> bool:
+        if isinstance(primary_result, dict) and "enrollment_applied" in primary_result:
+            return bool(primary_result.get("enrollment_applied"))
+        return bool(ctx.enrollment_b64)
+
+    @staticmethod
+    def _enrollment_fallback_reason_for_final(
+        primary_result,
+        ctx: SessionContext,
+    ) -> str:
+        if isinstance(primary_result, dict):
+            reason = str(primary_result.get("enrollment_fallback_reason") or "").strip()
+            if reason:
+                return reason
+        if ctx.enrollment_fallback_reason:
+            return ctx.enrollment_fallback_reason
+        if ctx.enrollment_id and not ctx.enrollment_b64:
+            return "not_found"
+        return ""

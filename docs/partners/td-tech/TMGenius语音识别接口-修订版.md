@@ -2,9 +2,9 @@
 
 | 属性 | 值 |
 | ---- | ---- |
-| 文档版本 | V0.3-review |
+| 文档版本 | V0.4-review |
 | 创建日期 | 2026-07-03 |
-| 修订日期 | 2026-07-06 |
+| 修订日期 | 2026-07-07 |
 | 状态 | 安菲翁评审修订建议 |
 | 调用方 | CAgent |
 
@@ -107,30 +107,47 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 | `header.status` | Int | 是 | 流式状态：`0` 开始 / `1` 中间 / `2` 结束 |
 | `parameter.asr_config.language` | String | 否 | 语种，建议使用 `zh` / `zh_en` 或双方确认的枚举 |
 | `parameter.asr_config.hotword_pool_id` | String | 否 | 热词池 ID，缺省为 `default` |
-| `parameter.asr_config.enable_role_separation` | Boolean | 否 | 角色分离开关，默认 `false`；当前版本暂不支持角色分离，但接受该字段 |
+| `parameter.asr_config.enable_role_separation` | Boolean | 否 | 角色分离开关，默认 `true`；省略等价于开启角色分离 |
 | `parameter.asr_config.enrollment_enable` | Boolean | 否 | 是否启用声纹，默认 `false` |
 | `parameter.asr_config.enrollment_id` | String | 否 | 主讲人声纹 ID，由 `POST /api/asr/enrollment` 返回 |
 | `payload.audio.audio` | String | 是 | base64 编码音频数据 |
 | `payload.text.text` | String | 否 | 会话热词，逗号分隔，仅当前连接生效，不写入热词池 |
 
-### 4. 角色分离兼容规则
+### 4. 角色分离与声纹优先级
 
-当前版本暂不支持角色分离，但为兼容鼎桥 AST 3.4.4.1081 字段，按以下规则处理：
+角色分离开关继承鼎桥 AST 3.4.4.1081 / 讯飞现有实现语义，优先级高于声纹注册：
 
-- `parameter.asr_config.enable_role_separation` 默认 `false`。
-- 客户端传 `enable_role_separation=false` 时，服务端不做角色分离，所有 `sentence` 结果的 `cw[].rl` 固定返回整数 `0`。
-- 客户端传 `enable_role_separation=true` 时，服务端仍正常识别，不返回不支持错误；当前版本仍不做角色分离，`sentence` 结果的 `cw[].rl` 固定返回整数 `0`。
-- `cw[].rl` 仅在 `msgtype=sentence` 的最终结果中返回；`msgtype=Progressive` 的中间结果不返回该字段。
+- `parameter.asr_config.enable_role_separation` 默认 `true`；客户端省略该字段时等价于 `true`。
+- `enable_role_separation=true` 时，服务端优先执行角色分离；即使同时传入 `enrollment_enable=true` 和 `enrollment_id`，也不启用声纹目标说话人过滤。
+- `enable_role_separation=false` 时，服务端不执行角色分离，`sentence` 和 `Progressive` 结果均不返回 `cw[].rl` 字段。
+- `cw[].rl` 仅在 `enable_role_separation=true` 且 `msgtype=sentence` 的最终结果中返回；`msgtype=Progressive` 的中间结果不返回该字段。
+- `cw[].rl` 只表示角色分离编号，不表示声纹是否命中或启用。
+
+角色分离与声纹组合行为矩阵：
+
+| `enable_role_separation` | `enrollment_enable` | `enrollment_id` | 实际模式 | `cw[].rl` 行为 | 声纹状态 | 是否报错 |
+|---|---|---|---|---|---|---|
+| 省略 | 省略 / `false` | 省略 | 角色分离 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| 省略 | `true` | 有效 ID | 角色分离优先，忽略声纹 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| 省略 | `true` | 空 / 无效 ID | 角色分离优先，忽略声纹参数 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| `true` | 省略 / `false` | 省略 | 角色分离 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| `true` | `true` | 有效 ID | 角色分离优先，忽略声纹 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| `true` | `true` | 空 / 无效 ID | 角色分离优先，忽略声纹参数 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| `false` | 省略 / `false` | 省略 / 任意 | 普通 ASR | 不返回 `cw[].rl` | `enrollment_applied=false` | 否 |
+| `false` | `true` | 有效 ID | 声纹目标说话人识别 | 不返回 `cw[].rl` | `enrollment_applied=true` | 否 |
+| `false` | `true` | 空 ID | 参数错误 | 无识别结果 | `enrollment_applied=false` | 是 |
+| `false` | `true` | 无效 / 过期 ID | 回退普通 ASR | 不返回 `cw[].rl` | `enrollment_applied=false` | 否 |
 
 ### 5. 声纹启用规则
 
 - `header.resIdList[0]` 直接废弃，不作为兼容字段继续使用。
 - `enrollment_enable` 默认 `false`。
-- `enrollment_enable=false` 时，即使传入 `enrollment_id`，也不启用声纹。
-- `enrollment_enable=true` 且 `enrollment_id` 非空时启用声纹。
-- `enrollment_enable=true` 但 `enrollment_id` 为空时，应返回参数错误，不进入静默普通 ASR。
-- 服务端应在识别结果或会话状态中返回 `enrollment_used` 或 `enrollment_applied`，表示声纹是否实际生效。
-- `cw[].rl` 只用于角色分离字段兼容，不表示声纹是否命中或启用。
+- 声纹仅在 `enable_role_separation=false` 时参与识别；角色分离开启或省略时，声纹参数被忽略。
+- `enable_role_separation=false` 且 `enrollment_enable=false` 时，即使传入 `enrollment_id`，也不启用声纹。
+- `enable_role_separation=false` 且 `enrollment_enable=true` 且 `enrollment_id` 非空时启用声纹。
+- `enable_role_separation=false` 且 `enrollment_enable=true` 但 `enrollment_id` 为空时，返回参数错误，不进入普通 ASR。
+- 服务端在 AST v3 识别结果中返回 `enrollment_applied`，表示本条结果是否实际携带可用声纹材料进入 ASR。
+- `cw[].rl` 只用于角色分离编号，不表示声纹是否命中或启用。
 
 ### 6. 音频格式
 
@@ -167,7 +184,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
       "ls": false,
       "msgtype": "sentence",
       "sn": 1,
-      "enrollment_used": true,
+      "enrollment_applied": true,
       "ws": [
         {
           "bg": 17,
@@ -196,12 +213,13 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 | `header.traceId` | String | 日志追踪 ID |
 | `header.status` | Int | 识别状态：`0` 开始 / `1` 识别中 / `2` 结束 |
 | `payload.result.msgtype` | String | `sentence` 最终结果 / `Progressive` 中间结果 |
-| `payload.result.enrollment_used` | Boolean | 声纹是否实际生效；声纹未启用、ID 不可用或回退普通 ASR 时为 `false` |
+| `payload.result.enrollment_applied` | Boolean | 声纹是否实际携带可用材料进入 ASR；声纹未启用、ID 不可用或回退普通 ASR 时为 `false` |
+| `payload.result.enrollment_fallback_reason` | String | 可选；声纹未生效原因，如 `disabled` / `not_found` / `incompatible` / `upstream_unavailable` |
 | `payload.result.bg` / `ed` | Int | 句子开始 / 结束时间，单位 ms |
 | `payload.result.ws` | Array | 词语列表 |
-| `payload.result.ws[].cw[].rl` | Int | 角色编号；当前版本仅在 `sentence` 中固定返回 `0`，`Progressive` 不返回 |
+| `payload.result.ws[].cw[].rl` | Int | 角色编号；仅在 `enable_role_separation=true` 且 `msgtype=sentence` 时返回，`Progressive` 不返回；`enable_role_separation=false` 时不返回 |
 
-声纹生效状态说明：`enrollment_used` / `enrollment_applied` 用于确认本次识别是否实际应用了声纹；`cw[].rl` 只用于角色分离字段兼容，当前固定为 `0`，不表示声纹状态。
+声纹生效状态说明：AST v3 使用 `enrollment_applied` 确认本次识别是否实际携带可用声纹材料；REST 上传响应使用 `enrollment_used`。`cw[].rl` 只用于角色分离编号，不表示声纹状态。角色分离优先级高于声纹注册，角色分离开启或省略时，`enrollment_applied=false`。
 
 ---
 
@@ -253,7 +271,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 
 该接口也可用于查询已生效声纹、定位数据不一致：如果 CAgent 保存了某个 `enrollment_id`，但查询返回 `available=false`，说明该 ID 在当前服务端不可用，可能是未注册、已删除、落盘文件缺失、embedding 与当前模型/adapter 不兼容，或路由到没有共享同一 RAG-ASR 本地存储的实例导致。若不同实例或管理服务对同一 `enrollment_id` 返回不同 `available`，可以直接暴露实例间存储或路由不一致问题。
 
-需要注意：该接口只负责诊断和暴露状态，不负责同步声纹数据，也不保证查询后实际 ASR 一定使用成功。最终仍需在 ASR 响应中返回 `enrollment_used` / `enrollment_applied`，用于确认本次识别是否实际应用了声纹。
+需要注意：该接口只负责诊断和暴露状态，不负责同步声纹数据，也不保证查询后实际 ASR 一定使用成功。最终仍需以 AST v3 响应中的 `enrollment_applied` 或 REST 响应中的 `enrollment_used` 确认本次识别是否实际应用了声纹。
 
 响应示例：
 
@@ -293,7 +311,7 @@ RAG-ASR 管理服务模式下，查询结果以管理服务为准；RAG-ASR 查�
 | 重启 | RAG-ASR 管理服务重启后仍可从本地落盘文件读取；前提是路由到同一持久化目录或共享存储 |
 | 容量 | RAG-ASR `enrollment_cache_max_entries` 只限制内存热缓存，不删除磁盘文件 |
 | 删除 | 删除接口会删除对应 `.pt` 与 `.json` 文件；未知 ID 也可按幂等成功处理 |
-| 失效 | 文件缺失、显式删除或 embedding 与当前模型/adapter 不兼容时，应在 ASR 响应中体现 `enrollment_used=false` 或 `enrollment_applied=false`，避免只依赖日志判断 |
+| 失效 | 文件缺失、显式删除或 embedding 与当前模型/adapter 不兼容时，AST v3 响应应体现 `enrollment_applied=false`，REST 上传响应应体现 `enrollment_used=false`，避免只依赖日志判断 |
 
 若 TMGenius / RAG-ASR 多实例部署，需要说明是否使用共享持久化目录或会话粘滞；否则同一 `enrollment_id` 可能在不同实例不可用。
 
@@ -456,9 +474,9 @@ POST /api/asr/hotword-pool/reload?hotword_pool_id=default
 
 ### 2. WebSocket 错误
 
-参数错误应明确返回错误，不应静默回退。WebSocket error 后，需要说明连接是否继续。
+参数错误应明确返回错误。AST v3 中 `enable_role_separation=false && enrollment_enable=true` 但缺少 `enrollment_id` 会返回 error 并结束本次会话。
 
-角色分离例外：`parameter.asr_config.enable_role_separation=true` 不视为参数错误，当前版本按普通识别继续处理，并在 `sentence` 中返回 `cw[].rl=0`。
+角色分离例外：`parameter.asr_config.enable_role_separation=true` 或省略时不视为参数错误；该模式优先执行角色分离，并忽略声纹参数校验。只有在 `enable_role_separation=false` 且 `enrollment_enable=true` 但 `enrollment_id` 为空时，才因声纹参数缺失返回参数错误。
 
 示例：
 
@@ -472,7 +490,7 @@ POST /api/asr/hotword-pool/reload?hotword_pool_id=default
 }
 ```
 
-声纹不可用导致回退普通 ASR 时，应在响应字段中体现 `enrollment_used=false`。
+声纹不可用导致回退普通 ASR 时，应在响应字段中体现 `enrollment_applied=false`，并尽量返回 `enrollment_fallback_reason`。
 
 ### 3. 鉴权和审计
 
@@ -489,5 +507,6 @@ POST /api/asr/hotword-pool/reload?hotword_pool_id=default
 
 | 版本 | 日期 | 说明 |
 | ---- | ---- | ---- |
+| V0.4-review | 2026-07-07 | 确认角色分离默认开启；`enable_role_separation` 优先级高于 `enrollment_enable`；关闭角色分离时不返回 `cw[].rl` |
 | V0.3-review | 2026-07-06 | 增加鼎桥 AST 3.4.4.1081 角色分离字段兼容口径：接受 `enable_role_separation`，`sentence` 返回 `cw[].rl=0`，`Progressive` 不返回 `cw[].rl` |
 | V0.2-review | 2026-07-04 | 补充声纹管理、热词池清空和重载、错误语义等评审建议 |

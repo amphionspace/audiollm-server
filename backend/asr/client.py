@@ -386,6 +386,8 @@ async def query_audio_model(
     enrollment_audio_embeds_uuid: str | None = None
     audio_embeds_bypass_used = False
     enrollment_embeds_bypass_used = False
+    enrollment_fallback_reason = ""
+    want_enrollment_bypass = False
     is_final_path = audio_pcm is not None
 
     if cfg.enable_hotword_recall and audio_pcm is not None:
@@ -404,6 +406,13 @@ async def query_audio_model(
             and bool(enrollment_id)
             and enrollment_wav_base64 is None
         )
+        if (
+            cfg.enable_triton_enrollment_store
+            and enrollment_id
+            and enrollment_wav_base64 is None
+            and not want_enrollment_bypass
+        ):
+            enrollment_fallback_reason = "incompatible"
         want_bypass = (
             cfg.enable_encoder_bypass
             and template == "amphion_asr_1.7b"
@@ -448,6 +457,9 @@ async def query_audio_model(
                     f"triton-enrollment-{enrollment_owner}-{enrollment_id}"
                 )
                 enrollment_embeds_bypass_used = True
+                enrollment_fallback_reason = ""
+            elif want_enrollment_bypass:
+                enrollment_fallback_reason = "not_found"
             logger.info(
                 "ASR recall result: session_id=%s gateway_trace_id=%s "
                 "hotword_pool_id=%s recall_top_k=%d recalled_count=%d "
@@ -468,6 +480,8 @@ async def query_audio_model(
             )
         except Exception as exc:
             recall_latency_ms = (time.monotonic() - recall_t0) * 1000.0
+            if want_enrollment_bypass:
+                enrollment_fallback_reason = "upstream_unavailable"
             logger.warning(
                 "ASR recall failed: session_id=%s gateway_trace_id=%s "
                 "hotword_pool_id=%s recall_top_k=%d reason=%r "
@@ -526,6 +540,8 @@ async def query_audio_model(
             raise
         logger.warning("Primary ASR audio_embeds request failed; retrying raw audio")
         audio_embeds_bypass_used = False
+        if enrollment_embeds_bypass_used:
+            enrollment_fallback_reason = "upstream_unavailable"
         enrollment_embeds_bypass_used = False
         fallback_messages = build_primary_messages(
             audio_wav_base64,
@@ -543,6 +559,13 @@ async def query_audio_model(
         result["reported_hotwords"] = effective_hotwords
     if is_final_path:
         result["effective_hotwords"] = list(recalled_hotwords)
+        enrollment_applied = bool(enrollment_wav_base64 or enrollment_embeds_bypass_used)
+        if enrollment_wav_base64 or enrollment_id:
+            result["enrollment_applied"] = enrollment_applied
+            if not enrollment_applied:
+                result["enrollment_fallback_reason"] = (
+                    enrollment_fallback_reason or "not_found"
+                )
         text = str(result.get("transcription") or "")
         hits = hotword_hits_in_text(effective_hotwords, text)
         logger.info(

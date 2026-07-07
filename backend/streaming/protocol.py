@@ -172,6 +172,21 @@ def _coerce_status(raw: object) -> int:
         return 1
 
 
+def _coerce_bool(raw: object, *, default: bool) -> bool:
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return bool(raw)
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 class AstV3Protocol:
     """iFlytek Tuling AST v3 envelope protocol (stateful, one per connection).
 
@@ -191,6 +206,9 @@ class AstV3Protocol:
         self.trace_id = ""
         self._inbound_started = False
         self._terminated = False
+        self._enable_role_separation = True
+        self._default_enrollment_applied = False
+        self._default_enrollment_fallback_reason = "disabled"
         # Result counters. segId identifies a speech segment; sn is the result
         # sequence number. We emit one sentence per segment, so both advance in
         # lockstep on every final (segId from 0, sn from 1 per the spec sample).
@@ -257,9 +275,24 @@ class AstV3Protocol:
             # (distinct from the log-only iFlytek engine block). language is not
             # a Config field so it rides start.language; the rest becomes
             # start.config and is whitelist-filtered downstream in the session.
-            language, hotword_pool_id, enrollment_id, cfg_overrides = (
-                self._extract_asr_config(parameter)
-            )
+            (
+                language,
+                hotword_pool_id,
+                enrollment_id,
+                cfg_overrides,
+                error_message,
+            ) = self._extract_asr_config(parameter)
+            if error_message:
+                actions.append(
+                    ControlAction(
+                        {
+                            "type": "error",
+                            "code": "invalid_enrollment",
+                            "message": error_message,
+                        }
+                    )
+                )
+                return actions
             if language:
                 start_ctrl["language"] = language
             if hotword_pool_id:
@@ -286,8 +319,9 @@ class AstV3Protocol:
             return text_obj.get("text")
         return None
 
-    @staticmethod
-    def _extract_asr_config(parameter: dict) -> tuple[str, str, str, dict]:
+    def _extract_asr_config(
+        self, parameter: dict
+    ) -> tuple[str, str, str, dict, str]:
         """Split ``parameter.asr_config`` into routed fields and overrides.
 
         ``asr_config`` is this service's extension slot for per-connection
@@ -298,18 +332,55 @@ class AstV3Protocol:
         key. ``enrollment_id`` is the only AST v3 target-speaker field. Every
         other key is forwarded verbatim as ``start.config`` and is
         whitelist-filtered by ``Config.override_client`` downstream, so no
-        validation happens here.
+        validation happens here except for AST v3 enrollment gating: role
+        separation defaults on and wins over enrollment, while target-speaker
+        enrollment requires both ``enrollment_enable=true`` and a non-empty
+        ``enrollment_id``.
         Returns empty values when the slot is absent or not a dict.
         """
         cfg = parameter.get("asr_config")
         if not isinstance(cfg, dict) or not cfg:
-            return "", "", "", {}
+            self._enable_role_separation = True
+            self._default_enrollment_applied = False
+            self._default_enrollment_fallback_reason = "disabled"
+            return "", "", "", {}, ""
         overrides = dict(cfg)
         language = str(overrides.pop("language", "") or "").strip()
         hotword_pool_id = str(overrides.pop("hotword_pool_id", "") or "").strip()
         enrollment_id = str(overrides.pop("enrollment_id", "") or "").strip()
+        role_separation = _coerce_bool(
+            overrides.pop("enable_role_separation", None),
+            default=True,
+        )
+        enrollment_enable = _coerce_bool(
+            overrides.pop("enrollment_enable", None),
+            default=False,
+        )
+        self._enable_role_separation = role_separation
+        self._default_enrollment_applied = False
+        self._default_enrollment_fallback_reason = "disabled"
+        routed_enrollment_id = ""
+        error_message = ""
+        if role_separation:
+            routed_enrollment_id = ""
+        elif not enrollment_enable:
+            routed_enrollment_id = ""
+        elif enrollment_id:
+            routed_enrollment_id = enrollment_id
+            self._default_enrollment_fallback_reason = ""
+        else:
+            error_message = (
+                "parameter.asr_config.enrollment_id is required when "
+                "enrollment_enable=true and enable_role_separation=false"
+            )
         overrides.pop("user_id", None)
-        return language, hotword_pool_id, enrollment_id, overrides
+        return (
+            language,
+            hotword_pool_id,
+            routed_enrollment_id,
+            overrides,
+            error_message,
+        )
 
     def _decode_audio(self, payload: dict) -> bytes:
         audio_obj = payload.get("audio")
@@ -426,6 +497,9 @@ class AstV3Protocol:
             "msgtype": "sentence",
             "sn": sn,
             "pa": 0,
+            "enrollment_applied": bool(
+                payload.get("enrollment_applied", self._default_enrollment_applied)
+            ),
             "vad": {"ws": [{"bg": bg_f, "ed": ed_f}]},
             "ws": [
                 {
@@ -435,7 +509,6 @@ class AstV3Protocol:
                             "lg": lg,
                             "ng": "0.00",
                             "ph": "phone",
-                            "rl": 0,
                             "sc": "0.00",
                             "w": text,
                             "wb": bg_f,
@@ -447,6 +520,18 @@ class AstV3Protocol:
                 }
             ],
         }
+        reason = str(
+            payload.get(
+                "enrollment_fallback_reason",
+                self._default_enrollment_fallback_reason,
+            )
+            or ""
+        ).strip()
+        if reason:
+            result["enrollment_fallback_reason"] = reason
+        cw = result["ws"][0]["cw"][0]
+        if self._enable_role_separation:
+            cw["rl"] = 0
         return self._envelope(result, status=1)
 
     def _progressive_frame(self, text: str, payload: dict) -> dict:
@@ -455,6 +540,9 @@ class AstV3Protocol:
             "segId": self._seg_id,
             "ls": False,
             "msgtype": "Progressive",
+            "enrollment_applied": bool(
+                payload.get("enrollment_applied", self._default_enrollment_applied)
+            ),
             "ws": [
                 {
                     "bg": 0,
@@ -474,6 +562,15 @@ class AstV3Protocol:
                 }
             ],
         }
+        reason = str(
+            payload.get(
+                "enrollment_fallback_reason",
+                self._default_enrollment_fallback_reason,
+            )
+            or ""
+        ).strip()
+        if reason:
+            result["enrollment_fallback_reason"] = reason
         return self._envelope(result, status=1)
 
     def _error_frame(self, message: str) -> dict:

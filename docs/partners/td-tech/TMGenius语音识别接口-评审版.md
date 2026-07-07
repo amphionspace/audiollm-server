@@ -31,7 +31,7 @@ CAgent 收到小乔端的 ASR 请求后作为代理层调用本文档接口；�
 | --------- | ---------------- | ------------------------------- | --------------------------------------------------- |
 | WebSocket | `/tuling/ast/v3` | 流式实时语音转写（AST v3 协议） | `header`、`parameter.asr_config`、`payload.audio`、`payload.text.text`（会话热词） |
 
-> AST v3 是 WebSocket 长连接协议，非 HTTP REST。首帧 `header.status=0` 携带参数（含声纹 `resIdList`、会话热词 `payload.text.text`），中间帧 `status=1` 推音频，末帧 `status=2` 结束。
+> AST v3 是 WebSocket 长连接协议，非 HTTP REST。首帧 `header.status=0` 携带参数（含 `parameter.asr_config` 中的声纹启用矩阵、会话热词 `payload.text.text`），中间帧 `status=1` 推音频，末帧 `status=2` 结束。
 
 ---
 
@@ -51,7 +51,7 @@ CAgent 收到小乔端的 ASR 请求后作为代理层调用本文档接口；�
 | 存储   | RAG-ASR 管理服务将 projector frames tensor 与 JSON 元数据落盘到 `enrollment_store_dir/<scope>/<enrollment_id>.pt/.json`，默认 `var/enrollments`；不保存原始注册音频 |
 | 有效期 | RAG-ASR 落盘存储当前不做 TTL 自动过期；查询/使用会更新 `last_used_at` |
 | 容量   | RAG-ASR `enrollment_cache_max_entries` 只限制内存热缓存，不删除磁盘文件 |
-| 失效   | 文件缺失、显式删除或 embedding 与当前模型/adapter 不兼容后，服务端静默回退为普通 ASR，不返回错误 |
+| 失效   | 文件缺失、显式删除或 embedding 与当前模型/adapter 不兼容后，服务端回退为普通 ASR；AST v3 结果返回 `enrollment_applied=false`，并尽量返回 `enrollment_fallback_reason` |
 
 > **CAgent 职责**：CAgent 需维护 `userId → enrollmentId` 映射；RAG-ASR 本地落盘存在时，TMGenius/RAG-ASR 重启后通常无需重新注册。若路由到未共享同一 `enrollment_store_dir` 的实例、文件被删除或模型/adapter 不兼容，则需重新注册。
 
@@ -72,8 +72,7 @@ CAgent 收到小乔端的 ASR 请求后作为代理层调用本文档接口；�
 | DELETE | `/api/asr/hotword-pool`          | 删除指定热词                                     | `{"hotwords": [...]}`                                                   |
 | POST   | `/api/asr/hotword-pool/delete`   | 删除指定热词（兼容不支持 body 的 DELETE 场景）   | `{"hotwords": [...]}`                                                   |
 | POST   | `/api/asr/hotword-pool/clear`    | 清空指定热词池                                   | JSON 或 Query：`hotword_pool_id`                                        |
-| POST   | `/api/asr/hotword-pool/reload`   | 从容器内池文件重载并重建嵌入缓存（无需重启服务） | 无                                                                      |
-| POST   | `/api/asr/hotword-pool/action`   | 统一入口（大写字段风格，兼容旧客户端）           | `{"ACTION", "HOTWORDS", "QUERY", "LIMIT", "OFFSET"}`                    |
+| POST   | `/api/asr/hotword-pool/reload`   | 从指定热词池文件重载并重建嵌入缓存（无需重启服务） | JSON 或 Query：`hotword_pool_id` |
 
 **热词格式与校验规则**（服务端自动过滤，非法词静默丢弃不报错）：
 
@@ -125,14 +124,14 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
         "traceId": "traceId123456",
         "appId": "123456",
         "bizId": "39769795890",
-        "status": 0,
-        "resIdList": ["enrollment_id_abc"]
+        "status": 0
     },
     "parameter": {
         "engine": {
             "wdec_param_LanguageTypeChoice": "1"
         },
         "asr_config": {  //  基于讯飞
+            "enable_role_separation": false,
             "enrollment_enable": true,
             "enrollment_id": "enrollment_id_abc"
         }
@@ -157,11 +156,12 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 | header.appId | String | 否 | 应用系统 ID |
 | header.bizId | String | 是 | 业务 ID |
 | header.status | int | 是 | 流式状态：`0` 开始 / `1` 中间 / `2` 结束 |
-| header.resIdList | List\<String\> | 否 | 启用声纹时填入 `[enrollment_id]`；空数组表示不启用 |
+| header.resIdList | List\<String\> | 否 | 已废弃；服务端仅记录并忽略，不作为声纹字段 |
 | parameter.engine | Map | 否 | 引擎透传参数 |
 | parameter.engine.wdec_param_LanguageTypeChoice | String | 否 | 语种：`"1"` 中文 / `"3"` 中英混合 |
-| parameter.asr_config.enrollment_enable | Boolean | 否 | 是否启用主讲人声纹门控 |
-| parameter.asr_config.enrollment_id | String | 否 | 主讲人声纹 ID，与 `resIdList[0]` 一致 |
+| parameter.asr_config.enable_role_separation | Boolean | 否 | 角色分离开关，默认 `true`；开启时优先角色分离并忽略声纹参数 |
+| parameter.asr_config.enrollment_enable | Boolean | 否 | 是否显式启用主讲人声纹门控，默认 `false` |
+| parameter.asr_config.enrollment_id | String | 否 | 主讲人声纹 ID；仅当 `enable_role_separation=false && enrollment_enable=true` 时使用 |
 | payload.audio.audio | String | 是 | base64 编码的音频数据；每帧建议 4096 字节，不超过 16 KB，至少覆盖 40ms 语音 |
 | payload.text.text | String | 否 | 会话热词，逗号分隔；仅对当前连接的 VAD 最终句生效；与按 `hotword_pool_id` 隔离的热词池独立 |
 
@@ -184,6 +184,8 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
             "ls": false,
             "msgtype": "sentence",
             "sn": 1,
+            "enrollment_applied": false,
+            "enrollment_fallback_reason": "disabled",
             "ws": [
                 {
                     "bg": 17,
@@ -217,6 +219,8 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 | payload.result.ed | Int | 句子结束时间（ms） |
 | payload.result.ls | Bool | 是否最后一段结果 |
 | payload.result.sn | Int | 结果序号 |
+| payload.result.enrollment_applied | Bool | 本条识别是否实际携带可用声纹材料进入 ASR；默认 false |
+| payload.result.enrollment_fallback_reason | String | 可选；声纹未生效原因，如 `disabled` / `not_found` / `incompatible` / `upstream_unavailable` |
 | payload.result.ws | ResultItem[] | 词语列表 |
 | payload.result.ws.bg | Int | 词语开始时间（单位 10ms） |
 | payload.result.ws.cw | ResultWordItem[] | 词语识别结果 |
@@ -254,7 +258,7 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 
 | 字段 | 类型 | 说明 |
 | ---- | ---- | ---- |
-| enrollment_id | String | 声纹 ID；后续注入 `header.resIdList[0]` 或 `parameter.asr_config.enrollment_id` |
+| enrollment_id | String | 声纹 ID；AST v3 后续注入 `parameter.asr_config.enrollment_id`，不再使用 `header.resIdList[0]` |
 | duration_sec | Float | 实际注册音频时长（秒） |
 
 **错误响应**
@@ -292,7 +296,7 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 | ----------- | ---- |
 | 204 | 删除成功（含未知 ID） |
 
-> `enrollment_id` 不可用（未注册、已删除、落盘文件缺失或 embedding 与当前模型/adapter 不兼容）后再被 AST v3 使用时，服务端静默回退为普通 ASR，不返回错误。CAgent 应在检测到回退后重新调用注册接口。
+> `enrollment_id` 不可用（未注册、已删除、落盘文件缺失或 embedding 与当前模型/adapter 不兼容）后再被 AST v3 使用时，服务端回退为普通 ASR，并在结果中返回 `enrollment_applied=false` 与可用时的 `enrollment_fallback_reason`。CAgent 应据此重新调用注册接口。
 
 ---
 
@@ -476,13 +480,19 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 
 #### 3.5 重载热词池
 
-从容器内池文件（`/home/workspace/RAG-ASR/examples/hotword_pool.txt`）重建内存池并刷新嵌入缓存，无需重启服务。适用于通过 `docker cp` 写入大批量词表后触发热加载，或运维手动刷新。
+从指定 `hotword_pool_id` 对应的池文件重建内存池并刷新嵌入缓存，无需重启服务。适用于通过 `docker cp` 写入大批量词表后触发热加载，或运维手动刷新。
 
 - **URL**：`POST /api/asr/hotword-pool/reload`
 
-**请求 Body**
+**请求参数**
 
-无。
+支持 Query 或 JSON body 指定 `hotword_pool_id`；缺省为 `default`。若 Query 和 Body 同时存在且不一致，返回参数错误。
+
+```json
+{
+  "hotword_pool_id": "tenant-a"
+}
+```
 
 **响应示例**
 
@@ -501,33 +511,9 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 
 ***
 
-#### 3.6 统一入口（大写字段风格）
+#### 3.6 不提供统一 action 入口
 
-兼容旧客户端或大写字段风格的调用方式，语义覆盖上述所有操作。
-
-- **URL**：`POST /api/asr/hotword-pool/action`
-- **Content-Type**：`application/json`
-
-**请求 Body**
-
-| 字段 | 类型 | 必填 | 说明 |
-| ---- | ---- | :--: | ---- |
-| ACTION | String | 是 | 操作类型：`ADD` / `DELETE` / `LIST` / `RELOAD` |
-| HOTWORDS | Array\<String\> | 否 | 热词列表；`ADD` / `DELETE` 时使用 |
-| QUERY | String | 否 | 子串检索；`LIST` 时使用 |
-| LIMIT | Int | 否 | 分页条数；`LIST` 时使用，上限 1000 |
-| OFFSET | Int | 否 | 分页偏移；`LIST` 时使用 |
-
-**请求示例（添加）**
-
-```json
-{
-  "ACTION": "ADD",
-  "HOTWORDS": ["张维安", "新华路派出所"]
-}
-```
-
-**响应**：与对应操作的标准响应信封一致。
+本版本不提供 `POST /api/asr/hotword-pool/action`。CAgent 只对接上文列出的标准 REST 接口：查询、添加、指定删除、`POST /delete`、清空和 reload。
 
 ---
 
@@ -558,7 +544,7 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 }
 ```
 
-> `enrollment_id` 失效不触发 error，服务端静默回退普通 ASR 并记录 WARN 日志。`rl` 仅为角色分离兼容字段，当前固定为 `0`，不能用于判断声纹是否生效；CAgent 需要通过声纹状态查询或后续补充的 `enrollment_used` / `enrollment_applied` 判断是否需要重新注册。
+> `enrollment_id` 失效不触发 error，服务端回退普通 ASR，并在 AST v3 结果中返回 `enrollment_applied=false` 与可用时的 `enrollment_fallback_reason`。`rl` 仅为角色分离兼容占位，不能用于判断声纹是否生效；CAgent 可结合声纹状态查询接口判断是否需要重新注册。
 
 ---
 
@@ -585,25 +571,18 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 
 - 支持 `parameter.asr_config.enrollment_id`。
 - 新增 `parameter.asr_config.enrollment_enable`。
+- 新增 `parameter.asr_config.enable_role_separation`；默认 `true`，省略等价于开启，且优先级高于声纹。
 - `enrollment_enable` 默认 `false`。
-- 只有 `enrollment_enable=true` 且 `enrollment_id` 非空时启用声纹。
-- `enrollment_enable=false` 时，即使传入 `enrollment_id`，也不启用声纹。
-- `enrollment_enable=true` 但 `enrollment_id` 为空时，应返回参数错误。
+- 只有 `enable_role_separation=false && enrollment_enable=true && enrollment_id` 非空时启用声纹。
+- `enable_role_separation=false && enrollment_enable=false` 时，即使传入 `enrollment_id`，也不启用声纹。
+- `enable_role_separation=false && enrollment_enable=true` 但 `enrollment_id` 为空时，返回参数错误并结束本次会话。
 - `header.resIdList[0]` 直接废弃，不作为兼容字段继续使用。
 
 ### 2. 声纹生效状态
 
-文档中需要补充声纹是否实际生效的返回字段。
+文档和实现已补充声纹是否实际生效的返回字段。
 
-建议服务端在识别结果或会话状态中返回：
-
-```json
-{
-  "enrollment_used": true
-}
-```
-
-或：
+AST v3 服务端在识别结果中返回：
 
 ```json
 {
@@ -611,7 +590,7 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 }
 ```
 
-当声纹 ID 不存在、被删除、embedding 不兼容或服务端回退普通 ASR 时，应明确返回 `false`，避免 CAgent 只能依赖日志判断。
+AST v3 当前采用 `enrollment_applied`；当声纹 ID 不存在、被删除、embedding 不兼容或服务端回退普通 ASR 时返回 `false`，并尽量返回 `enrollment_fallback_reason`，避免 CAgent 只能依赖日志判断。
 
 ### 3. 热词管理接口
 
@@ -711,16 +690,16 @@ POST   /api/asr/hotword-pool/reload
 
 ### 8. 错误语义
 
-文档需要明确 WebSocket 和 REST 的错误行为：
+文档已明确 WebSocket 和 REST 的错误行为：
 
-- 参数错误应明确返回错误，不应静默回退。
-- 声纹不可用导致回退普通 ASR 时，应在响应字段中体现。
-- WebSocket error 后，需要说明连接是否继续。
+- 参数错误明确返回错误；例如 AST v3 中 `enrollment_enable=true` 但缺少 `enrollment_id` 会返回 error 并结束本次会话。
+- 声纹不可用导致回退普通 ASR 时，AST v3 通过 `enrollment_applied=false` 和 `enrollment_fallback_reason` 体现。
+- WebSocket 参数错误会结束本次 AST v3 会话；已启用但不可用的声纹 ID 不触发 error。
 - reload 失败时，需要说明是否保留旧热词池。
 
 ### 9. 声纹查询接口
 
-建议新增声纹查询接口：
+已新增声纹查询接口：
 
 ```http
 GET /api/asr/enrollment/{enrollment_id}
@@ -730,7 +709,7 @@ GET /api/asr/enrollment/{enrollment_id}
 
 该接口也可用于查询已生效声纹、定位数据不一致：如果 CAgent 保存了某个 `enrollment_id`，但查询返回 `available=false`，说明该 ID 在当前服务端不可用，可能是未注册、已删除、落盘文件缺失、embedding 与当前模型/adapter 不兼容，或路由到没有共享同一 RAG-ASR 本地存储的实例导致。若不同实例或管理服务对同一 `enrollment_id` 返回不同 `available`，可以直接暴露实例间存储或路由不一致问题。
 
-需要注意：该接口只负责诊断和暴露状态，不负责同步声纹数据，也不保证查询后实际 ASR 一定使用成功。最终仍需在 ASR 响应中返回 `enrollment_used`，用于确认本次识别是否实际应用了声纹。
+需要注意：该接口只负责诊断和暴露状态，不负责同步声纹数据，也不保证查询后实际 ASR 一定使用成功。最终仍需以 AST v3 响应中的 `enrollment_applied` 或 REST 响应中的 `enrollment_used` 确认本次识别是否实际应用了声纹。
 
 响应结构建议固定为：
 
@@ -815,10 +794,7 @@ POST   /api/asr/hotword-pool/reload
 
 ### 14. 最终契约文档建议
 
-当前文档可以作为“原文 + 安菲翁评审意见”的评审版。若要作为双方最终接口契约，建议另出修订版，直接在正文中修改以下内容：
+当前文档正文已按本轮实现同步修订。若要作为双方最终接口契约，仍建议另出无评审意见附录的正式修订版：
 
-- 删除 `/api/asr/hotword-pool/action`。
-- 将 `resIdList[0]` 替换为 `parameter.asr_config.enrollment_id`。
-- 将“全局热词池”调整为“按 `hotword_pool_id` 隔离的热词池”。
-- 在各热词 REST 接口中补充 `hotword_pool_id`。
-- 补充声纹生效状态、鉴权审计、错误语义、音频格式和注册错误码。
+- 保留“按 `hotword_pool_id` 隔离的热词池”、声纹生效状态、错误语义、音频格式和注册错误码。
+- 鉴权审计仍待双方确认机制后单独补充。

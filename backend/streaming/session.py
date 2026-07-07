@@ -98,6 +98,7 @@ class SessionContext:
     # inference doesn't re-hit the in-memory store on every call.
     enrollment_id: str | None = None
     enrollment_b64: str | None = None
+    enrollment_fallback_reason: str = ""
     # Per-connection debug context. ``session_id`` is unique per WebSocket;
     # ``dumper`` is non-None only when ``debug_dump_enabled`` so engines can
     # cheaply skip the dump path otherwise.
@@ -325,6 +326,15 @@ class StreamingSession:
         if msg_type == "start":
             await self._handle_start(ctrl)
             return False
+        if msg_type == "error":
+            await self._send_json(
+                {
+                    "type": "error",
+                    "code": str(ctrl.get("code") or "invalid_request"),
+                    "message": str(ctrl.get("message") or "invalid request"),
+                }
+            )
+            return True
         if msg_type == "stop":
             await self._handle_stop()
             return True
@@ -489,20 +499,24 @@ class StreamingSession:
         if raw_id is None or not isinstance(raw_id, str) or not raw_id.strip():
             self.ctx.enrollment_id = None
             self.ctx.enrollment_b64 = None
+            self.ctx.enrollment_fallback_reason = "disabled"
             return
         ident = raw_id.strip()
         if self.cfg.enable_triton_enrollment_store:
             self.ctx.enrollment_id = ident
             self.ctx.enrollment_b64 = None
+            self.ctx.enrollment_fallback_reason = ""
             return
         entry = get_enrollment_store().get(ident)
         if entry is None:
             logger.warning("Enrollment id %s not found / expired", ident)
             self.ctx.enrollment_id = None
             self.ctx.enrollment_b64 = None
+            self.ctx.enrollment_fallback_reason = "not_found"
             return
         self.ctx.enrollment_id = ident
         self.ctx.enrollment_b64 = entry.wav_base64
+        self.ctx.enrollment_fallback_reason = ""
 
     def _handle_extract_hotwords(self, ctrl: dict) -> None:
         """Schedule a long-text hotword extraction in the background.

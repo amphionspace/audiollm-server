@@ -133,7 +133,7 @@ async def test_query_audio_model_uses_triton_enrollment_embeds(monkeypatch):
     monkeypatch.setattr(client_mod, "recall_audio", fake_recall_audio)
     monkeypatch.setattr(client_mod, "_post_chat", fake_post_chat)
 
-    await client_mod.query_audio_model(
+    result = await client_mod.query_audio_model(
         "TARGET_WAV_B64",
         hotwords=[],
         audio_pcm=np.zeros(160, dtype=np.float32),
@@ -163,3 +163,84 @@ async def test_query_audio_model_uses_triton_enrollment_embeds(monkeypatch):
     ]
     assert messages[1]["content"][0]["audio_embeds"] == "ENROLL_EMBEDS_B64"
     assert messages[1]["content"][1]["audio_embeds"] == "TARGET_EMBEDS_B64"
+    assert result["enrollment_applied"] is True
+
+
+@pytest.mark.asyncio
+async def test_query_audio_model_marks_missing_triton_enrollment(monkeypatch):
+    async def fake_recall_audio(*_args, **_kwargs):
+        return SimpleNamespace(
+            words=[],
+            audio_embeds_b64="TARGET_EMBEDS_B64",
+            enrollment_audio_embeds_b64=None,
+            uuid="triton-audio-target",
+        )
+
+    async def fake_post_chat(_messages, **_kwargs):
+        return {"transcription": "北京", "raw_text": "北京", "detected_language": "zh"}
+
+    monkeypatch.setattr(client_mod, "recall_audio", fake_recall_audio)
+    monkeypatch.setattr(client_mod, "_post_chat", fake_post_chat)
+
+    result = await client_mod.query_audio_model(
+        "TARGET_WAV_B64",
+        audio_pcm=np.zeros(160, dtype=np.float32),
+        runtime_config=Config(
+            enable_hotword_recall=True,
+            enable_encoder_bypass=True,
+            enable_triton_enrollment_store=True,
+            enable_enrollment_embedding_bypass=True,
+            vllm_prompt_template="amphion_asr_1.7b",
+        ),
+        enrollment_id="missing-speaker",
+        enrollment_scope_id="default",
+    )
+
+    assert result["enrollment_applied"] is False
+    assert result["enrollment_fallback_reason"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_query_audio_model_marks_enrollment_upstream_unavailable(monkeypatch):
+    async def fake_recall_audio(*_args, **_kwargs):
+        raise RuntimeError("recall down")
+
+    async def fake_post_chat(_messages, **_kwargs):
+        return {"transcription": "北京", "raw_text": "北京", "detected_language": "zh"}
+
+    monkeypatch.setattr(client_mod, "recall_audio", fake_recall_audio)
+    monkeypatch.setattr(client_mod, "_post_chat", fake_post_chat)
+
+    result = await client_mod.query_audio_model(
+        "TARGET_WAV_B64",
+        audio_pcm=np.zeros(160, dtype=np.float32),
+        runtime_config=Config(
+            enable_hotword_recall=True,
+            enable_encoder_bypass=True,
+            enable_triton_enrollment_store=True,
+            enable_enrollment_embedding_bypass=True,
+            vllm_prompt_template="amphion_asr_1.7b",
+        ),
+        enrollment_id="speaker-1",
+        enrollment_scope_id="default",
+    )
+
+    assert result["enrollment_applied"] is False
+    assert result["enrollment_fallback_reason"] == "upstream_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_query_audio_model_marks_local_enrollment_applied(monkeypatch):
+    async def fake_post_chat(_messages, **_kwargs):
+        return {"transcription": "北京", "raw_text": "北京", "detected_language": "zh"}
+
+    monkeypatch.setattr(client_mod, "_post_chat", fake_post_chat)
+
+    result = await client_mod.query_audio_model(
+        "TARGET_WAV_B64",
+        audio_pcm=np.zeros(160, dtype=np.float32),
+        runtime_config=Config(enable_hotword_recall=False),
+        enrollment_wav_base64="ENROLL_WAV_B64",
+    )
+
+    assert result["enrollment_applied"] is True

@@ -31,6 +31,8 @@ def _frame(status: int, *, trace_id: str, app_id: str, biz_id: str,
     parameter: dict[str, object] = {"engine": {}}
     if enrollment_id:
         asr_config = dict(asr_config or {})
+        asr_config["enable_role_separation"] = False
+        asr_config["enrollment_enable"] = True
         asr_config["enrollment_id"] = enrollment_id
     if asr_config:
         parameter["asr_config"] = asr_config

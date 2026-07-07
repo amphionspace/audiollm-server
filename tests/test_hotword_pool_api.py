@@ -89,6 +89,57 @@ async def test_hotword_pool_clear_rejects_query_body_mismatch(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_hotword_pool_reload_accepts_body_hotword_pool_id(monkeypatch):
+    seen: dict[str, object] = {}
+
+    async def fake_reload(*, hotword_pool_id=None):
+        seen["hotword_pool_id"] = hotword_pool_id
+        return {"status": "ok", "action": "reload", "total_count": 3}
+
+    monkeypatch.setattr(main_mod, "reload_hotword_pool", fake_reload)
+
+    result = await main_mod.asr_hotword_pool_reload(
+        body={"hotword_pool_id": "tenant-a"},
+    )
+
+    assert seen["hotword_pool_id"] == "tenant-a"
+    assert result == {"status": "ok", "action": "reload", "total_count": 3}
+
+
+@pytest.mark.asyncio
+async def test_hotword_pool_reload_accepts_query_hotword_pool_id(monkeypatch):
+    seen: dict[str, object] = {}
+
+    async def fake_reload(*, hotword_pool_id=None):
+        seen["hotword_pool_id"] = hotword_pool_id
+        return {"status": "ok"}
+
+    monkeypatch.setattr(main_mod, "reload_hotword_pool", fake_reload)
+
+    result = await main_mod.asr_hotword_pool_reload(hotword_pool_id="tenant-a")
+
+    assert seen["hotword_pool_id"] == "tenant-a"
+    assert result == {"status": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_hotword_pool_reload_rejects_query_body_mismatch(monkeypatch):
+    async def fake_reload(*, hotword_pool_id=None):  # pragma: no cover - must not run
+        raise AssertionError("reload should not be called")
+
+    monkeypatch.setattr(main_mod, "reload_hotword_pool", fake_reload)
+
+    with pytest.raises(HTTPException) as exc:
+        await main_mod.asr_hotword_pool_reload(
+            hotword_pool_id="tenant-a",
+            body={"hotword_pool_id": "tenant-b"},
+        )
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "invalid_hotword_pool_id"
+
+
+@pytest.mark.asyncio
 async def test_hotword_pool_rejects_empty_payload():
     with pytest.raises(HTTPException) as exc:
         await main_mod.asr_hotword_pool_add({"hotwords": []})
