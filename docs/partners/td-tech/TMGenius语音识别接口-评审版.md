@@ -41,8 +41,8 @@ CAgent 收到小乔端的 ASR 请求后作为代理层调用本文档接口；�
 
 | 方法   | 路径                               | 作用                                         | 请求体 / 参数                                   |
 | ------ | ---------------------------------- | -------------------------------------------- | ----------------------------------------------- |
-| POST   | `/api/asr/enrollment`              | 注册目标说话人声纹，返回 `enrollment_id`     | `multipart/form-data`：`audio`（WAV，1~8 秒）   |
-| DELETE | `/api/asr/enrollment/{enrollment_id}` | 删除指定声纹注册；未知 id 也返回 204      | 路径参数 `enrollment_id`                        |
+| POST   | `/api/asr/enrollment`              | 注册目标说话人声纹，返回 `enrollment_id`     | `multipart/form-data`：`audio`（WAV/MP3/PCM，1~8 秒） |
+| DELETE | `/api/asr/enrollment/{enrollment_id}` | 删除指定声纹注册；未知 id 也返回 204 且无响应体 | 路径参数 `enrollment_id`                        |
 
 **声纹生命周期关键约束**：
 
@@ -276,7 +276,7 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 | ----------- | ----------- | ---- |
 | 400 | `too_short` | 音频短于 1.0 秒 |
 | 400 | `empty` | 上传体为空或解码后无音频 |
-| 400 | `decode_failed` | WAV 损坏或解码失败 |
+| 400 | `decode_failed` | 音频损坏或解码失败 |
 
 ***
 
@@ -288,13 +288,13 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 
 | 字段 | 类型 | 必填 | 说明 |
 | ---- | ---- | :--: | ---- |
-| enrollment_id | String | 是 | 待删除的声纹 ID；未知 ID 同样返回 204，可安全重试 |
+| enrollment_id | String | 是 | 待删除的声纹 ID；未知 ID 同样返回 204 且无响应体，可安全重试 |
 
 **响应**
 
 | HTTP 状态码 | 说明 |
 | ----------- | ---- |
-| 204 | 删除成功（含未知 ID） |
+| 204 | 删除成功（含未知 ID）；无响应体 |
 
 > `enrollment_id` 不可用（未注册、已删除、落盘文件缺失或 embedding 与当前模型/adapter 不兼容）后再被 AST v3 使用时，服务端回退为普通 ASR，并在结果中返回 `enrollment_applied=false` 与可用时的 `enrollment_fallback_reason`。CAgent 应据此重新调用注册接口。
 
@@ -537,7 +537,7 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 | 状态码 | 含义 |
 | ------ | ---- |
 | 200 | 成功 |
-| 204 | 删除成功（`DELETE /api/asr/enrollment/{id}`） |
+| 204 | 删除成功（`DELETE /api/asr/enrollment/{id}`，无响应体） |
 | 400 | 请求字段缺失、音频为空 / 无法解码、注册音频时长校验失败 |
 | 413 | 上传文件超过服务端大小限制 |
 | 422 | multipart 字段类型或必填字段不符合校验 |

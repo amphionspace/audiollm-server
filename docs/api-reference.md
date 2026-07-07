@@ -10,7 +10,7 @@
 | WebSocket Base URL | `ws://172.16.0.3:8082` |
 | 鉴权 | 当前服务不要求 API Key、Token 或自定义请求头 |
 | 音频格式 | WebSocket 发送原始 PCM：16 kHz、mono、signed 16-bit little-endian |
-| REST 上传 | 使用 multipart/form-data 上传 WAV 文件，服务端会解码为 16 kHz mono |
+| REST 上传 | `/api/asr/upload` 使用 multipart/form-data 上传 WAV 或 MP3 文件，服务端会解码为 16 kHz mono |
 | 默认端口 | systemd 生产部署 `8082`（HTTP）；`start.sh` 开发启动为 `8443`（HTTPS） |
 
 生产环境如需访问控制、限流或 IP 白名单，应在 API 网关、负载均衡或反向代理层配置。
@@ -198,6 +198,8 @@ python docs/examples/rest_upload.py asr sample.wav \
   --hotwords "挚音科技,张硕"
 ```
 
+`audio` 支持 WAV 与 MP3；WAV 可为常见 PCM 位深、任意采样率/声道，MP3 解码依赖服务运行环境可执行 `ffmpeg`。服务端统一规范化为 16 kHz mono，并对超过 60 秒的音频尾截。
+
 响应示例：
 
 ```json
@@ -281,7 +283,7 @@ curl -X POST http://172.16.0.3:8082/api/asr/enrollment \
 | 有效期 | demo 进程内缓存由 `asr_enrollment_ttl_sec`（默认 3600 秒）控制并在使用时续期；RAG-ASR 落盘存储当前不做 TTL 自动过期，查询/使用会更新元数据 `last_used_at`（受 RAG-ASR `enrollment_metadata_touch_interval_sec` 节流） |
 | 断连 / 重启 | WebSocket 断开不删除。demo 进程内缓存重启即丢；RAG-ASR 落盘存储在管理服务重启后仍可按同一 `enrollment_scope_id` + `enrollment_id` 读取 |
 | 容量 | demo 进程内缓存上限 `asr_enrollment_max_entries`（默认 256），超出按 LRU 淘汰；RAG-ASR 的 `enrollment_cache_max_entries` 只是内存热缓存上限，不删除磁盘上的 enrollment 文件 |
-| 删除 | `DELETE /api/asr/enrollment/{enrollment_id}` 立即清除；RAG-ASR 下沉链路会删除对应 `.pt` 与 `.json` 文件。未知 id 也返回 204，可安全重试 |
+| 删除 | `DELETE /api/asr/enrollment/{enrollment_id}` 立即清除；RAG-ASR 下沉链路会删除对应 `.pt` 与 `.json` 文件。未知 id 也返回 204 且无响应体，可安全重试 |
 
 `enrollment_id` 不可用（demo 本地缓存过期 / 重启 / 被 LRU 淘汰 / 删除，或 RAG-ASR 下沉链路缺失对应落盘文件、embedding 与当前模型/adapter 不兼容）后再被使用时，默认兼容语义是回退为普通 ASR：AST v3 结果返回 `enrollment_applied=false` 并尽量给出 `enrollment_fallback_reason`，REST `/api/asr/upload` 响应 `enrollment_used=false`。集成方应对失效有预期，必要时重新注册并更新所携带的 id。
 
@@ -414,7 +416,7 @@ REST 接口使用标准 HTTP 状态码：
 | 422 | multipart 字段类型或必填字段不符合 FastAPI 校验 |
 | 502 | 后端模型服务推理失败 |
 | 502 | `/api/audio/analyze` 的 ASR、情感或文本清洗模型调用失败 |
-| 204 | `DELETE /api/asr/enrollment/{id}` 删除成功（未知 id 也返回 204） |
+| 204 | `DELETE /api/asr/enrollment/{id}` 删除成功（未知 id 也返回 204，无响应体） |
 | 202 | `POST /api/emotion/jobs` / `POST /api/asr/transcriptions` 已受理（需轮询 GET） |
 | 503 | 情感 / 转写任务队列已满（`Retry-After`） |
 | 404 | `GET /api/emotion/jobs/{id}` / `GET /api/asr/transcriptions/{id}` 任务不存在或已过期 |

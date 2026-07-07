@@ -126,6 +126,16 @@ def test_enrollment_status_local_found_and_not_found(monkeypatch):
     }
 
 
+def test_enrollment_delete_returns_empty_204(monkeypatch):
+    monkeypatch.setattr(main_mod, "load_config", lambda: Config())
+
+    with TestClient(main_mod.app) as client:
+        resp = client.delete("/api/asr/enrollment/missing-speaker")
+
+    assert resp.status_code == 204
+    assert resp.content == b""
+
+
 def test_enrollment_status_triton_store(monkeypatch):
     async def fake_get(**kwargs):
         assert kwargs["enrollment_id"] == "speaker-1"

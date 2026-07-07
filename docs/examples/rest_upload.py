@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 from pathlib import Path
 
 import requests
@@ -10,7 +11,8 @@ import requests
 
 def post_multipart(url: str, audio_path: str, data: dict[str, str], verify: bool, timeout: float) -> dict:
     with open(audio_path, "rb") as audio_file:
-        files = {"audio": (Path(audio_path).name, audio_file, "audio/wav")}
+        content_type = mimetypes.guess_type(audio_path)[0] or "application/octet-stream"
+        files = {"audio": (Path(audio_path).name, audio_file, content_type)}
         response = requests.post(url, files=files, data=data, verify=verify, timeout=timeout)
     try:
         payload = response.json()
@@ -101,7 +103,7 @@ def join_url(base_url: str, path: str) -> str:
 
 
 def add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("audio_file", help="WAV audio file to upload")
+    parser.add_argument("audio_file", help="Audio file to upload (ASR accepts WAV/MP3; other commands expect WAV)")
     parser.add_argument("--base-url", required=True, help="HTTP base URL, for example https://host:8443")
     parser.add_argument("--language", default="", help="Language code, for example zh/en/id/th")
     parser.add_argument("--timeout", type=float, default=120.0, help="HTTP request timeout in seconds")

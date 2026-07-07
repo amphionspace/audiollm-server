@@ -38,7 +38,7 @@ AST v3 是 WebSocket 长连接协议，非 HTTP REST。首帧 `header.status=0` 
 | ---- | ---- | ---- | ---- |
 | POST | `/api/asr/enrollment` | 注册目标说话人声纹，返回 `enrollment_id` | `multipart/form-data`：`audio` |
 | GET | `/api/asr/enrollment/{enrollment_id}` | 查询声纹 ID 当前是否可用 | 路径参数 `enrollment_id` |
-| DELETE | `/api/asr/enrollment/{enrollment_id}` | 删除指定声纹注册；未知 id 也返回 204 | 路径参数 `enrollment_id` |
+| DELETE | `/api/asr/enrollment/{enrollment_id}` | 删除指定声纹注册；未知 id 也返回 204 且无响应体 | 路径参数 `enrollment_id` |
 
 ### 3. 热词管理
 
@@ -261,7 +261,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 
 | HTTP 状态码 | 说明 |
 | ---- | ---- |
-| 204 | 删除成功，未知 ID 也返回 204 |
+| 204 | 删除成功，未知 ID 也返回 204；无响应体 |
 
 ### 4. 查询声纹状态
 
@@ -470,7 +470,7 @@ POST /api/asr/hotword-pool/reload?hotword_pool_id=default
 | 状态码 | 含义 |
 | ---- | ---- |
 | 200 | 成功 |
-| 204 | 删除成功 |
+| 204 | 删除成功；无响应体 |
 | 400 | 请求字段缺失、参数冲突、音频为空、无法解码、注册音频时长校验失败 |
 | 413 | 上传文件超过服务端大小限制 |
 | 422 | multipart 字段类型或必填字段不符合校验 |

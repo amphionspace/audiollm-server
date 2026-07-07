@@ -208,7 +208,7 @@ def mp3_bytes_to_pcm_16k_mono(mp3_bytes: bytes) -> np.ndarray:
         raise ValueError("Empty MP3 payload")
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
-        raise ValueError("ffmpeg is required to decode MP3 enrollment audio")
+        raise ValueError("ffmpeg is required to decode MP3 audio")
     try:
         proc = subprocess.run(
             [

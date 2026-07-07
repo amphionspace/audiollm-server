@@ -20,6 +20,7 @@ from fastapi import (
 from fastapi.params import Form as FormParam
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
 from starlette.types import Receive, Scope, Send
 
 from .asr.enrollment import (
@@ -51,7 +52,12 @@ from .asr.recall import (
     upsert_enrollment as upsert_triton_enrollment,
 )
 from .asr.transcribe import float_pcm_to_i16_bytes
-from .audio.utils import wav_base64_to_pcm_16k_mono, wav_bytes_to_pcm_16k_mono
+from .audio.utils import (
+    mp3_bytes_to_pcm_16k_mono,
+    pcm_to_wav_base64,
+    wav_base64_to_pcm_16k_mono,
+    wav_bytes_to_pcm_16k_mono,
+)
 from .config import SAMPLE_RATE, load_config, load_transcribe_config
 from .emotion.client import query_emotion_model
 from .emotion.jobs import JobQueueFullError, get_emotion_job_store
@@ -301,26 +307,50 @@ async def _read_audio_bytes(
     return raw
 
 
-def _wav_to_pcm_capped(raw: bytes, max_seconds: float) -> tuple[bytes, np.ndarray, float]:
-    """Decode a WAV blob to 16 kHz mono and tail-trim to ``max_seconds``.
+def _upload_audio_to_pcm_capped(
+    raw: bytes,
+    audio: UploadFile,
+    max_seconds: float,
+) -> tuple[bytes, np.ndarray, float]:
+    """Decode an uploaded ASR clip to 16 kHz mono and tail-trim it.
 
     Returns (re_encoded_wav_bytes, pcm_16k_mono, duration_sec). When no trim is
     needed the re-encoded WAV is byte-equivalent to ``pcm_to_wav_base64(pcm)``.
     """
-    import io
-    import wave
-
-    import numpy as np
-
-    from .audio.utils import pcm_to_wav_base64
-
-    wav_b64 = base64.b64encode(raw).decode("ascii")
     try:
-        pcm = wav_base64_to_pcm_16k_mono(wav_b64)
+        audio_format = _infer_enrollment_audio_format(audio, raw)
+        if audio_format in {"wav", "wave"}:
+            pcm = wav_bytes_to_pcm_16k_mono(raw)
+        elif audio_format == "mp3":
+            pcm = mp3_bytes_to_pcm_16k_mono(raw)
+        else:
+            raise ValueError("unsupported audio format; supported: wav, mp3")
     except ValueError as exc:
         raise HTTPException(
             status_code=400, detail=f"could not decode audio: {exc}"
         ) from exc
+    return _pcm_to_capped_wav(pcm, max_seconds)
+
+
+def _wav_to_pcm_capped(raw: bytes, max_seconds: float) -> tuple[bytes, np.ndarray, float]:
+    """Decode a WAV blob to 16 kHz mono and tail-trim to ``max_seconds``."""
+    try:
+        pcm = wav_bytes_to_pcm_16k_mono(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"could not decode audio: {exc}"
+        ) from exc
+    return _pcm_to_capped_wav(pcm, max_seconds)
+
+
+def _pcm_to_capped_wav(
+    pcm: np.ndarray,
+    max_seconds: float,
+) -> tuple[bytes, np.ndarray, float]:
+    """Validate, tail-trim, and encode 16 kHz mono float PCM as WAV bytes."""
+    import io
+    import wave
+
     if pcm.size == 0:
         raise HTTPException(status_code=400, detail="audio decoded to empty PCM")
     duration = pcm.size / SAMPLE_RATE
@@ -333,7 +363,6 @@ def _wav_to_pcm_capped(raw: bytes, max_seconds: float) -> tuple[bytes, np.ndarra
         duration = pcm.size / SAMPLE_RATE
     new_b64 = pcm_to_wav_base64(pcm.astype(np.float32, copy=False))
     new_bytes = base64.b64decode(new_b64)
-    # Sanity: re-encoded WAV should still parse.
     with wave.open(io.BytesIO(new_bytes), "rb") as wf:
         assert wf.getframerate() == SAMPLE_RATE
     return new_bytes, pcm.astype(np.float32, copy=False), duration
@@ -587,7 +616,7 @@ async def asr_enrollment_delete(enrollment_id: str):
             logger.warning("Triton enrollment delete failed", exc_info=True)
     else:
         get_enrollment_store().delete(enrollment_id)
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 
 @app.get("/api/asr/enrollment/{enrollment_id}")
@@ -907,7 +936,11 @@ async def asr_upload(
     stale id from a long-running tab does not break uploads.
     """
     raw = await _read_audio_bytes(audio)
-    wav_bytes, audio_pcm, duration_sec = _wav_to_pcm_capped(raw, _ASR_MAX_SECONDS)
+    wav_bytes, audio_pcm, duration_sec = _upload_audio_to_pcm_capped(
+        raw,
+        audio,
+        _ASR_MAX_SECONDS,
+    )
     wav_b64 = base64.b64encode(wav_bytes).decode("ascii")
     cfg = load_config()
     _reject_legacy_hotword_user_id(user_id)

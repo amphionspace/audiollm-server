@@ -261,7 +261,7 @@ python docs/examples/ws_transcribe.py sample.wav \
 
 | 表单字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `audio` | file | 是 | WAV 音频文件 |
+| `audio` | file | 是 | WAV 或 MP3 音频文件；服务端解码为 16 kHz mono，超过 60 秒尾截。MP3 解码依赖服务运行环境可执行 `ffmpeg` |
 | `language` | string | 否 | 语言代码 |
 | `hotword_pool_id` | string | 否 | 热词池隔离 ID，默认 `default` |
 | `hotwords` | string | 否 | 临时请求热词；去重限量后优先进入 prompt，并覆盖精确重复或整词同音（忽略声调）的 RAG-ASR 召回热词，不写入热词池 |
@@ -347,7 +347,7 @@ HTTP 400，`detail` 为结构化对象：
 
 ### 删除注册音频
 
-`DELETE /api/asr/enrollment/{enrollment_id}` 立即清除缓存条目。对未知 id 也返回 204，调用方可安全重试。
+`DELETE /api/asr/enrollment/{enrollment_id}` 立即清除缓存条目。对未知 id 也返回 204 且无响应体，调用方可安全重试。
 
 ### 服务端可配置项
 

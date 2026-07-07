@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import shutil
+import subprocess
 import sys
 import wave
 from pathlib import Path
@@ -31,6 +33,36 @@ def _wav_bytes(duration_sec: float = 0.2) -> bytes:
         wf.setframerate(16000)
         wf.writeframes(samples.tobytes())
     return buf.getvalue()
+
+
+def _mp3_bytes(duration_sec: float = 0.2) -> bytes:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg is not installed")
+    proc = subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-f",
+            "wav",
+            "-i",
+            "pipe:0",
+            "-f",
+            "mp3",
+            "pipe:1",
+        ],
+        input=_wav_bytes(duration_sec),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=30,
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"ffmpeg mp3 encode failed: {proc.stderr.decode(errors='replace')}")
+    return proc.stdout
 
 
 @pytest.mark.asyncio
@@ -136,6 +168,38 @@ async def test_asr_upload_passes_hotword_pool_id(monkeypatch):
     assert result["type"] == "final"
     assert result["text"] == "上传结果"
     assert result["effective_hotwords"] == ["召回上传"]
+
+
+@pytest.mark.asyncio
+async def test_asr_upload_accepts_mp3(monkeypatch):
+    cfg = Config(enable_primary_asr=True, enable_secondary_asr=False)
+    monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
+
+    async def fake_asr(*args, **kwargs):
+        assert kwargs["audio_pcm"] is not None
+        assert kwargs["audio_pcm"].size > 0
+        return {
+            "transcription": "mp3上传结果",
+            "reported_hotwords": [],
+            "effective_hotwords": [],
+            "raw_text": "mp3上传结果",
+            "detected_language": "zh",
+        }
+
+    monkeypatch.setattr(oneshot_mod, "query_audio_model", fake_asr)
+
+    upload = UploadFile(file=io.BytesIO(_mp3_bytes()), filename="sample.mp3")
+    result = await main_mod.asr_upload(
+        audio=upload,
+        language="zh",
+        hotwords="",
+        enrollment_id="",
+        hotword_pool_id="",
+    )
+
+    assert result["type"] == "final"
+    assert result["text"] == "mp3上传结果"
+    assert result["duration_sec"] > 0
 
 
 @pytest.mark.asyncio
