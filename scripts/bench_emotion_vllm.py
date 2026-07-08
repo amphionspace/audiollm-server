@@ -55,7 +55,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from backend.emotion.prompt import get_prompt, normalize_mode  # noqa: E402
 
-
 SAMPLE_RATE = 16000
 
 

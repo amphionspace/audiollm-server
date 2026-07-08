@@ -43,8 +43,10 @@
     # lhotse 数据 + 并发梯度（realtime 测真实 UX 退化）
     python scripts/bench_tuling_ttft.py \
         --url wss://127.0.0.1:8443/tuling/ast/v3 --insecure \
-        --lhotse-recordings /ai_sds_wuzz/DATA_ASR/LHOTSE/data_aishell/data/manifests/aishell_recordings_test.jsonl.gz \
-        --lhotse-supervisions /ai_sds_wuzz/DATA_ASR/LHOTSE/data_aishell/data/manifests/aishell_supervisions_test.jsonl.gz \
+        --lhotse-recordings \
+            /path/to/aishell_recordings_test.jsonl.gz \
+        --lhotse-supervisions \
+            /path/to/aishell_supervisions_test.jsonl.gz \
         --shuffle --limit 32 --concurrency-sweep 1,4,8,16
 
     # fast 模式测服务端 RTF / 吞吐
