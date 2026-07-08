@@ -4,7 +4,9 @@ import logging
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
+import httpx
 import numpy as np
 import websockets
 from fastapi import (
@@ -29,7 +31,7 @@ from .asr.enrollment import (
     get_enrollment_store,
 )
 from .asr.jobs import get_transcription_job_store
-from .asr.k2.client import close_k2_channels
+from .asr.k2.client import close_k2_channels, validate_k2_server
 from .asr.oneshot import OneshotAsrError, run_oneshot_asr
 from .asr.recall import (
     add_hotwords as add_recall_hotwords,
@@ -58,7 +60,7 @@ from .audio.utils import (
     wav_base64_to_pcm_16k_mono,
     wav_bytes_to_pcm_16k_mono,
 )
-from .config import SAMPLE_RATE, load_config, load_transcribe_config
+from .config import SAMPLE_RATE, Upstream, load_config, load_parsed, load_transcribe_config
 from .emotion.client import query_emotion_model
 from .emotion.jobs import JobQueueFullError, get_emotion_job_store
 from .emotion.service import EmotionDecodeError, decode_wav_capped
@@ -79,6 +81,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+READINESS_TIMEOUT_SEC = 2.0
 
 
 @asynccontextmanager
@@ -89,6 +92,211 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AudioLLM Server", lifespan=lifespan)
+
+
+def _health_check(
+    *,
+    name: str,
+    kind: str,
+    target: str,
+    status: str,
+    detail: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "name": name,
+        "kind": kind,
+        "target": target,
+        "status": status,
+    }
+    if detail:
+        payload["detail"] = detail
+    return payload
+
+
+async def _http_get_check(
+    *,
+    name: str,
+    kind: str,
+    url: str,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=READINESS_TIMEOUT_SEC) as client:
+            response = await client.get(url, headers=headers)
+        if 200 <= response.status_code < 300:
+            return _health_check(name=name, kind=kind, target=url, status="ok")
+        return _health_check(
+            name=name,
+            kind=kind,
+            target=url,
+            status="error",
+            detail=f"HTTP {response.status_code}",
+        )
+    except Exception as exc:  # noqa: BLE001 - health payload carries cause
+        return _health_check(
+            name=name,
+            kind=kind,
+            target=url,
+            status="error",
+            detail=str(exc),
+        )
+
+
+async def _check_openai_upstream(name: str, upstream: Upstream) -> dict[str, Any]:
+    if not upstream.base_url:
+        return _health_check(
+            name=name,
+            kind="openai_compatible",
+            target="",
+            status="skipped",
+            detail="base_url is empty",
+        )
+    headers = {}
+    if upstream.api_key:
+        headers["Authorization"] = f"Bearer {upstream.api_key}"
+    url = f"{upstream.base_url.rstrip('/')}/v1/models"
+    return await _http_get_check(
+        name=name,
+        kind="openai_compatible",
+        url=url,
+        headers=headers or None,
+    )
+
+
+async def _check_triton_recall(upstream: Upstream) -> dict[str, Any]:
+    if not upstream.base_url:
+        return _health_check(
+            name="rag_asr_triton",
+            kind="triton",
+            target="",
+            status="skipped",
+            detail="base_url is empty",
+        )
+    return await _http_get_check(
+        name="rag_asr_triton",
+        kind="triton",
+        url=f"{upstream.base_url.rstrip('/')}/v2/health/ready",
+    )
+
+
+async def _check_rag_management(upstream: Upstream) -> dict[str, Any]:
+    if not upstream.base_url:
+        return _health_check(
+            name="rag_asr_management",
+            kind="http",
+            target="",
+            status="skipped",
+            detail="base_url is empty",
+        )
+    return await _http_get_check(
+        name="rag_asr_management",
+        kind="http",
+        url=f"{upstream.base_url.rstrip('/')}/health",
+    )
+
+
+async def _check_k2_ready(cfg) -> dict[str, Any]:
+    if not cfg.k2_enabled:
+        return _health_check(
+            name="k2",
+            kind="grpc",
+            target=cfg.k2_target,
+            status="skipped",
+            detail="k2_enabled is false",
+        )
+    try:
+        probe_cfg = cfg.override(
+            k2_connect_timeout_sec=min(
+                float(cfg.k2_connect_timeout_sec),
+                READINESS_TIMEOUT_SEC,
+            )
+        )
+        await validate_k2_server(probe_cfg)
+        return _health_check(
+            name="k2",
+            kind="grpc",
+            target=cfg.k2_target,
+            status="ok",
+        )
+    except Exception as exc:  # noqa: BLE001 - readiness should report failure
+        return _health_check(
+            name="k2",
+            kind="grpc",
+            target=cfg.k2_target,
+            status="error",
+            detail=str(exc),
+        )
+
+
+def _collect_openai_upstreams(parsed) -> list[tuple[str, Upstream]]:
+    service_upstreams = set(parsed.services.values())
+    pairs: list[tuple[str, Upstream]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(name: str, role: str) -> None:
+        upstream = parsed.upstreams.get(name)
+        if upstream is None:
+            return
+        key = (upstream.base_url, upstream.model_name)
+        if key in seen:
+            return
+        seen.add(key)
+        pairs.append((f"{role}:{name}", upstream))
+
+    for role, upstream_name in parsed.rest_roles.items():
+        if upstream_name not in service_upstreams:
+            add(upstream_name, f"rest.{role}")
+    for spec in parsed.endpoints:
+        for role, upstream_name in spec.upstream_roles.items():
+            if upstream_name not in service_upstreams:
+                add(upstream_name, f"{spec.path}.{role}")
+    return pairs
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz():
+    try:
+        parsed = load_parsed()
+    except Exception as exc:  # noqa: BLE001 - readiness should report config errors
+        payload = {
+            "status": "error",
+            "checks": [
+                _health_check(
+                    name="config",
+                    kind="config",
+                    target="config.yaml",
+                    status="error",
+                    detail=str(exc),
+                )
+            ],
+        }
+        return JSONResponse(status_code=503, content=payload)
+
+    check_tasks = []
+    for name, upstream in _collect_openai_upstreams(parsed):
+        check_tasks.append(_check_openai_upstream(name, upstream))
+
+    recall_name = parsed.services.get("recall")
+    if recall_name and recall_name in parsed.upstreams:
+        check_tasks.append(_check_triton_recall(parsed.upstreams[recall_name]))
+
+    management_name = parsed.services.get("recall_management")
+    if management_name and management_name in parsed.upstreams:
+        check_tasks.append(_check_rag_management(parsed.upstreams[management_name]))
+
+    check_tasks.append(_check_k2_ready(parsed.default_config))
+    checks = await asyncio.gather(*check_tasks)
+
+    ready = all(check["status"] in {"ok", "skipped"} for check in checks)
+    payload = {"status": "ok" if ready else "error", "checks": checks}
+    if ready:
+        return payload
+    return JSONResponse(status_code=503, content=payload)
 
 
 @app.websocket("/transcribe-streaming")

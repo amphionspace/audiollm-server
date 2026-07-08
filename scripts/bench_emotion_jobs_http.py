@@ -8,7 +8,6 @@ import asyncio
 import io
 import json
 import math
-import statistics
 import time
 import wave
 from dataclasses import asdict, dataclass
@@ -351,7 +350,11 @@ def main() -> None:
     out = args.output
     if out is None:
         ts = time.strftime("%Y%m%d_%H%M%S")
-        out = Path(__file__).resolve().parent.parent / "bench_results" / f"bench_emotion_jobs_{ts}.json"
+        out = (
+            Path(__file__).resolve().parent.parent
+            / "bench_results"
+            / f"bench_emotion_jobs_{ts}.json"
+        )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nSaved: {out}")

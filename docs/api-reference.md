@@ -17,6 +17,37 @@
 
 ## 接口总览
 
+### 运维接口
+
+| 方法 | 路径 | 用途 | 成功响应 |
+|---|---|---|---|
+| GET | `/healthz` | 进程存活检查，只验证 AudioLLM HTTP 服务可响应 | `{"status":"ok"}` |
+| GET | `/readyz` | 上游就绪检查，验证配置中的 vLLM、RAG-ASR Triton、RAG-ASR 管理面和 k2 | `{"status":"ok","checks":[...]}` |
+
+`/readyz` 不执行真实音频推理，只做轻量探测：OpenAI-compatible/vLLM 上游请求 `/v1/models`，RAG-ASR Triton 请求 `/v2/health/ready`，RAG-ASR HTTP 管理面请求 `/health`，k2 通过 gRPC `ServerInfo` 校验采样率。任一已配置且必须探测的上游失败时返回 HTTP 503：
+
+```json
+{
+  "status": "error",
+  "checks": [
+    {
+      "name": "rest.primary:amphion_asr",
+      "kind": "openai_compatible",
+      "target": "http://localhost:8009/v1/models",
+      "status": "error",
+      "detail": "connection refused"
+    }
+  ]
+}
+```
+
+示例：
+
+```bash
+curl -fsS http://172.16.0.3:8082/healthz
+curl -fsS http://172.16.0.3:8082/readyz
+```
+
 ### WebSocket 任务接口
 
 | 接口 | 任务 | 适用场景 | 结果消息 |

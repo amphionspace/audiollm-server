@@ -47,6 +47,9 @@ line-length = 100
 testpaths = ["tests"]
 norecursedirs = ["manual_tests"]
 
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 
