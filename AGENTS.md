@@ -139,6 +139,7 @@ class Config:
 
 | 后端路由 | 文档 |
 |---|---|
+| `@app.get("/healthz")` + `@app.get("/readyz")` | `docs/api-reference.md` |
 | `@app.websocket("/transcribe-streaming")` | `docs/protocols/transcribe-streaming-protocol.md` + `docs/api-reference.md` 速览 |
 | `@app.websocket("/tuling/ast/v3")` | `docs/protocols/tuling-ast-v3-protocol.md` + `docs/api-reference.md` 速览 |
 | `@app.websocket("/astv3-test-proxy")` | `docs/api-reference.md` |
