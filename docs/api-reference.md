@@ -125,7 +125,7 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 
 | 类别 | 字段 |
 |---|---|
-| VAD / 分段 | vad_threshold、silence_duration_ms、vad_smoothing_alpha、vad_start_frames、vad_pre_speech_ms、vad_keep_tail_ms、min_segment_duration_ms |
+| VAD / 分段 | vad_threshold、silence_duration_ms、vad_smoothing_alpha、vad_start_frames、vad_pre_speech_ms、vad_keep_tail_ms、min_segment_duration_ms、asr_silence_removal_threshold_sec |
 | 伪流式 | enable_pseudo_stream、pseudo_stream_interval_ms、pseudo_stream_first_partial_ms |
 | ASR 模型组合 / 超时 | enable_primary_asr、enable_secondary_asr、enable_dual_asr_fusion、primary_asr_timeout、asr_request_timeout、debug_show_dual_asr |
 | AST v3 协议字段 | enable_role_separation（AST v3 下不作为普通 Config 覆写，而是参与声纹矩阵与 `cw[].rl` 出参） |
@@ -139,6 +139,8 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 服务端可启用 `k2_enabled=true` 让 `/transcribe-streaming` 与 `/tuling/ast/v3` 的 partial 改由外部 k2 gRPC 流式 ASR 产生；final 仍走本服务 LLM ASR。k2 只做纯识别，不接热词、不接目标说话人、不返回 token timestamps。`k2_target`、`k2_max_segment_sec`、`k2_idle_keep_ms`、`k2_voice_gate_*` 等均为服务端配置，不在临时覆写白名单内。k2 模式下，切段权威是 k2 endpoint，本服务只用 `k2_idle_keep_ms` 限制起音前旧静音、用 `k2_max_segment_sec` 防止无 endpoint 时缓冲无限增长，并用 `k2_voice_gate_*` 在 partial/final 进入下游前确认有人声证据；voice gate 只决定放行或丢弃，不再用本地 VAD 裁剪段首/段尾。上表 VAD / 伪流式间隔字段仍会被接受，但不再决定这两个端点的切点或首字时机；`enable_pseudo_stream=false` 仍会抑制 partial 下发。
 
 final 文本规范化开关（enable_asr_itn、asr_itn_enable_0_to_9、enable_asr_plate_normalize）与解码退化重复折叠开关（enable_asr_repetition_fix）为服务端配置，不在上表白名单内，客户端无法临时覆写。语义与示例见各协议文档的“文本规范化”小节与 [README 文本规范化](../README.md)。
+
+`asr_silence_removal_threshold_sec` 为 final LLM ASR 前的内部长静音删除阈值，单位秒；`0` 表示关闭。启用后，连续静音时长大于等于该值、且前后都有人声的内部静音会被删除；首尾静音、整段疑似静音和短于该值的停顿保留。它用于处理"打开遮【长停顿】光板"这类一句话被长静音打断的音频，不影响 partial 输出节奏。
 
 `enable_role_separation` 在 `/tuling/ast/v3` 中是协议字段：默认 true，省略等价于开启，并且优先级高于 `enrollment_enable/enrollment_id`。当前版本不做真实角色分离；开启时 sentence 的 `cw[].rl` 固定返回 0 作为兼容占位，关闭时 sentence/Progressive 均不返回 `cw[].rl`。完整声纹矩阵见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。
 

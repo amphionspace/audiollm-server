@@ -25,8 +25,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.audio.vad import VADProcessor  # noqa: E402
-from backend.config import load_config  # noqa: E402
+from backend.audio.vad import VADProcessor, trim_long_silence_for_asr  # noqa: E402
+from backend.config import SAMPLE_RATE, load_config  # noqa: E402
 
 
 class _ToggleBackend:
@@ -39,12 +39,35 @@ class _ToggleBackend:
         return self.prob
 
 
+class _AmplitudeBackend:
+    """Deterministic VAD backend: speech iff the frame has real amplitude."""
+
+    def process(self, frame: np.ndarray) -> float:
+        return 1.0 if float(np.abs(frame).max()) > 0.1 else 0.0
+
+
 def _make_processor(**kwargs: object) -> VADProcessor:
     # smoothing_alpha=0 -> smoothed == raw, so the toggle is exact.
     v = VADProcessor(smoothing_alpha=0.0, threshold=0.5, start_frames=2, **kwargs)
     v.vad = _ToggleBackend()
     v.smoothed_prob = None
     return v
+
+
+def _tone(sec: float) -> np.ndarray:
+    n = int(SAMPLE_RATE * sec)
+    return (np.sin(np.linspace(0, 2 * np.pi * 220 * sec, n)) * 0.5).astype(np.float32)
+
+
+def _silence(sec: float) -> np.ndarray:
+    return np.zeros(int(SAMPLE_RATE * sec), dtype=np.float32)
+
+
+def _patch_amplitude_vad(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "backend.audio.vad.VADProcessor._create_vad_backend",
+        lambda self: _AmplitudeBackend(),
+    )
 
 
 def test_cut_fires_exactly_at_silence_frames() -> None:
@@ -96,3 +119,72 @@ def test_end_frames_param_is_rejected() -> None:
 def test_no_end_frames_attribute() -> None:
     v = VADProcessor()
     assert not hasattr(v, "end_frames")
+
+
+def test_silence_removal_disabled_keeps_audio(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_amplitude_vad(monkeypatch)
+    pcm = np.concatenate([_tone(0.2), _silence(0.5), _tone(0.2)])
+    cfg = load_config().override(asr_silence_removal_threshold_sec=0.0)
+
+    res = trim_long_silence_for_asr(pcm, cfg)
+
+    assert res.removed_ranges == 0
+    assert res.removed_sec == 0.0
+    np.testing.assert_array_equal(res.pcm, pcm)
+
+
+def test_silence_removal_deletes_equal_threshold_internal_pause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_amplitude_vad(monkeypatch)
+    first = _tone(0.2)
+    pause = _silence(0.5)
+    second = _tone(0.2)
+    pcm = np.concatenate([first, pause, second])
+    cfg = load_config().override(
+        asr_silence_removal_threshold_sec=0.5,
+        vad_threshold=0.5,
+        vad_smoothing_alpha=0.0,
+    )
+
+    res = trim_long_silence_for_asr(pcm, cfg)
+
+    assert res.removed_ranges == 1
+    assert res.removed_sec == pytest.approx(0.5)
+    np.testing.assert_array_equal(res.pcm, np.concatenate([first, second]))
+
+
+def test_silence_removal_keeps_short_pause(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_amplitude_vad(monkeypatch)
+    pcm = np.concatenate([_tone(0.2), _silence(0.49), _tone(0.2)])
+    cfg = load_config().override(
+        asr_silence_removal_threshold_sec=0.5,
+        vad_threshold=0.5,
+        vad_smoothing_alpha=0.0,
+    )
+
+    res = trim_long_silence_for_asr(pcm, cfg)
+
+    assert res.removed_ranges == 0
+    np.testing.assert_array_equal(res.pcm, pcm)
+
+
+def test_silence_removal_keeps_leading_trailing_and_all_silence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_amplitude_vad(monkeypatch)
+    cfg = load_config().override(
+        asr_silence_removal_threshold_sec=0.5,
+        vad_threshold=0.5,
+        vad_smoothing_alpha=0.0,
+    )
+    leading = np.concatenate([_silence(0.5), _tone(0.2)])
+    trailing = np.concatenate([_tone(0.2), _silence(0.5)])
+    all_silence = _silence(1.0)
+
+    assert trim_long_silence_for_asr(leading, cfg).removed_ranges == 0
+    assert trim_long_silence_for_asr(trailing, cfg).removed_ranges == 0
+    res = trim_long_silence_for_asr(all_silence, cfg)
+
+    assert res.removed_ranges == 0
+    np.testing.assert_array_equal(res.pcm, all_silence)

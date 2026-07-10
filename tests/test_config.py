@@ -492,6 +492,11 @@ def test_asr_segment_voice_gate_clamps_bounds() -> None:
     assert low.asr_segment_voice_gate_min_rms == 0.0
 
 
+def test_asr_silence_removal_threshold_clamps_negative() -> None:
+    cfg = Config(asr_silence_removal_threshold_sec=-1.0)
+    assert cfg.asr_silence_removal_threshold_sec == 0.0
+
+
 # --------------------------------------------------------------------------- #
 # override / override_client whitelist contract
 # --------------------------------------------------------------------------- #
@@ -563,6 +568,12 @@ def test_asr_segment_voice_gate_client_overridable() -> None:
     assert out.asr_segment_voice_gate_min_ratio == 0.1
     assert out.asr_segment_voice_gate_min_ms == 200
     assert out.asr_segment_voice_gate_min_rms == 0.002
+
+
+def test_asr_silence_removal_threshold_client_overridable() -> None:
+    assert "asr_silence_removal_threshold_sec" in CLIENT_OVERRIDABLE_FIELDS
+    out = load_config().override_client(asr_silence_removal_threshold_sec=1.5)
+    assert out.asr_silence_removal_threshold_sec == 1.5
 
 
 def test_hotword_pool_id_default_and_validation() -> None:

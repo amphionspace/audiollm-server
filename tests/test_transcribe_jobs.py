@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import backend.asr.oneshot as oneshot_mod  # noqa: E402
 import backend.asr.transcribe as transcribe_mod  # noqa: E402
 import backend.config as config_mod  # noqa: E402
 import backend.main as main_mod  # noqa: E402
@@ -40,7 +41,7 @@ from backend.asr.transcribe import (  # noqa: E402
     segment_pcm_offline,
     transcribe_pcm_i16,
 )
-from backend.audio.utils import pcm_to_wav_bytes  # noqa: E402
+from backend.audio.utils import pcm_to_wav_base64, pcm_to_wav_bytes  # noqa: E402
 from backend.config import SAMPLE_RATE, load_config  # noqa: E402
 from backend.jobstore import JobExecutionError  # noqa: E402
 from backend.main import app  # noqa: E402
@@ -259,6 +260,51 @@ async def test_transcribe_no_speech_returns_empty_result(fake_vad):
     assert result["segments"] == []
     assert result["full_text"] == ""
     assert result["duration_sec"] == pytest.approx(2.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_oneshot_asr_removes_internal_silence_before_model(
+    fake_vad,
+    monkeypatch,
+):
+    captured: dict[str, int] = {}
+
+    async def fake_query(wav_b64, *, audio_pcm=None, **_kwargs):
+        captured["wav_samples"] = _wav_b64_samples(wav_b64)
+        captured["pcm_samples"] = int(audio_pcm.size)
+        return {
+            "transcription": "打开遮光板",
+            "detected_language": "zh",
+        }
+
+    async def fail_secondary(*_args, **_kwargs):
+        raise AssertionError("secondary should be disabled")
+
+    monkeypatch.setattr(oneshot_mod, "query_audio_model", fake_query)
+    monkeypatch.setattr(oneshot_mod, "query_audio_model_secondary", fail_secondary)
+
+    first = _tone(0.2)
+    pause = _silence(0.5)
+    second = _tone(0.2)
+    pcm = np.concatenate([first, pause, second])
+    result = await oneshot_mod.run_oneshot_asr(
+        pcm_to_wav_base64(pcm),
+        cfg=_cfg(
+            enable_primary_asr=True,
+            enable_secondary_asr=False,
+            enable_dual_asr_fusion=False,
+            asr_silence_removal_threshold_sec=0.5,
+            vad_threshold=0.5,
+            vad_smoothing_alpha=0.0,
+        ),
+        hotwords=[],
+        language="Chinese",
+        audio_pcm=pcm,
+    )
+
+    assert result["text"] == "打开遮光板"
+    assert captured["wav_samples"] == int(0.4 * SAMPLE_RATE)
+    assert captured["pcm_samples"] == int(0.4 * SAMPLE_RATE)
 
 
 # ---------------------------------------------------------------------------

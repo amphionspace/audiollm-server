@@ -15,7 +15,7 @@ from ..asr.client import (
 from ..asr.fusion import choose_fused_result
 from ..asr.itn import normalize_final_text
 from ..audio.utils import pcm_to_wav_base64
-from ..audio.vad import segment_voice_evidence
+from ..audio.vad import segment_voice_evidence, trim_long_silence_for_asr
 from ..config import SAMPLE_RATE
 from ..streaming.events import PartialSnapshot, SegmentReady
 from ..streaming.session import SessionContext
@@ -47,6 +47,20 @@ class AsrTaskEngine(BaseTaskEngine):
     ) -> bool:
         cfg = ctx.cfg
         segment = seg.pcm
+        original_duration = len(segment) / SAMPLE_RATE
+        trim = trim_long_silence_for_asr(segment, cfg)
+        if trim.removed_ranges:
+            logger.info(
+                "Final ASR silence removal: segment_id=%s original=%.2fs "
+                "removed=%.2fs ranges=%d trimmed=%.2fs threshold=%.2fs",
+                seg.id or "n/a",
+                original_duration,
+                trim.removed_sec,
+                trim.removed_ranges,
+                len(trim.pcm) / SAMPLE_RATE,
+                cfg.asr_silence_removal_threshold_sec,
+            )
+            segment = trim.pcm
         audio_duration = len(segment) / SAMPLE_RATE
         voice = segment_voice_evidence(segment, cfg)
         if not voice.accepted:

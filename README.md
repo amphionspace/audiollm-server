@@ -342,6 +342,9 @@ k2 模式下，切段权威是 k2 的 endpoint；本服务只用 `k2_idle_keep_m
 | `asr_segment_voice_gate_min_ratio` | float | `0.05` | 整段中超过阈值的人声帧占比下限 |
 | `asr_segment_voice_gate_min_ms` | int | `120` | 整段累计人声证据时长下限（毫秒） |
 | `asr_segment_voice_gate_min_rms` | float | `0.001` | 低于该 RMS 的近数字静音直接丢弃 |
+| `asr_silence_removal_threshold_sec` | float | `0.0` | final LLM ASR 前删除连续时长大于等于该值的内部静音；`0` 表示关闭 |
+
+`asr_silence_removal_threshold_sec` 解决一句话中间夹入长时间无声的问题，例如"打开遮【停顿若干秒】光板"。启用后只删除前后都有人声的内部长静音；首尾静音和整段疑似静音会保留，避免 VAD 漏检时把整条音频删空。短于阈值的自然停顿保留。该处理只作用于 final ASR 前的音频，不改变 partial 节奏。
 
 #### 调试落盘 (debug dump)
 
