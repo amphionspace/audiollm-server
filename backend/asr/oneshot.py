@@ -19,7 +19,9 @@ import logging
 
 import numpy as np
 
-from ..config import Config
+from ..audio.utils import pcm_to_wav_base64
+from ..audio.vad import trim_long_silence_for_asr
+from ..config import SAMPLE_RATE, Config
 from .client import query_audio_model, query_audio_model_secondary
 from .fusion import choose_fused_result
 from .itn import normalize_final_text
@@ -77,6 +79,22 @@ async def run_oneshot_asr(
     normalization). Raises :class:`OneshotAsrError` when every configured
     model failed.
     """
+    if audio_pcm is not None:
+        original_duration = len(audio_pcm) / SAMPLE_RATE
+        trim = trim_long_silence_for_asr(audio_pcm, cfg)
+        if trim.removed_ranges:
+            logger.info(
+                "One-shot ASR silence removal: original=%.2fs removed=%.2fs "
+                "ranges=%d trimmed=%.2fs threshold=%.2fs",
+                original_duration,
+                trim.removed_sec,
+                trim.removed_ranges,
+                len(trim.pcm) / SAMPLE_RATE,
+                cfg.asr_silence_removal_threshold_sec,
+            )
+            audio_pcm = trim.pcm
+            wav_b64 = pcm_to_wav_base64(audio_pcm)
+
     primary_task = None
     secondary_task = None
     if cfg.enable_primary_asr:

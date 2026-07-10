@@ -278,6 +278,14 @@ class SegmentVoiceEvidence(NamedTuple):
     rms: float
 
 
+class SilenceRemovalResult(NamedTuple):
+    """PCM plus accounting for protected internal-silence removal."""
+
+    pcm: np.ndarray
+    removed_sec: float
+    removed_ranges: int
+
+
 def segment_voice_evidence(pcm: np.ndarray, cfg: Config) -> SegmentVoiceEvidence:
     """Summarize whole-segment speech evidence before final ASR inference.
 
@@ -352,6 +360,114 @@ def segment_voice_evidence(pcm: np.ndarray, cfg: Config) -> SegmentVoiceEvidence
         max_prob,
         mean_prob,
         rms,
+    )
+
+
+def trim_long_silence_for_asr(
+    pcm: np.ndarray,
+    cfg: Config,
+    *,
+    sample_rate: int = SAMPLE_RATE,
+) -> SilenceRemovalResult:
+    """Delete internal long silence before final LLM ASR inference.
+
+    ``cfg.asr_silence_removal_threshold_sec <= 0`` disables the pass. When
+    enabled, only VAD-silent runs whose duration is greater than or equal to
+    the configured threshold and that have speech on both sides are removed.
+    Leading/trailing silence and all-silence clips are preserved so this pass
+    cannot delete an entire utterance when VAD under-detects speech.
+    """
+    pcm = np.asarray(pcm, dtype=np.float32).reshape(-1)
+    threshold_sec = float(getattr(cfg, "asr_silence_removal_threshold_sec", 0.0))
+    if pcm.size == 0 or threshold_sec <= 0:
+        return SilenceRemovalResult(pcm.astype(np.float32, copy=False), 0.0, 0)
+
+    processor = VADProcessor(
+        threshold=cfg.vad_threshold,
+        silence_duration_ms=cfg.silence_duration_ms,
+        sample_rate=sample_rate,
+        smoothing_alpha=cfg.vad_smoothing_alpha,
+        start_frames=1,
+        pre_speech_ms=0,
+        keep_tail_ms=0,
+    )
+    hop = processor.hop_size
+    used = (pcm.size // hop) * hop
+    if used <= 0:
+        return SilenceRemovalResult(pcm.astype(np.float32, copy=False), 0.0, 0)
+
+    min_silence_frames = max(
+        1,
+        math.ceil((threshold_sec * 1000.0) / processor.frame_ms),
+    )
+    frame_count = used // hop
+    speech_flags: list[bool] = []
+    smoothed: float | None = None
+    for i in range(0, used, hop):
+        frame = pcm[i : i + hop]
+        vad_input = processor._prepare_vad_input(frame)
+        raw_prob = processor._extract_prob(processor.vad.process(vad_input))
+        if smoothed is None:
+            smoothed = raw_prob
+        else:
+            alpha = processor.smoothing_alpha
+            smoothed = (alpha * smoothed) + ((1.0 - alpha) * raw_prob)
+        speech_flags.append(smoothed > processor.threshold)
+
+    if not any(speech_flags):
+        return SilenceRemovalResult(pcm.astype(np.float32, copy=False), 0.0, 0)
+
+    has_speech_before: list[bool] = [False] * frame_count
+    seen_speech = False
+    for idx, is_speech in enumerate(speech_flags):
+        has_speech_before[idx] = seen_speech
+        seen_speech = seen_speech or is_speech
+
+    has_speech_after: list[bool] = [False] * frame_count
+    seen_speech = False
+    for idx in range(frame_count - 1, -1, -1):
+        has_speech_after[idx] = seen_speech
+        seen_speech = seen_speech or speech_flags[idx]
+
+    keep_slices: list[np.ndarray] = []
+    keep_start = 0
+    removed_samples = 0
+    removed_ranges = 0
+    idx = 0
+    while idx < frame_count:
+        if speech_flags[idx]:
+            idx += 1
+            continue
+        run_start_frame = idx
+        while idx < frame_count and not speech_flags[idx]:
+            idx += 1
+        run_end_frame = idx
+        frames = run_end_frame - run_start_frame
+        if frames < min_silence_frames:
+            continue
+        if not (
+            has_speech_before[run_start_frame]
+            and has_speech_after[run_end_frame - 1]
+        ):
+            continue
+        run_start = run_start_frame * hop
+        run_end = run_end_frame * hop
+        if keep_start < run_start:
+            keep_slices.append(pcm[keep_start:run_start])
+        removed_samples += run_end - run_start
+        removed_ranges += 1
+        keep_start = run_end
+
+    if removed_ranges == 0:
+        return SilenceRemovalResult(pcm.astype(np.float32, copy=False), 0.0, 0)
+    if keep_start < pcm.size:
+        keep_slices.append(pcm[keep_start:])
+
+    out = np.concatenate(keep_slices).astype(np.float32, copy=False)
+    return SilenceRemovalResult(
+        out,
+        removed_samples / max(1, sample_rate),
+        removed_ranges,
     )
 
 

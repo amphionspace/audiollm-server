@@ -208,6 +208,10 @@ class Config:
     asr_segment_voice_gate_min_ratio: float = 0.05
     asr_segment_voice_gate_min_ms: int = 120
     asr_segment_voice_gate_min_rms: float = 0.001
+    # Before final LLM ASR, remove internal continuous silence runs whose
+    # duration is >= this threshold. 0 disables the pass. Leading/trailing
+    # silence is kept so this knob cannot delete an entire utterance.
+    asr_silence_removal_threshold_sec: float = 0.0
 
     # ---- ASR: target speaker enrollment ----------------------------------
     # When a target-speaker enrollment is uploaded the primary ASR prompt
@@ -427,6 +431,8 @@ class Config:
             object.__setattr__(self, "asr_segment_voice_gate_min_ms", 0)
         if self.asr_segment_voice_gate_min_rms < 0:
             object.__setattr__(self, "asr_segment_voice_gate_min_rms", 0.0)
+        if self.asr_silence_removal_threshold_sec < 0:
+            object.__setattr__(self, "asr_silence_removal_threshold_sec", 0.0)
         # An empty dump dir would write into the project root; fall back to the
         # documented default so the invariant holds on every construction path.
         if not str(self.debug_dump_dir).strip():
@@ -512,6 +518,7 @@ CLIENT_OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
     "asr_segment_voice_gate_min_ratio",
     "asr_segment_voice_gate_min_ms",
     "asr_segment_voice_gate_min_rms",
+    "asr_silence_removal_threshold_sec",
     # Dual-model fusion thresholds
     "fusion_similarity_threshold",
     "fusion_min_primary_score",

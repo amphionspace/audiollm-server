@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import math
 import sys
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -61,6 +63,18 @@ from backend.tasks.emotion import EmotionTaskEngine  # noqa: E402
 
 def _silent_pcm_bytes(n_samples: int) -> bytes:
     return np.zeros(n_samples, dtype=np.int16).tobytes()
+
+
+class _AmplitudeBackend:
+    """Deterministic VAD backend: speech iff the frame has real amplitude."""
+
+    def process(self, frame: np.ndarray) -> float:
+        return 1.0 if float(np.abs(frame).max()) > 0.1 else 0.0
+
+
+def _wav_b64_samples(wav_b64: str) -> int:
+    with wave.open(io.BytesIO(base64.b64decode(wav_b64)), "rb") as wf:
+        return wf.getnframes()
 
 
 @pytest.mark.asyncio
@@ -1029,6 +1043,62 @@ async def test_asr_final_preserves_segment_id(monkeypatch):
     assert sent[0]["effective_hotwords"] == ["召回A", "召回B"]
     assert sent[0]["duration_sec"] == pytest.approx(0.1)
     assert isinstance(sent[0]["audio_b64"], str) and sent[0]["audio_b64"]
+
+
+@pytest.mark.asyncio
+async def test_asr_final_removes_internal_silence_before_llm(monkeypatch):
+    monkeypatch.setattr(
+        "backend.audio.vad.VADProcessor._create_vad_backend",
+        lambda self: _AmplitudeBackend(),
+    )
+    captured: dict[str, int] = {}
+
+    async def fake_query_audio_model(wav_b64, *, audio_pcm=None, **_kwargs):
+        captured["wav_samples"] = _wav_b64_samples(wav_b64)
+        captured["pcm_samples"] = int(audio_pcm.size)
+        return {
+            "transcription": "打开遮光板",
+            "detected_language": "zh",
+        }
+
+    async def fail_secondary(*_args, **_kwargs):
+        raise AssertionError("secondary should be disabled")
+
+    monkeypatch.setattr(asr_task_mod, "query_audio_model", fake_query_audio_model)
+    monkeypatch.setattr(asr_task_mod, "query_audio_model_secondary", fail_secondary)
+
+    sent: list[dict] = []
+
+    async def _send_json(payload):
+        sent.append(payload)
+        return True
+
+    cfg = load_config().override(
+        enable_primary_asr=True,
+        enable_secondary_asr=False,
+        enable_dual_asr_fusion=False,
+        asr_segment_voice_gate_enabled=False,
+        asr_silence_removal_threshold_sec=0.5,
+        vad_threshold=0.5,
+        vad_smoothing_alpha=0.0,
+    )
+    ctx = SessionContext(cfg=cfg, language="zh", src_lang="Chinese", send_json=_send_json)
+    first = np.ones(int(0.2 * SAMPLE_RATE), dtype=np.float32) * 0.5
+    pause = np.zeros(int(0.5 * SAMPLE_RATE), dtype=np.float32)
+    second = np.ones(int(0.2 * SAMPLE_RATE), dtype=np.float32) * 0.5
+    engine = AsrTaskEngine()
+
+    ok = await engine.handle_segment(
+        SegmentReady(pcm=np.concatenate([first, pause, second]), id="trim-1"),
+        ctx,
+    )
+
+    assert ok is True
+    assert captured["wav_samples"] == int(0.4 * SAMPLE_RATE)
+    assert captured["pcm_samples"] == int(0.4 * SAMPLE_RATE)
+    assert sent[0]["text"] == "打开遮光板"
+    assert sent[0]["duration_sec"] == pytest.approx(0.4)
+    assert _wav_b64_samples(sent[0]["audio_b64"]) == int(0.4 * SAMPLE_RATE)
 
 
 @pytest.mark.asyncio

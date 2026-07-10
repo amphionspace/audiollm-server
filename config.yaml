@@ -99,6 +99,7 @@ defaults:
     asr_segment_voice_gate_min_ratio: 0.05 # 整段中至少 5% 帧有人声证据，避免长噪音夹少量误触发
     asr_segment_voice_gate_min_ms: 120     # 至少约 120ms 累计人声证据，保留短词/轻声
     asr_segment_voice_gate_min_rms: 0.001  # 近数字静音直接丢弃
+    asr_silence_removal_threshold_sec: 0.0 # final LLM ASR 前删除 >= 该秒数的内部连续静音；0 表示关闭
   fusion:
     fusion_similarity_threshold: 0.85
     fusion_min_primary_score: 0.55
