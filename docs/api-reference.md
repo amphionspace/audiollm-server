@@ -136,6 +136,8 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 
 `pseudo_stream_first_partial_ms` 是每段语音首个 partial（伪流式中间结果）的触发门槛，只对会输出 partial 的端点生效：`/transcribe-streaming` 与 `/tuling/ast/v3`。`/emotion-segmented-streaming` 不产 partial（服务端固定关闭），传入无效。它与 `vad_start_frames` 一起按 max 决定本地伪流式首字延迟；调低只让首字更早出，不改变 final 段的短噪声过滤（仍由 `min_segment_duration_ms` 控制，不变量 `pseudo_stream_first_partial_ms ≤ min_segment_duration_ms`）。
 
+当前本地 VAD 默认使用 `vad_start_frames=10`（TEN VAD 下约 160 ms），以降低首字延迟并保留短首词；客户端仍可按连接覆写该字段。
+
 服务端可启用 `k2_enabled=true` 让 `/transcribe-streaming` 与 `/tuling/ast/v3` 的 partial 改由外部 k2 gRPC 流式 ASR 产生；final 仍走本服务 LLM ASR。k2 只做纯识别，不接热词、不接目标说话人、不返回 token timestamps。`k2_target`、`k2_max_segment_sec`、`k2_idle_keep_ms`、`k2_voice_gate_*` 等均为服务端配置，不在临时覆写白名单内。k2 模式下，切段权威是 k2 endpoint，本服务只用 `k2_idle_keep_ms` 限制起音前旧静音、用 `k2_max_segment_sec` 防止无 endpoint 时缓冲无限增长，并用 `k2_voice_gate_*` 在 partial/final 进入下游前确认有人声证据；voice gate 只决定放行或丢弃，不再用本地 VAD 裁剪段首/段尾。上表 VAD / 伪流式间隔字段仍会被接受，但不再决定这两个端点的切点或首字时机；`enable_pseudo_stream=false` 仍会抑制 partial 下发。
 
 final 文本规范化开关（enable_asr_itn、asr_itn_enable_0_to_9、enable_asr_plate_normalize）与解码退化重复折叠开关（enable_asr_repetition_fix）为服务端配置，不在上表白名单内，客户端无法临时覆写。语义与示例见各协议文档的“文本规范化”小节与 [README 文本规范化](../README.md)。

@@ -118,7 +118,7 @@ VAD / 分段（凡按帧计的字段，其帧时长由 VAD 后端 hop 决定：t
 | vad_threshold | float | 0.65 | 平滑后语音概率高于该阈值才算语音帧；越大越严格、越不易判为语音 | 生效 |
 | silence_duration_ms | int | 350 | 进入语音后连续静音达到该时长即切段，是唯一的切段静音阈值（毫秒友好，无需换算帧数） | 生效 |
 | vad_smoothing_alpha | float | 0.3 | 语音概率指数平滑系数，smoothed = alpha×上一帧 + (1−alpha)×当前帧；越大越平滑越滞后，0.3 表示当前帧权重 0.7、偏灵敏 | 生效 |
-| vad_start_frames | int | 20 | 连续多少语音帧才确认进入语音，用于起始防抖 | 生效 |
+| vad_start_frames | int | 10 | 连续多少语音帧才确认进入语音，用于起始防抖 | 生效 |
 | vad_pre_speech_ms | int | 500 | 确认语音起点后向前补回的预缓存音频时长，避免吃掉起音 | 生效 |
 | vad_keep_tail_ms | int | 40 | 切段时在结尾保留的静音尾音时长，使收尾更自然，不超过 silence_duration_ms 对应帧数 | 生效 |
 | min_segment_duration_ms | int | 350 | 短于该时长的语音段被丢弃、不送 ASR | 生效 |
@@ -176,16 +176,16 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 
 ### 首字延迟优化（低延迟场景）
 
-实时麦克风场景下，首字延迟（首个非空 partial 相对第一帧发送）由两个串联门槛的较大者决定（max）：起音确认（`vad_start_frames` × 每帧约 16 ms）与首个 partial 的音频门槛（`pseudo_stream_first_partial_ms`）。服务端默认已把 `pseudo_stream_first_partial_ms` 设为 200 ms（低延迟），但 `vad_start_frames` 默认仍是 20（起音确认约 320 ms），它才是 max 的 binding 项，故默认首字门槛约 320 ms。要进一步压低，集成方在首帧 `parameter.asr_config` 把 `vad_start_frames` 也降下来即可（partial 门槛默认已是 200，通常无需再覆写）：
+实时麦克风场景下，首字延迟（首个非空 partial 相对第一帧发送）由两个串联门槛的较大者决定（max）：起音确认（`vad_start_frames` × 每帧约 16 ms）与首个 partial 的音频门槛（`pseudo_stream_first_partial_ms`）。当前默认分别为 10 帧（约 160 ms）和 200 ms，因此首字门槛约 200 ms；通常无需再覆写：
 
 | 参数 | 服务端默认 | 低延迟推荐 | 作用 |
 |---|---|---|---|
-| vad_start_frames | 20 | 10 | 起音确认帧数；默认 20（约 320 ms）是首字 max 的 binding 项，降到 10（约 160 ms）让 max 落到 partial 门槛 200 ms，是当前默认下压低首字的主要手段 |
+| vad_start_frames | 10 | 10 | 起音确认帧数；TEN VAD 下约 160 ms，让首字门槛由默认 200 ms partial 门槛决定 |
 | pseudo_stream_first_partial_ms | 200 | 200 | 首个 partial 的累积音频门槛；服务端默认已设 200 ms，无需再覆写（再低也会被 vad_start_frames 卡住） |
 
 发送侧建议用较小音频帧（chunk 32-64 ms）而非大块（如 500 ms），让起音确认颗粒更细、边发边出字；首字出来后无需切换大块。
 
-实测参考（kespeech 短句，realtime，chunk 64 ms，20 条）：`vad_start_frames=10` + `pseudo_stream_first_partial_ms=200` 时首字 p50 约 223 ms、mean 约 362 ms、全程 0 漏识别；作为对比，旧的全 350/20 默认 p50 约 360 ms。当前服务端默认（200/20）按 max 模型估算约 320 ms（partial 门槛已降但起音确认未降，介于两者之间）。`vad_start_frames` 由 10 再降到 8 的额外收益已饱和（p50 仅再降约 2 ms），不建议更激进，以免在含噪环境抬高误触发率。
+实测参考（kespeech 短句，realtime，chunk 64 ms，20 条）：当前默认 `vad_start_frames=10` + `pseudo_stream_first_partial_ms=200` 时首字 p50 约 223 ms、mean 约 362 ms、全程 0 漏识别；作为对比，旧的全 350/20 默认 p50 约 360 ms。`vad_start_frames` 由 10 再降到 8 的额外收益已饱和（p50 仅再降约 2 ms），不建议更激进，以免在含噪环境抬高误触发率。
 
 首帧 `parameter.asr_config` 的覆写仅对本连接生效、不改变服务端默认；`min_segment_duration_ms` 仍独立控制 final 段的短噪声过滤（保持 350 ms 不变）。注意 `pseudo_stream_first_partial_ms=200` 是服务端全局默认，对所有产 partial 的端点（含 `/transcribe-streaming`）都已生效，并非本端点专属。
 

@@ -197,6 +197,7 @@ def test_shipped_config_projects_rest_bindings() -> None:
     assert cfg.asr_request_timeout == 120
     assert cfg.emotion_request_timeout == 30
     assert cfg.vad_threshold == 0.65
+    assert cfg.vad_start_frames == 10
     assert cfg.min_segment_duration_ms == 350
     assert cfg.pseudo_stream_first_partial_ms == 200
     assert cfg.enable_dual_asr_fusion is False
