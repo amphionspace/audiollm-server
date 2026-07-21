@@ -229,6 +229,7 @@ Client                                      Server
 |---|---|---|
 | vad_threshold | number | VAD 判定阈值 |
 | silence_duration_ms | integer | 静音持续多久后切段 |
+| vad_start_frames | integer | 连续多少语音帧才确认起音；当前默认 `10`（TEN VAD 下约 160 ms） |
 | min_segment_duration_ms | integer | 短于该值的语音段会被丢弃 |
 | asr_silence_removal_threshold_sec | number | final LLM ASR 前删除连续时长大于等于该值的内部静音；`0` 表示关闭 |
 | enable_pseudo_stream | boolean | 是否输出伪流式中间结果 |
@@ -253,6 +254,15 @@ python docs/examples/ws_transcribe.py sample.wav \
 ```
 
 使用 `bash start.sh`（`wss://172.16.0.3:8443/...`）时，示例脚本可加 `--insecure` 跳过自签证书校验。
+
+需要核对每个 final 实际送入 AudioLLM 的 WAV 时，可使用抓取脚本保存服务端返回的
+`audio_b64`、转写元数据和汇总 manifest：
+
+```bash
+python docs/examples/capture_asr_model_audio.py sample.wav \
+  --url ws://172.16.0.3:8082/transcribe-streaming \
+  --output-dir asr_model_audio
+```
 
 ## REST 上传接口
 

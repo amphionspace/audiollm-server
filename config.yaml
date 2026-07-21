@@ -67,7 +67,7 @@ defaults:
     vad_threshold: 0.65
     silence_duration_ms: 1000
     vad_smoothing_alpha: 0.3
-    vad_start_frames: 20
+    vad_start_frames: 10
     vad_pre_speech_ms: 500
     vad_keep_tail_ms: 40
     min_segment_duration_ms: 350

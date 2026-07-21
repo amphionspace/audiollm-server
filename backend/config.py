@@ -242,7 +242,7 @@ class Config:
     vad_threshold: float = 0.65
     silence_duration_ms: int = 350
     vad_smoothing_alpha: float = 0.3
-    vad_start_frames: int = 20
+    vad_start_frames: int = 10
     vad_pre_speech_ms: int = 500
     vad_keep_tail_ms: int = 40
     min_segment_duration_ms: int = 350
