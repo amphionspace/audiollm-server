@@ -453,11 +453,13 @@ def _aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
                 )
     first_30_scores = []
     for result in results:
-        first_30_scores.extend(
+        session_bucket_scores = [
             result["scores"]["fixed_mapping_buckets"]["single_role_proxy"][key]
             for key in ("origin_0_15", "origin_15_30")
             if key in result["scores"]["fixed_mapping_buckets"]["single_role_proxy"]
-        )
+        ]
+        if session_bucket_scores:
+            first_30_scores.append(_aggregate_components(session_bucket_scores))
     if first_30_scores:
         aggregate["single_role_proxy"]["first_30_fixed_mapping"] = _aggregate_components(
             first_30_scores

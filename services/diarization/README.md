@@ -4,7 +4,7 @@
 
 首期采用 NVIDIA [`diar_streaming_sortformer_4spk-v2.1`](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)，固定 revision `fafaab5faa1617a0ca52d38dd3dc4bd636800d3d`。它原生支持最多 4 位说话人和在线 speaker cache，适合 AST v3 的会话内匿名角色编号；不承担跨会话身份识别或声源分离。模型受 NVIDIA Open Model License 约束，上线前必须完成许可证审查。
 
-低延迟参数采用模型官方 streaming 配置：`chunk_len=6`、left context `1`、right context `7`，speaker FIFO/cache 长度 `188`、更新周期 `144`。每帧 80 ms，对当前预测需要约 `6 + 7 = 13` 帧（约 1.04 秒）输入；sidecar 每 480 ms 推进一次 finalized watermark。
+低延迟参数采用模型官方 streaming 配置：`chunk_len=6`、left context `1`、right context `7`，speaker FIFO/cache 长度 `188`、更新周期 `144`。每帧 80 ms，模型上下文需要约 `6 + 7 = 13` 帧（1.04 秒）；frontend 另保留 20 ms PCM guard，使分窗 Mel 与整段 Mel 对齐。小包输入时有效缓冲约 1.06 秒；使用建议的 80 ms 包时会量化为 1.12 秒。sidecar 每 480 ms 推进一次 finalized watermark，仍低于主服务 2 秒的结果等待上限。
 
 ## 工作方式
 
@@ -57,14 +57,14 @@ SHA-256 为 `8abd32832159c6ac1148c926b7276f35ba34582c444e559dce1f1253fea42ef8`�
 
 | 30 秒窗口 | 金标/预测人数 | DER（0 collar，含重叠） | DER（250 ms collar，含重叠） | RTF | watermark lag p95 | finish | 峰值 allocated 显存 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `L_R004S02C01 @ 1850s` | 4 / 3 | 11.94% | 10.37% | 0.073 | 560 ms | 76 ms | 0.90 GiB |
-| `L_R004S03C01 @ 1000s` | 4 / 4 | 51.84% | 52.93% | 0.054 | 560 ms | 53 ms | 0.90 GiB |
+| `L_R004S02C01 @ 1850s` | 4 / 3 | 11.94% | 10.37% | 0.078 | 640 ms | 100 ms | 0.90 GiB |
+| `L_R004S03C01 @ 1000s` | 4 / 4 | 52.00% | 53.21% | 0.053 | 640 ms | 50 ms | 0.90 GiB |
 
 两个窗口另用 NeMo 官方整段 `forward_streaming` 路径复核。无 collar、含重叠的
-聚合 DER 与 sidecar 相差 0.09 个绝对百分点，单窗口最大相差 0.16 个百分点，
+聚合 DER 与两个单窗口 DER 均与 sidecar 一致，
 因此困难窗口的高误差不是 gRPC 或增量分块实现造成。扩展到 6 个人数不超限的
-30 秒诊断窗口后，标准 DER 加权为 20.05%，AST 单角色投影代理指标的
-250 ms collar、不含重叠 macro DER 为 10.13%，但困难窗口仍达 44.19%。这些窗口
+30 秒诊断窗口后，标准 DER 加权为 20.12%，AST 单角色投影代理指标的
+250 ms collar、不含重叠 macro DER 为 9.06%，困难窗口为 37.46%。这些窗口
 表明 H20 的性能和资源余量充足，但中文远场短窗的质量方差明显，不能只用聚合均值
 决定上线。
 
@@ -105,6 +105,26 @@ uv run --project services/diarization python scripts/benchmark_diarization.py \
   --compare-to /path/to/sidecar.json --output /path/to/official.json
 ```
 
+## AliMeeting Test far 全集实测
+
+2026-08-04 在 H20 上完成 20 场、10.7765 小时全集评测。为复现 NVIDIA 的
+15.60%，金标使用模型卡指定的
+[`diar-forced-alignment`](https://github.com/nttcslab-sp/diar-forced-alignment)
+AliMeeting Test far RTTM；数据包自带的长句级 RTTM 不是同一计分口径。
+
+- sidecar 标准 DER（0 collar、含重叠）为 15.56709%；NeMo 整段
+  `forward_streaming` 为 15.57394%。aggregate 相差 0.00686 个百分点，最大单场
+  相差 0.18565 个百分点。
+- AST 单角色代理在 250 ms collar、不含重叠口径下 macro DER 为 4.251%，最差
+  会话为 20.106%；首 30 秒 fixed-mapping macro DER 为 12.151%。
+- 80 ms PCM 包下 watermark lag p95 为 640 ms。单进程离群场复测 RTF 为 0.055；
+  单进程峰值 allocated 0.897 GiB、reserved 0.941 GiB。
+
+实测还定位并修复了分窗 frontend 的边界误差：直接对每个 1.12 秒窗口计算 Mel
+会让 STFT/pre-emphasis 的首尾 context 帧不同于整段特征，个别会话可放大为 11.62
+个百分点的 DER 差。sidecar 现在保留并裁掉 20 ms PCM guard，使分窗 Mel 与整段
+Mel 对齐；全量复测得到上述最终结果。
+
 ## 验收
 
-CI 使用 fake diarizer 跑协议、切段、超时和降级测试。真实 GPU 验收另行执行：AliMeeting Test far 全集标准 DER 不高于 17.60%，sidecar 与 NeMo 官方整段路径差异不超过 0.5 个绝对百分点；AST 单角色投影的 macro DER 不高于 20%，首 30 秒不高于 25%，单会话最差值低于 40%。ASR 与 sidecar 同卡压测不得 OOM，至少保留 10 GiB 显存，角色等待 p95 小于 2 秒，现有 ASR p95 回归不超过 5%。在这些门禁通过前，`config.yaml` 保持 `diarization_enabled=false`。嘈杂执法场景首期灰度，不在没有脱敏金标前调整模型阈值。
+CI 使用 fake diarizer 跑协议、切段、超时和降级测试。真实 GPU 验收另行执行：AliMeeting Test far 全集标准 DER（0 collar、含重叠）不高于 17.60%，sidecar 与 NeMo 官方整段路径差异不超过 0.5 个绝对百分点；AST 单角色投影使用 250 ms collar、不含重叠口径，macro DER 不高于 20%、单会话最差值低于 40%，首 30 秒 fixed-mapping macro DER 不高于 25%。ASR 与 sidecar 同卡压测不得 OOM，至少保留 10 GiB 显存，角色等待 p95 小于 2 秒，现有 ASR p95 回归不超过 5%。在这些门禁通过前，`config.yaml` 保持 `diarization_enabled=false`。嘈杂执法场景首期灰度，不在没有脱敏金标前调整模型阈值。

@@ -21,6 +21,9 @@ LEFT_CONTEXT_FRAMES = 1
 RIGHT_CONTEXT_FRAMES = 7
 SUBSAMPLING_FACTOR = 8
 MEL_HOP_MS = 10
+# The centered 512-point STFT needs 16 ms of real samples on each side.
+# Two 10 ms hops keep the guard aligned with Mel frames before trimming.
+FEATURE_GUARD_MS = 20
 ACTIVITY_THRESHOLD = 0.5
 MIN_FREE_GPU_GIB = 10.0
 
@@ -146,10 +149,11 @@ class SortformerStream:
         core_samples = CORE_FRAMES * FRAME_MS * SAMPLE_RATE // 1000
         left_samples = LEFT_CONTEXT_FRAMES * FRAME_MS * SAMPLE_RATE // 1000
         right_samples = RIGHT_CONTEXT_FRAMES * FRAME_MS * SAMPLE_RATE // 1000
+        feature_guard_samples = FEATURE_GUARD_MS * SAMPLE_RATE // 1000
         updates: list[ModelUpdate] = []
         while self._next_core_sample < len(self._pcm):
             available = len(self._pcm) - self._next_core_sample
-            if not force and available < core_samples + right_samples:
+            if not force and available < core_samples + right_samples + feature_guard_samples:
                 break
             real_core_samples = min(core_samples, available)
             if real_core_samples <= 0:
@@ -159,7 +163,10 @@ class SortformerStream:
         # Streaming state owns the long-term speaker history. Retain only the
         # raw left context needed by the next feature window so multi-hour
         # sessions stay memory-bounded.
-        retain_from = max(0, self._next_core_sample - left_samples)
+        retain_from = max(
+            0,
+            self._next_core_sample - left_samples - feature_guard_samples,
+        )
         if retain_from:
             self._pcm = self._pcm[retain_from:].copy()
             self._next_core_sample -= retain_from
@@ -170,13 +177,19 @@ class SortformerStream:
         core_samples = CORE_FRAMES * FRAME_MS * SAMPLE_RATE // 1000
         left_samples = LEFT_CONTEXT_FRAMES * FRAME_MS * SAMPLE_RATE // 1000
         right_samples = RIGHT_CONTEXT_FRAMES * FRAME_MS * SAMPLE_RATE // 1000
-        window_start = max(0, self._next_core_sample - left_samples)
-        window_end = min(
+        feature_guard_samples = FEATURE_GUARD_MS * SAMPLE_RATE // 1000
+        model_window_start = max(0, self._next_core_sample - left_samples)
+        model_window_end = min(
             len(self._pcm),
             self._next_core_sample + core_samples + right_samples,
         )
-        window = self._pcm[window_start:window_end]
-        required_core_end = self._next_core_sample - window_start + core_samples
+        feature_window_start = max(0, model_window_start - feature_guard_samples)
+        feature_window_end = min(
+            len(self._pcm),
+            model_window_end + feature_guard_samples,
+        )
+        window = self._pcm[feature_window_start:feature_window_end]
+        required_core_end = self._next_core_sample - feature_window_start + core_samples
         if len(window) < required_core_end:
             window = np.pad(window, (0, required_core_end - len(window)))
 
@@ -188,13 +201,25 @@ class SortformerStream:
                 audio_signal_length=waveform_len,
             )
             features = features[:, :, : feature_lengths.max()].transpose(1, 2)
+            trim_left = round(
+                (model_window_start - feature_window_start) / (SAMPLE_RATE * MEL_HOP_MS / 1000)
+            )
+            trim_right = round(
+                (feature_window_end - model_window_end) / (SAMPLE_RATE * MEL_HOP_MS / 1000)
+            )
+            feature_end = features.shape[1] - trim_right if trim_right else features.shape[1]
+            features = features[:, trim_left:feature_end, :]
+            feature_lengths = (feature_lengths - trim_left - trim_right).clamp(min=0)
             left_offset = min(
                 LEFT_CONTEXT_FRAMES * SUBSAMPLING_FACTOR,
-                round((self._next_core_sample - window_start) / (SAMPLE_RATE * MEL_HOP_MS / 1000)),
+                round(
+                    (self._next_core_sample - model_window_start)
+                    / (SAMPLE_RATE * MEL_HOP_MS / 1000)
+                ),
             )
             future_samples = max(
                 0,
-                window_end - (self._next_core_sample + real_core_samples),
+                model_window_end - (self._next_core_sample + real_core_samples),
             )
             right_offset = min(
                 RIGHT_CONTEXT_FRAMES * SUBSAMPLING_FACTOR,
