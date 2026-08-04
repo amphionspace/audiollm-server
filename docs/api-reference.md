@@ -22,9 +22,9 @@
 | 方法 | 路径 | 用途 | 成功响应 |
 |---|---|---|---|
 | GET | `/healthz` | 进程存活检查，只验证 AudioLLM HTTP 服务可响应 | `{"status":"ok"}` |
-| GET | `/readyz` | 上游就绪检查，验证配置中的 vLLM、RAG-ASR Triton、RAG-ASR 管理面和 k2 | `{"status":"ok","checks":[...]}` |
+| GET | `/readyz` | 上游就绪检查，验证配置中的 vLLM、RAG-ASR Triton、RAG-ASR 管理面、k2，并报告 optional diarization sidecar | `{"status":"ok","checks":[...]}` |
 
-`/readyz` 不执行真实音频推理，只做轻量探测：OpenAI-compatible/vLLM 上游请求 `/v1/models`，RAG-ASR Triton 请求 `/v2/health/ready`，RAG-ASR HTTP 管理面请求 `/health`，k2 通过 gRPC `ServerInfo` 校验采样率。任一已配置且必须探测的上游失败时返回 HTTP 503：
+`/readyz` 不执行真实音频推理，只做轻量探测：OpenAI-compatible/vLLM 上游请求 `/v1/models`，RAG-ASR Triton 请求 `/v2/health/ready`，RAG-ASR HTTP 管理面请求 `/health`，k2 通过 gRPC `ServerInfo` 校验采样率，diarization sidecar 通过 gRPC `Healthz` 检查模型服务状态。任一已配置且必须探测的上游失败时返回 HTTP 503；diarization check 固定带 `required=false`，故障会显示为 `status=error` 和 `detail`，但主 ASR readiness 仍返回 200。
 
 ```json
 {
@@ -59,7 +59,7 @@ curl -fsS http://172.16.0.3:8082/readyz
 
 `/transcribe-streaming` 的 `final` / `final_asr` 消息除文本外会带当前语音分段的 `audio_b64`（WAV base64）、`duration_sec` 和 `effective_hotwords`（本段音频经 RAG-ASR/Triton 实际召回的热词列表，不含临时请求热词），主前端用音频字段做分段回放、可用 `effective_hotwords` 展示本段召回命中。k2 模式下该音频是同一段送入 LLM ASR 的 k2 段缓冲，不再经过本地 VAD 段首/段尾二次裁剪；完整字段见 [实时转写 WebSocket 协议](protocols/transcribe-streaming-protocol.md)。服务端开启 `debug_dump_enabled`（`defaults.debug`，运维级、不在客户端覆写白名单）后，`ready` 带 `session_id`/`dump_dir`、`final` 带 `dump_id`，并把每段音频+元信息落盘到 `<dump_dir>/<session_id>/<seg_id>.{wav,json}`，前端在气泡上显示可复制的 `dump_id`，用于回放/最终结果对账，详见协议文档“调试落盘”小节。
 
-`/tuling/ast/v3` 与上面两个任务接口的线上协议不同：音频以 base64 放在 JSON 帧，`header.status`（0/1/2）驱动状态机，无 `ready`/`start`/`stop`，结果为词图结构。模型组合上也不同：本端点恒为 primary-only（强制关闭副模型/本地 Qwen/融合，客户端无法经 `parameter.asr_config` 重开），主模型由 `astv3_vllm_*` 指定（当前留空，回退全局 primary `vllm_base_url`），而 `/transcribe-streaming` 仍按 `config.yaml` 走双模型。临时热词放 `payload.text.text`；热词池隔离只用首帧 `parameter.asr_config.hotword_pool_id`；目标说话人先经 `POST /api/asr/enrollment` 注册，再在首帧设置 `enable_role_separation=false`、`enrollment_enable=true` 和 `enrollment_id`。`header.resIdList` 仅记录并忽略。它不遵循下文“WebSocket 调用流程”，详见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。
+`/tuling/ast/v3` 与上面两个任务接口的线上协议不同：音频以 base64 放在 JSON 帧，`header.status`（0/1/2）驱动状态机，无 `ready`/`start`/`stop`，结果为词图结构。模型组合上也不同：本端点恒为 primary-only（强制关闭副模型/本地 Qwen/融合，客户端无法经 `parameter.asr_config` 重开），主模型由 `astv3_vllm_*` 指定（当前留空，回退全局 primary `vllm_base_url`），而 `/transcribe-streaming` 仍按 `config.yaml` 走双模型。角色分离默认开启：PCM 并行送入独立 Streaming Sortformer sidecar 与 VAD/k2，原始段按 speaker turn 重切后串行识别，最多 4 位会话内匿名角色；sidecar 故障时本会话 fail-open 为普通 ASR。临时热词放 `payload.text.text`；热词池隔离只用首帧 `parameter.asr_config.hotword_pool_id`；目标说话人先经 `POST /api/asr/enrollment` 注册，再在首帧设置 `enable_role_separation=false`、`enrollment_enable=true` 和 `enrollment_id`。`header.resIdList` 仅记录并忽略。它不遵循下文“WebSocket 调用流程”，详见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。
 
 `/astv3-test-proxy` 是为「实时语音识别（测试用）」前端页面临时搭的同源 WebSocket 代理。该页经 HTTPS 提供，浏览器 mixed-content 策略禁止它直接打开明文 `ws://` 的远程 AST v3 后端；由后端在同源 `wss://`（经反向代理）接入后，把每一帧原样双向转发到写死的上游 `ws://159.138.9.106:18082/tuling/ast/v3`。它不解析 AST v3 信封，线上协议与 `/tuling/ast/v3` 完全一致（见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)）；上游连接失败时服务端以 close code 1011 关闭连接。临时测试设施：上游地址写死、前端不暴露任何可选项，外部集成请直接使用 `/tuling/ast/v3`。
 
@@ -128,7 +128,7 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 | VAD / 分段 | vad_threshold、silence_duration_ms、vad_smoothing_alpha、vad_start_frames、vad_pre_speech_ms、vad_keep_tail_ms、min_segment_duration_ms、asr_silence_removal_threshold_sec |
 | 伪流式 | enable_pseudo_stream、pseudo_stream_interval_ms、pseudo_stream_first_partial_ms |
 | ASR 模型组合 / 超时 | enable_primary_asr、enable_secondary_asr、enable_dual_asr_fusion、primary_asr_timeout、asr_request_timeout、debug_show_dual_asr |
-| AST v3 协议字段 | enable_role_separation（AST v3 下不作为普通 Config 覆写，而是参与声纹矩阵与 `cw[].rl` 出参） |
+| AST v3 协议字段 | enable_role_separation（协议层规范化后写入会话 Config，参与 sidecar 路由、声纹矩阵与 `cw[].rl` 出参） |
 | 融合阈值 | fusion_similarity_threshold、fusion_min_primary_score、fusion_max_repetition_ratio、fusion_disagreement_threshold、fusion_hotword_boost、fusion_primary_score_margin |
 | 热词召回 | enable_hotword_recall、recall_top_k |
 | TS-ASR | asr_enrollment_min_sec、asr_enrollment_max_sec、asr_enrollment_ttl_sec |
@@ -144,7 +144,7 @@ final 文本规范化开关（enable_asr_itn、asr_itn_enable_0_to_9、enable_as
 
 `asr_silence_removal_threshold_sec` 为 final LLM ASR 前的内部长静音删除阈值，单位秒；`0` 表示关闭。启用后，连续静音时长大于等于该值、且前后都有人声的内部静音会被删除；首尾静音、整段疑似静音和短于该值的停顿保留。它用于处理"打开遮【长停顿】光板"这类一句话被长静音打断的音频，不影响 partial 输出节奏。
 
-`enable_role_separation` 在 `/tuling/ast/v3` 中是协议字段：默认 true，省略等价于开启，并且优先级高于 `enrollment_enable/enrollment_id`。当前版本不做真实角色分离；开启时 sentence 的 `cw[].rl` 固定返回 0 作为兼容占位，关闭时 sentence/Progressive 均不返回 `cw[].rl`。完整声纹矩阵见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。
+`enable_role_separation` 在 `/tuling/ast/v3` 中是协议字段：默认 true，省略等价于开启，并且优先级高于 `enrollment_enable/enrollment_id`。开启时 sentence 在角色变化时返回稳定 `cw[].rl=1..4`，同角色连续发言返回 0，切回旧角色再次返回原编号；Progressive 不返回 `rl`。同一 VAD/k2 段若有角色切换，会拆成多条具有独立 `segId/sn/bg/ed` 的 sentence。sidecar 失败、超时或断流后，本会话继续普通 ASR 并返回 `rl=0`；关闭角色分离时 sentence/Progressive 均不返回 `cw[].rl`。完整矩阵与降级语义见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。
 
 ASR 模型组合开关的语义矩阵（`enable_dual_asr_fusion=true` 但 `enable_secondary_asr=false` 会在 load 时自动降级为 false）：
 

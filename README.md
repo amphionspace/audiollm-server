@@ -3,9 +3,10 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 基于 [Amphion](https://github.com/open-mmlab/Amphion) (vLLM) 的实时语音多任务 Demo，集成 TEN VAD 语音端点检测。
-支持两类任务：
+支持以下任务：
 
 - 实时语音转写（双 ASR 模型 Amphion + Qwen 并行推理 + 归一化质量评估 + 风险感知融合，可选在每条转写旁附上情感/语气）
+- AST v3 实时角色分离（独立 NVIDIA Streaming Sortformer sidecar，最多 4 位会话内匿名说话人，故障时自动回退普通 ASR）
 - 情感识别（SER 8 分类 / SEC 自由文本描述，整段语音推理）
 
 前端两个 Demo 页面（ASR / 情感）共享同一套侧边栏导航与 EN / 中文 实时语言切换。
@@ -20,6 +21,7 @@
 - 可选：用于"长文本热词抽取"功能的外部 LLM（OpenAI 兼容接口），在 `config.yaml` 的 `upstreams.hotword_llm` 配置
 - 可选：Triton 热词召回服务（默认 `http://localhost:10001` / `rag_asr_retrieve`），用于按 `hotword_pool_id` 隔离的 10 万级热词池召回
 - 可选：RAG-ASR HTTP 管理服务（通过 `RAG_ASR_MANAGEMENT_BASE_URL` 配置），用于热词池管理和目标说话人 enrollment embedding 下沉
+- 可选：AST v3 Streaming Sortformer 角色分离 sidecar，独立安装方式见 [services/diarization/README.md](services/diarization/README.md)
 
 ## 快速开始
 

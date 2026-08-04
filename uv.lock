@@ -254,11 +254,11 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi" },
-    { name = "grpcio" },
-    { name = "grpcio-tools", marker = "extra == 'dev'" },
+    { name = "grpcio", specifier = ">=1.70.0" },
+    { name = "grpcio-tools", marker = "extra == 'dev'", specifier = ">=1.70.0" },
     { name = "httpx" },
     { name = "numpy" },
-    { name = "protobuf" },
+    { name = "protobuf", specifier = ">=5.29.0,<7" },
     { name = "pypinyin", specifier = ">=0.54.0" },
     { name = "python-multipart" },
     { name = "pyyaml" },

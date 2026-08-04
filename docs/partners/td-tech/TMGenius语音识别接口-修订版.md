@@ -121,18 +121,19 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 - `enable_role_separation=true` 时，服务端优先执行角色分离；即使同时传入 `enrollment_enable=true` 和 `enrollment_id`，也不启用声纹目标说话人过滤。
 - `enable_role_separation=false` 时，服务端不执行角色分离，`sentence` 和 `Progressive` 结果均不返回 `cw[].rl` 字段。
 - `cw[].rl` 仅在 `enable_role_separation=true` 且 `msgtype=sentence` 的最终结果中返回；`msgtype=Progressive` 的中间结果不返回该字段。
+- `sentence` 相对上一条发生角色变化时返回会话内稳定编号 `1..4`；同一角色连续发言返回 `0`；切回旧角色再次返回其原编号。sidecar 故障降级时返回 `0`。
 - `cw[].rl` 只表示角色分离编号，不表示声纹是否命中或启用。
 
 角色分离与声纹组合行为矩阵：
 
 | `enable_role_separation` | `enrollment_enable` | `enrollment_id` | 实际模式 | `cw[].rl` 行为 | 声纹状态 | 是否报错 |
 |---|---|---|---|---|---|---|
-| 省略 | 省略 / `false` | 省略 | 角色分离 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
-| 省略 | `true` | 有效 ID | 角色分离优先，忽略声纹 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
-| 省略 | `true` | 空 / 无效 ID | 角色分离优先，忽略声纹参数 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
-| `true` | 省略 / `false` | 省略 | 角色分离 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
-| `true` | `true` | 有效 ID | 角色分离优先，忽略声纹 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
-| `true` | `true` | 空 / 无效 ID | 角色分离优先，忽略声纹参数 | `sentence` 返回兼容占位；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| 省略 | 省略 / `false` | 省略 | 角色分离 | `sentence` 返回角色变化标记 `0..4`；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| 省略 | `true` | 有效 ID | 角色分离优先，忽略声纹 | `sentence` 返回角色变化标记 `0..4`；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| 省略 | `true` | 空 / 无效 ID | 角色分离优先，忽略声纹参数 | `sentence` 返回角色变化标记 `0..4`；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| `true` | 省略 / `false` | 省略 | 角色分离 | `sentence` 返回角色变化标记 `0..4`；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| `true` | `true` | 有效 ID | 角色分离优先，忽略声纹 | `sentence` 返回角色变化标记 `0..4`；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
+| `true` | `true` | 空 / 无效 ID | 角色分离优先，忽略声纹参数 | `sentence` 返回角色变化标记 `0..4`；`Progressive` 不返回 | `enrollment_applied=false` | 否 |
 | `false` | 省略 / `false` | 省略 / 任意 | 普通 ASR | 不返回 `cw[].rl` | `enrollment_applied=false` | 否 |
 | `false` | `true` | 有效 ID | 声纹目标说话人识别 | 不返回 `cw[].rl` | `enrollment_applied=true` | 否 |
 | `false` | `true` | 空 ID | 参数错误 | 无识别结果 | `enrollment_applied=false` | 是 |
@@ -217,7 +218,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 | `payload.result.enrollment_fallback_reason` | String | 可选；声纹未生效原因，如 `disabled` / `not_found` / `incompatible` / `upstream_unavailable` |
 | `payload.result.bg` / `ed` | Int | 句子开始 / 结束时间，单位 ms |
 | `payload.result.ws` | Array | 词语列表 |
-| `payload.result.ws[].cw[].rl` | Int | 角色编号；仅在 `enable_role_separation=true` 且 `msgtype=sentence` 时返回，`Progressive` 不返回；`enable_role_separation=false` 时不返回 |
+| `payload.result.ws[].cw[].rl` | Int | 角色变化标记：变化时为稳定编号 `1..4`，连续同角色或 sidecar 降级时为 `0`；仅 sentence 返回，`Progressive` 不返回；`enable_role_separation=false` 时不返回 |
 
 声纹生效状态说明：AST v3 使用 `enrollment_applied` 确认本次识别是否实际携带可用声纹材料；REST 上传响应使用 `enrollment_used`。`cw[].rl` 只用于角色分离编号，不表示声纹状态。角色分离优先级高于声纹注册，角色分离开启或省略时，`enrollment_applied=false`。
 
@@ -511,6 +512,7 @@ POST /api/asr/hotword-pool/reload?hotword_pool_id=default
 
 | 版本 | 日期 | 说明 |
 | ---- | ---- | ---- |
+| V0.5-review | 2026-08-04 | 接入 Streaming Sortformer 实时角色分离；明确 `rl=0..4`、speaker turn 重切与 sidecar fail-open 语义 |
 | V0.4-review | 2026-07-07 | 确认角色分离默认开启；`enable_role_separation` 优先级高于 `enrollment_enable`；关闭角色分离时不返回 `cw[].rl` |
 | V0.3-review | 2026-07-06 | 增加鼎桥 AST 3.4.4.1081 角色分离字段兼容口径：接受 `enable_role_separation`，`sentence` 返回 `cw[].rl=0`，`Progressive` 不返回 `cw[].rl` |
 | V0.2-review | 2026-07-04 | 补充声纹管理、热词池清空和重载、错误语义等评审建议 |

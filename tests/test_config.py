@@ -539,13 +539,48 @@ def test_recall_knobs_client_overridable() -> None:
     assert out.recall_top_k == 3
 
 
-def test_role_separation_switch_is_compatibility_only() -> None:
+def test_role_separation_defaults_on_and_remains_client_overridable() -> None:
     cfg = load_config()
-    assert cfg.enable_role_separation is False
+    assert cfg.enable_role_separation is True
+    assert cfg.diarization_enabled is False
     assert "enable_role_separation" in CLIENT_OVERRIDABLE_FIELDS
 
-    out = cfg.override_client(enable_role_separation=True)
-    assert out.enable_role_separation is True
+    out = cfg.override_client(enable_role_separation=False)
+    assert out.enable_role_separation is False
+
+
+def test_diarization_invariants_apply_to_direct_construction() -> None:
+    missing_target = Config(diarization_enabled=True, diarization_target="")
+    assert missing_target.diarization_enabled is False
+
+    invalid_timeouts = Config(
+        diarization_connect_timeout_sec=0,
+        diarization_result_timeout_sec=-1,
+    )
+    assert invalid_timeouts.diarization_connect_timeout_sec == 2.0
+    assert invalid_timeouts.diarization_result_timeout_sec == 2.0
+
+
+def test_diarization_infrastructure_is_not_client_overridable() -> None:
+    fields = {
+        "diarization_enabled",
+        "diarization_target",
+        "diarization_connect_timeout_sec",
+        "diarization_result_timeout_sec",
+    }
+    assert not fields & CLIENT_OVERRIDABLE_FIELDS
+
+    cfg = load_config()
+    out = cfg.override_client(
+        diarization_enabled=False,
+        diarization_target="attacker.invalid:1234",
+        diarization_connect_timeout_sec=99,
+        diarization_result_timeout_sec=99,
+    )
+    assert out.diarization_enabled == cfg.diarization_enabled
+    assert out.diarization_target == cfg.diarization_target
+    assert out.diarization_connect_timeout_sec == cfg.diarization_connect_timeout_sec
+    assert out.diarization_result_timeout_sec == cfg.diarization_result_timeout_sec
 
 
 def test_asr_segment_voice_gate_client_overridable() -> None:

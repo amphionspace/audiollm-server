@@ -17,6 +17,7 @@ from ..asr.itn import normalize_final_text
 from ..audio.utils import pcm_to_wav_base64
 from ..audio.vad import segment_voice_evidence, trim_long_silence_for_asr
 from ..config import SAMPLE_RATE
+from ..diarization.turns import split_segment_by_speaker
 from ..streaming.events import PartialSnapshot, SegmentReady
 from ..streaming.session import SessionContext
 from .base import BaseTaskEngine
@@ -43,6 +44,36 @@ class AsrTaskEngine(BaseTaskEngine):
     # ------------------------------------------------------------------
 
     async def handle_segment(
+        self, seg: SegmentReady, ctx: SessionContext
+    ) -> bool:
+        segments = [seg]
+        if (
+            ctx.cfg.enable_role_separation
+            and ctx.diarization is not None
+            and seg.start_ms is not None
+            and seg.end_ms is not None
+        ):
+            turns = await ctx.diarization.turns_for(seg.start_ms, seg.end_ms)
+            if turns:
+                segments = split_segment_by_speaker(
+                    seg,
+                    turns,
+                    min_duration_ms=ctx.cfg.min_segment_duration_ms,
+                )
+                logger.info(
+                    "Diarization split: session_id=%s segment_id=%s turns=%d outputs=%d",
+                    ctx.session_id,
+                    seg.id or "n/a",
+                    len(turns),
+                    len(segments),
+                )
+
+        sent_any = False
+        for attributed in segments:
+            sent_any = await self._handle_single_segment(attributed, ctx) or sent_any
+        return sent_any
+
+    async def _handle_single_segment(
         self, seg: SegmentReady, ctx: SessionContext
     ) -> bool:
         cfg = ctx.cfg
@@ -230,6 +261,8 @@ class AsrTaskEngine(BaseTaskEngine):
                 payload["bg_ms"] = seg.start_ms
             if seg.end_ms is not None:
                 payload["ed_ms"] = seg.end_ms
+        if seg.speaker_index is not None:
+            payload["speaker_index"] = seg.speaker_index
         return await ctx.send_json(payload)
 
     # ------------------------------------------------------------------
@@ -413,6 +446,7 @@ class AsrTaskEngine(BaseTaskEngine):
                 "bg_ms": seg.start_ms,
                 "ed_ms": seg.end_ms,
                 "is_stop_flush": seg.is_stop_flush,
+                "speaker_index": seg.speaker_index,
             },
             "asr": {
                 "primary_text": self._result_text(primary_result),

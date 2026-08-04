@@ -201,12 +201,14 @@ class AstV3Protocol:
     end-of-session. ``ready`` and other native-only messages are suppressed.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, default_enable_role_separation: bool = True) -> None:
         self.sid = _gen_sid()
         self.trace_id = ""
         self._inbound_started = False
         self._terminated = False
-        self._enable_role_separation = True
+        self._default_enable_role_separation = bool(default_enable_role_separation)
+        self._enable_role_separation = self._default_enable_role_separation
+        self._last_speaker_index: int | None = None
         self._default_enrollment_applied = False
         self._default_enrollment_fallback_reason = "disabled"
         # Result counters. segId identifies a speech segment; sn is the result
@@ -340,7 +342,7 @@ class AstV3Protocol:
         """
         cfg = parameter.get("asr_config")
         if not isinstance(cfg, dict) or not cfg:
-            self._enable_role_separation = True
+            self._enable_role_separation = self._default_enable_role_separation
             self._default_enrollment_applied = False
             self._default_enrollment_fallback_reason = "disabled"
             return "", "", "", {}, ""
@@ -348,10 +350,16 @@ class AstV3Protocol:
         language = str(overrides.pop("language", "") or "").strip()
         hotword_pool_id = str(overrides.pop("hotword_pool_id", "") or "").strip()
         enrollment_id = str(overrides.pop("enrollment_id", "") or "").strip()
+        role_separation_raw = overrides.pop("enable_role_separation", None)
         role_separation = _coerce_bool(
-            overrides.pop("enable_role_separation", None),
-            default=True,
+            role_separation_raw,
+            default=self._default_enable_role_separation,
         )
+        if role_separation_raw is not None:
+            # Unlike enrollment routing, role separation is a real Config
+            # field. Forward the normalized bool so the session can decide
+            # whether to open the optional diarization sidecar.
+            overrides["enable_role_separation"] = role_separation
         enrollment_enable = _coerce_bool(
             overrides.pop("enrollment_enable", None),
             default=False,
@@ -531,7 +539,19 @@ class AstV3Protocol:
             result["enrollment_fallback_reason"] = reason
         cw = result["ws"][0]["cw"][0]
         if self._enable_role_separation:
-            cw["rl"] = 0
+            raw_speaker = payload.get("speaker_index")
+            speaker_index = (
+                int(raw_speaker)
+                if isinstance(raw_speaker, int) and 0 <= raw_speaker < 4
+                else None
+            )
+            if speaker_index is None:
+                cw["rl"] = 0
+            elif speaker_index == self._last_speaker_index:
+                cw["rl"] = 0
+            else:
+                cw["rl"] = speaker_index + 1
+                self._last_speaker_index = speaker_index
         return self._envelope(result, status=1)
 
     def _progressive_frame(self, text: str, payload: dict) -> dict:

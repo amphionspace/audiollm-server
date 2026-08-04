@@ -1,0 +1,25 @@
+[Unit]
+Description=AudioLLM Streaming Sortformer diarization sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/workspace/audiollm-server
+Environment=PYTHONUNBUFFERED=1
+Environment=HF_HUB_OFFLINE=1
+Environment=DIARIZATION_DEVICE=cuda
+Environment=DIARIZATION_MODEL_PATH=/home/ubuntu/models/diar_streaming_sortformer_4spk-v2.1.nemo
+ExecStart=/home/ubuntu/workspace/audiollm-server/services/diarization/.venv/bin/python -m services.diarization.server --host 127.0.0.1 --port 50052
+Restart=on-failure
+RestartPreventExitStatus=78
+RestartSec=10
+TimeoutStartSec=300
+TimeoutStopSec=30
+KillSignal=SIGINT
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

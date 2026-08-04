@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package diarization.v1;
+
+service DiarizationService {
+  rpc Diarize(stream DiarizationRequest) returns (stream DiarizationEvent);
+  rpc Healthz(HealthzRequest) returns (HealthzResponse);
+}
+
+message DiarizationRequest {
+  oneof payload {
+    SessionConfig session_config = 1;
+    AudioChunk audio_chunk = 2;
+    EndOfStream end_of_stream = 3;
+  }
+}
+
+message SessionConfig {
+  string session_id = 1;
+  string trace_id = 2;
+  int32 sample_rate = 3;
+  int32 channels = 4;
+  int32 max_speakers = 5;
+}
+
+message AudioChunk {
+  bytes pcm_s16le = 1;
+}
+
+message EndOfStream {}
+
+message DiarizationEvent {
+  oneof payload {
+    SessionStarted session_started = 1;
+    TurnsFinalized turns_finalized = 2;
+    SessionEnded session_ended = 3;
+    DiarizationError error = 4;
+  }
+}
+
+message SessionStarted {}
+
+message SpeakerTurn {
+  int64 start_ms = 1;
+  int64 end_ms = 2;
+  int32 speaker_index = 3;
+}
+
+message TurnsFinalized {
+  int64 finalized_through_ms = 1;
+  repeated SpeakerTurn turns = 2;
+}
+
+message SessionEnded {}
+
+message DiarizationError {
+  string code = 1;
+  string message = 2;
+}
+
+message HealthzRequest {}
+
+message HealthzResponse {
+  enum Status {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+  }
+  Status status = 1;
+  int64 active_sessions = 2;
+  string model_name = 3;
+}

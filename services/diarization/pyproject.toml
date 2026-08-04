@@ -1,0 +1,24 @@
+[project]
+name = "audiollm-diarization-sidecar"
+version = "0.1.0"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "grpcio>=1.70.0",
+    "huggingface-hub>=0.30",
+    "nemo_toolkit[asr]>=2.6,<3",
+    # resampy's open lower bound otherwise lets uv select numba 0.53, whose
+    # llvmlite cannot install on the Python 3.10 used by this deployment.
+    "numba>=0.61.2",
+    "numpy>=1.26",
+    # The benchmark imports this directly for continuous-time DER. Declaring
+    # it here prevents a future NeMo dependency change from silently breaking
+    # the release-quality evaluator.
+    "pyannote.metrics>=4,<5",
+    "protobuf>=5.29.5,<5.30",
+    # Keep NeMo off an unbounded newest torch/CUDA runtime (currently CUDA 13).
+    "torch>=2.6,<2.8",
+]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true

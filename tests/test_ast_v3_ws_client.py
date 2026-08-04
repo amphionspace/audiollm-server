@@ -172,14 +172,19 @@ async def run_client(url: str, audio_file: str, *, hotwords: str, biz_id: str,
 
 def _format_result(result: dict) -> str:
     msgtype = result.get("msgtype", "?")
-    words = "".join(
-        cw.get("w", "")
+    candidates = [
+        cw
         for item in (result.get("ws") or [])
         for cw in (item.get("cw") or [])
+    ]
+    words = "".join(
+        cw.get("w", "") for cw in candidates
     )
     if msgtype == "sentence":
+        role = candidates[0].get("rl") if candidates else None
         return (f"FINAL   segId={result.get('segId')} sn={result.get('sn')} "
-                f"bg={result.get('bg')}ms ed={result.get('ed')}ms: {words}")
+                f"bg={result.get('bg')}ms ed={result.get('ed')}ms "
+                f"rl={role}: {words}")
     return f"{msgtype}: {words}"
 
 

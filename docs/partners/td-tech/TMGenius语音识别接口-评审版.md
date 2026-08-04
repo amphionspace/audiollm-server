@@ -557,7 +557,7 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 }
 ```
 
-> `enrollment_id` 失效不触发 error，服务端回退普通 ASR，并在 AST v3 结果中返回 `enrollment_applied=false` 与可用时的 `enrollment_fallback_reason`。`rl` 仅为角色分离兼容占位，不能用于判断声纹是否生效；CAgent 可结合声纹状态查询接口判断是否需要重新注册。
+> `enrollment_id` 失效不触发 error，服务端回退普通 ASR，并在 AST v3 结果中返回 `enrollment_applied=false` 与可用时的 `enrollment_fallback_reason`。`rl` 是角色变化标记：变化时返回会话内稳定编号 `1..4`，连续同角色或 sidecar 降级时返回 `0`；它不能用于判断声纹是否生效。CAgent 可结合声纹状态查询接口判断是否需要重新注册。
 
 ---
 

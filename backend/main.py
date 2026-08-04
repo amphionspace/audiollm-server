@@ -61,6 +61,10 @@ from .audio.utils import (
     wav_bytes_to_pcm_16k_mono,
 )
 from .config import SAMPLE_RATE, Upstream, load_config, load_parsed, load_transcribe_config
+from .diarization.client import (
+    close_diarization_channels,
+    validate_diarization_server,
+)
 from .emotion.client import query_emotion_model
 from .emotion.jobs import JobQueueFullError, get_emotion_job_store
 from .emotion.service import EmotionDecodeError, decode_wav_capped
@@ -88,6 +92,7 @@ READINESS_TIMEOUT_SEC = 2.0
 async def lifespan(app: FastAPI):
     yield
     await close_k2_channels()
+    await close_diarization_channels()
     await close_client()
 
 
@@ -228,6 +233,43 @@ async def _check_k2_ready(cfg) -> dict[str, Any]:
         )
 
 
+async def _check_diarization_ready(cfg) -> dict[str, Any]:
+    if not cfg.diarization_enabled:
+        check = _health_check(
+            name="diarization",
+            kind="grpc",
+            target=cfg.diarization_target,
+            status="skipped",
+            detail="diarization_enabled is false",
+        )
+        check["required"] = False
+        return check
+    try:
+        probe_cfg = cfg.override(
+            diarization_connect_timeout_sec=min(
+                float(cfg.diarization_connect_timeout_sec),
+                READINESS_TIMEOUT_SEC,
+            )
+        )
+        await validate_diarization_server(probe_cfg)
+        check = _health_check(
+            name="diarization",
+            kind="grpc",
+            target=cfg.diarization_target,
+            status="ok",
+        )
+    except Exception as exc:  # noqa: BLE001 - optional health payload carries cause
+        check = _health_check(
+            name="diarization",
+            kind="grpc",
+            target=cfg.diarization_target,
+            status="error",
+            detail=str(exc),
+        )
+    check["required"] = False
+    return check
+
+
 def _collect_openai_upstreams(parsed) -> list[tuple[str, Upstream]]:
     service_upstreams = set(parsed.services.values())
     pairs: list[tuple[str, Upstream]] = []
@@ -290,9 +332,14 @@ async def readyz():
         check_tasks.append(_check_rag_management(parsed.upstreams[management_name]))
 
     check_tasks.append(_check_k2_ready(parsed.default_config))
+    check_tasks.append(_check_diarization_ready(parsed.default_config))
     checks = await asyncio.gather(*check_tasks)
 
-    ready = all(check["status"] in {"ok", "skipped"} for check in checks)
+    ready = all(
+        check["status"] in {"ok", "skipped"}
+        for check in checks
+        if check.get("required", True)
+    )
     payload = {"status": "ok" if ready else "error", "checks": checks}
     if ready:
         return payload
@@ -350,8 +397,11 @@ async def tuling_ast_v3_ws(websocket: WebSocket):
         websocket,
         stream=K2SegmentedStream() if cfg.k2_enabled else VadSegmentedStream(),
         engine=AsrTaskEngine(emit_timing=True),
-        protocol=AstV3Protocol(),
+        protocol=AstV3Protocol(
+            default_enable_role_separation=cfg.enable_role_separation
+        ),
         config_overrides=astv3_overrides,
+        allow_diarization=True,
     )
     try:
         await session.run()
