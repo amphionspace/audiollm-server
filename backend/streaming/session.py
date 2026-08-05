@@ -27,6 +27,7 @@ from ..asr.enrollment import get_enrollment_store
 from ..asr.hotword import query_text_hotwords, sanitize_hotwords
 from ..config import Config, load_config
 from ..debug_dump import SessionDumper, new_session_id
+from ..diarization.client import DiarizationSession, DiarizationUnavailableError
 from ..recall_user import HotwordPoolIdError, normalize_hotword_pool_id
 from .audio_stream import AudioStream, VadSegmentedStream
 from .events import (
@@ -99,6 +100,9 @@ class SessionContext:
     enrollment_id: str | None = None
     enrollment_b64: str | None = None
     enrollment_fallback_reason: str = ""
+    # Mutable per-session sidecar timeline. Snapshots intentionally retain the
+    # same object so queued final segments can wait for newly finalized turns.
+    diarization: DiarizationSession | None = None
     # Per-connection debug context. ``session_id`` is unique per WebSocket;
     # ``dumper`` is non-None only when ``debug_dump_enabled`` so engines can
     # cheaply skip the dump path otherwise.
@@ -125,6 +129,7 @@ class StreamingSession:
         language: str = "",
         protocol: WireProtocol | None = None,
         config_overrides: dict[str, Any] | None = None,
+        allow_diarization: bool = False,
     ) -> None:
         self.ws = websocket
         self.stream = stream
@@ -134,6 +139,7 @@ class StreamingSession:
         # historical 1:1 framing so existing endpoints are byte-for-byte
         # unchanged when no protocol is supplied.
         self.protocol: WireProtocol = protocol or NativeProtocol()
+        self._allow_diarization = allow_diarization
 
         # Endpoint-level forced overrides: highest precedence. Applied here and
         # again right after the client's start.config override (see
@@ -189,6 +195,7 @@ class StreamingSession:
         self._sent_any_response = False
         self._ws_closed = False
         self._suppress_terminal = False
+        self._diarization: DiarizationSession | None = None
 
     # ------------------------------------------------------------------
     # Public lifecycle
@@ -241,6 +248,8 @@ class StreamingSession:
         aclose = getattr(self.stream, "aclose", None)
         if callable(aclose):
             await aclose()
+        if self._diarization is not None:
+            await self._diarization.aclose()
         logger.info("StreamingSession[%s] ended", self.engine.name)
 
     async def _start_async_stream_or_fallback(self) -> bool:
@@ -316,6 +325,7 @@ class StreamingSession:
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected (%s)", self.engine.name)
         finally:
+            await self._finish_diarization()
             # Always flush remaining audio so engine sees the tail.
             for ev in await self._flush_stream(force=True):
                 await self._dispatch_stream_event(ev)
@@ -429,6 +439,8 @@ class StreamingSession:
 
         if "enrollment_id" in ctrl:
             self._apply_enrollment(ctrl.get("enrollment_id"))
+
+        await self._start_diarization_if_requested()
 
         self._started = True
         fmt = ctrl.get("format", "pcm_s16le")
@@ -570,6 +582,7 @@ class StreamingSession:
             return
         self._stopped = True
         logger.info("Stop received (%s), flushing", self.engine.name)
+        await self._finish_diarization()
         for ev in await self._flush_stream(force=True):
             await self._dispatch_stream_event(ev)
 
@@ -578,6 +591,8 @@ class StreamingSession:
     # ------------------------------------------------------------------
 
     async def _handle_pcm(self, pcm_bytes: bytes) -> None:
+        if self._diarization is not None:
+            await self._diarization.feed(pcm_bytes)
         result = self.stream.feed(pcm_bytes)
         if hasattr(result, "__await__"):
             result = await result
@@ -693,6 +708,37 @@ class StreamingSession:
         if hasattr(result, "__await__"):
             result = await result
         return list(result or [])
+
+    async def _start_diarization_if_requested(self) -> None:
+        if not (
+            self._allow_diarization
+            and self.cfg.enable_role_separation
+            and self.cfg.diarization_enabled
+        ):
+            return
+        client = DiarizationSession(
+            self.cfg,
+            session_id=self.session_id,
+            trace_id=self.ctx.gateway_trace_id,
+        )
+        try:
+            await client.start()
+        except DiarizationUnavailableError as exc:
+            logger.warning(
+                "Diarization unavailable; AST session will use rl=0: "
+                "session_id=%s trace_id=%s reason=%s",
+                self.session_id,
+                self.ctx.gateway_trace_id or "n/a",
+                exc,
+            )
+            await client.aclose()
+            return
+        self._diarization = client
+        self.ctx.diarization = client
+
+    async def _finish_diarization(self) -> None:
+        if self._diarization is not None:
+            await self._diarization.finish()
 
     async def _stream_event_loop(self) -> None:
         events = getattr(self.stream, "events", None)

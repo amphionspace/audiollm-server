@@ -9,7 +9,7 @@
 - 已完成：`audiollm-demo` 对外代理 `GET /api/asr/enrollment/{enrollment_id}`，只返回 `{enrollment_id, available, reason}`，不暴露音频或 embedding。
 - 已完成：AST v3 响应返回 `enrollment_applied`，并在可判定时返回 `enrollment_fallback_reason`。
 - 已完成：`audiollm-demo` 实现 `parameter.asr_config.enrollment_enable` 声纹显式启用开关。
-- 已完成：`audiollm-demo` 实现新的角色分离契约：`enable_role_separation` 默认 `true`、角色分离优先于声纹、`enable_role_separation=false` 时不返回 `cw[].rl`。
+- 已完成：`audiollm-demo` 接入独立 Streaming Sortformer sidecar：`enable_role_separation` 默认 `true`、角色分离优先于声纹、speaker turn 重切后 ASR、角色变化返回 `rl=1..4`、同角色连续或故障降级返回 `0`；`enable_role_separation=false` 时不返回 `cw[].rl`。
 
 ## 1. AST v3 声纹参数改造
 

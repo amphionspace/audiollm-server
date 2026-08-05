@@ -1045,6 +1045,94 @@ async def test_asr_final_preserves_segment_id(monkeypatch):
     assert isinstance(sent[0]["audio_b64"], str) and sent[0]["audio_b64"]
 
 
+@pytest.mark.parametrize("segment_id", ["vad-7", "k2-7"])
+@pytest.mark.asyncio
+async def test_asr_diarization_splits_vad_and_k2_segments_in_order(
+    monkeypatch, segment_id
+):
+    from backend.diarization.turns import SpeakerTurn
+
+    transcriptions = iter(["甲说", "乙说"])
+
+    async def fake_query_audio_model(*_args, **_kwargs):
+        return {
+            "transcription": next(transcriptions),
+            "detected_language": "zh",
+        }
+
+    monkeypatch.setattr(asr_task_mod, "query_audio_model", fake_query_audio_model)
+
+    class FakeDiarizer:
+        async def turns_for(self, start_ms, end_ms):
+            assert (start_ms, end_ms) == (0.0, 2000.0)
+            return [
+                SpeakerTurn(0, 900, 0),
+                SpeakerTurn(900, 2000, 1),
+            ]
+
+    sent: list[dict] = []
+
+    async def _send_json(payload):
+        sent.append(payload)
+        return True
+
+    cfg = load_config().override(
+        enable_role_separation=True,
+        enable_primary_asr=True,
+        enable_secondary_asr=False,
+        enable_dual_asr_fusion=False,
+        asr_segment_voice_gate_enabled=False,
+        min_segment_duration_ms=300,
+    )
+    ctx = SessionContext(
+        cfg=cfg,
+        language="zh",
+        src_lang="Chinese",
+        diarization=FakeDiarizer(),  # type: ignore[arg-type]
+        send_json=_send_json,
+    )
+
+    ok = await AsrTaskEngine(emit_timing=True).handle_segment(
+        SegmentReady(
+            pcm=np.ones(2 * SAMPLE_RATE, dtype=np.float32) * 0.05,
+            id=segment_id,
+            start_ms=0.0,
+            end_ms=2000.0,
+            is_stop_flush=True,
+        ),
+        ctx,
+    )
+
+    assert ok is True
+    assert [message["text"] for message in sent] == ["甲说", "乙说"]
+    assert [message["speaker_index"] for message in sent] == [0, 1]
+    assert [message["id"] for message in sent] == [
+        f"{segment_id}:spk:0",
+        f"{segment_id}:spk:1",
+    ]
+    assert [(message["bg_ms"], message["ed_ms"]) for message in sent] == [
+        (0, 900),
+        (900, 2000),
+    ]
+    assert [message["duration_sec"] for message in sent] == pytest.approx([0.9, 1.1])
+
+    protocol = AstV3Protocol()
+    protocol.decode_inbound(_ast_frame(header={"status": 0}))
+    frames = [protocol.encode_outbound(message) for message in sent]
+    results = [frame["payload"]["result"] for frame in frames]
+    assert [result["segId"] for result in results] == [0, 1]
+    assert [result["sn"] for result in results] == [1, 2]
+    assert [(result["bg"], result["ed"]) for result in results] == [
+        (0, 900),
+        (900, 2000),
+    ]
+    assert [result["ws"][0]["cw"][0]["rl"] for result in results] == [1, 2]
+    terminal = protocol.encode_terminal()
+    assert terminal["header"]["status"] == 2
+    assert terminal["payload"]["result"]["segId"] == 2
+    assert terminal["payload"]["result"]["sn"] == 3
+
+
 @pytest.mark.asyncio
 async def test_asr_final_removes_internal_silence_before_llm(monkeypatch):
     monkeypatch.setattr(
@@ -1339,6 +1427,7 @@ def test_ast_v3_asr_config_injects_config_and_language():
     assert ctrl["hotword_pool_id"] == "tenant-a"
     assert ctrl["enrollment_id"] == "enr-abc"
     assert ctrl["config"] == {
+        "enable_role_separation": False,
         "vad_threshold": 0.3,
         "enable_pseudo_stream": False,
     }
@@ -1584,6 +1673,25 @@ def test_ast_v3_partial_progressive_shares_seg_id():
     assert r["enrollment_fallback_reason"] == "disabled"
     # sentence-only fields are omitted for Progressive
     assert "sn" not in r and "vad" not in r and "bg" not in r
+
+
+def test_ast_v3_role_sequence_uses_stable_one_based_indices():
+    p = AstV3Protocol()
+    p.decode_inbound(_ast_frame(header={"status": 0}))
+
+    roles = []
+    for speaker_index in [0, 0, 1, 1, 0]:
+        frame = p.encode_outbound(
+            {
+                "type": "final",
+                "text": "一句话",
+                "language": "zh",
+                "speaker_index": speaker_index,
+            }
+        )
+        roles.append(frame["payload"]["result"]["ws"][0]["cw"][0]["rl"])
+
+    assert roles == [1, 0, 2, 0, 1]
 
 
 def test_ast_v3_role_separation_false_omits_sentence_rl():

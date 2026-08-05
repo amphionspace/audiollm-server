@@ -14,10 +14,10 @@ classifiers = [
 ]
 dependencies = [
     "fastapi",
-    "grpcio",
+    "grpcio>=1.70.0",
     "httpx",
     "numpy",
-    "protobuf",
+    "protobuf>=5.29.0,<7",
     "python-multipart",
     "pypinyin>=0.54.0",
     "pyyaml",
@@ -29,7 +29,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["grpcio-tools", "ruff"]
+dev = [
+    "grpcio-tools>=1.70.0",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff",
+]
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -46,6 +51,7 @@ line-length = 100
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["manual_tests"]
+markers = ["gpu: requires the real diarization model and a CUDA GPU"]
 
 [tool.setuptools.packages.find]
 include = ["backend*"]
@@ -56,6 +62,8 @@ select = ["E", "F", "I", "W"]
 [tool.ruff.lint.per-file-ignores]
 "backend/asr/k2/asr_pb2.py" = ["E501", "I001"]
 "backend/asr/k2/asr_pb2_grpc.py" = ["E501", "F401", "I001"]
+"backend/diarization/diarization_pb2.py" = ["E501", "I001"]
+"backend/diarization/diarization_pb2_grpc.py" = ["E501", "F401", "F541", "I001"]
 "backend/asr/prompt.py" = ["E501"]
 "tests/*" = ["E501"]
 # Runnable example scripts favor readable argparse help text over hard wrapping.

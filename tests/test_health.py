@@ -51,10 +51,20 @@ def test_readyz_returns_ok_when_configured_upstreams_are_ready(monkeypatch):
             "status": "ok",
         }
 
+    async def fake_diarization(cfg):
+        return {
+            "name": "diarization",
+            "kind": "grpc",
+            "target": cfg.diarization_target,
+            "status": "ok",
+            "required": False,
+        }
+
     monkeypatch.setattr(main_mod, "_check_openai_upstream", fake_openai)
     monkeypatch.setattr(main_mod, "_check_triton_recall", fake_triton)
     monkeypatch.setattr(main_mod, "_check_rag_management", fake_management)
     monkeypatch.setattr(main_mod, "_check_k2_ready", fake_k2)
+    monkeypatch.setattr(main_mod, "_check_diarization_ready", fake_diarization)
 
     client = TestClient(app)
     resp = client.get("/readyz")
@@ -70,6 +80,7 @@ def test_readyz_returns_ok_when_configured_upstreams_are_ready(monkeypatch):
         "rag_asr_triton",
         "rag_asr_management",
         "k2",
+        "diarization",
     }
 
 
@@ -90,6 +101,11 @@ def test_readyz_returns_503_when_a_configured_upstream_fails(monkeypatch):
     async def fake_ok(name, kind):
         return {"name": name, "kind": kind, "target": "", "status": "ok"}
 
+    async def fake_diarization(_cfg):
+        check = await fake_ok("diarization", "grpc")
+        check["required"] = False
+        return check
+
     monkeypatch.setattr(main_mod, "_check_openai_upstream", fake_openai)
     monkeypatch.setattr(
         main_mod,
@@ -102,6 +118,11 @@ def test_readyz_returns_503_when_a_configured_upstream_fails(monkeypatch):
         lambda upstream: fake_ok("rag_asr_management", "http"),
     )
     monkeypatch.setattr(main_mod, "_check_k2_ready", lambda cfg: fake_ok("k2", "grpc"))
+    monkeypatch.setattr(
+        main_mod,
+        "_check_diarization_ready",
+        fake_diarization,
+    )
 
     client = TestClient(app)
     resp = client.get("/readyz")
@@ -113,6 +134,53 @@ def test_readyz_returns_503_when_a_configured_upstream_fails(monkeypatch):
         check["name"] == "rest.primary:amphion_asr"
         and check["status"] == "error"
         and check["detail"] == "connection refused"
+        for check in body["checks"]
+    )
+
+
+def test_readyz_reports_optional_diarization_failure_without_503(monkeypatch):
+    async def fake_ok(name, kind):
+        return {"name": name, "kind": kind, "target": "", "status": "ok"}
+
+    async def fake_diarization(_cfg):
+        return {
+            "name": "diarization",
+            "kind": "grpc",
+            "target": "localhost:50052",
+            "status": "error",
+            "detail": "connection refused",
+            "required": False,
+        }
+
+    monkeypatch.setattr(
+        main_mod,
+        "_check_openai_upstream",
+        lambda name, _upstream: fake_ok(name, "openai_compatible"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_check_triton_recall",
+        lambda _upstream: fake_ok("rag_asr_triton", "triton"),
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "_check_rag_management",
+        lambda _upstream: fake_ok("rag_asr_management", "http"),
+    )
+    monkeypatch.setattr(
+        main_mod, "_check_k2_ready", lambda _cfg: fake_ok("k2", "grpc")
+    )
+    monkeypatch.setattr(main_mod, "_check_diarization_ready", fake_diarization)
+
+    resp = TestClient(app).get("/readyz")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert any(
+        check["name"] == "diarization"
+        and check["status"] == "error"
+        and check["required"] is False
         for check in body["checks"]
     )
 

@@ -10,6 +10,14 @@
 | [TMGenius 接口对接 TODO](tmgenius-interface-todo.md) | 对接口径、待确认项和实现 TODO |
 | [实时转写 AST v3 WebSocket API](../../protocols/tuling-ast-v3-protocol.md) | 本服务当前 `/tuling/ast/v3` 实现文档 |
 
-当前角色分离对接口径：本版本暂不做真实角色分离，但接受 `parameter.asr_config.enable_role_separation` 字段；该字段默认 `true`，省略等价于开启，并且优先级高于声纹。开启时 `sentence` 结果中的 `cw[].rl` 固定返回整数 `0` 作为兼容占位，`Progressive` 不返回 `cw[].rl`；关闭时 `sentence` 和 `Progressive` 均不返回 `cw[].rl`。
+## AST v3 角色/声纹行为矩阵
 
-声纹对外契约口径：声纹仅在 `enable_role_separation=false && enrollment_enable=true && enrollment_id` 非空时启用，`enrollment_enable` 默认 `false`；AST v3 响应返回 `enrollment_applied` 表示本次是否实际携带可用声纹材料，REST 上传响应使用 `enrollment_used`；`GET /api/asr/enrollment/{enrollment_id}` 用于查询声纹 ID 当前是否可用。内部实现状态统一维护在 TODO 文档。
+| `enable_role_separation` | 声纹设置 | 实际行为 | `sentence` 的 `cw[].rl` |
+|---|---|---|---|
+| `true` / 省略 | 任意 | 忽略声纹参数，执行最多 4 人的会话内角色分离 | 正常为首次/切换 `1..4`、连续同角色 `0`；sidecar 降级后为 `0` |
+| `false` | `enrollment_enable=false` / 省略 | 普通 ASR；即使传入 `enrollment_id` 也忽略 | 不返回 |
+| `false` | `enrollment_enable=true` 且 ID 非空、可用 | TS-ASR | 不返回 |
+| `false` | `enrollment_enable=true` 且 ID 非空、不可用 | 回退普通 ASR，`enrollment_applied=false` 并返回原因 | 不返回 |
+| `false` | `enrollment_enable=true` 且 ID 为空/省略 | 返回参数错误并结束会话 | 无识别结果 |
+
+`Progressive` 始终不返回 `cw[].rl`。AST v3 响应中的 `enrollment_applied` 表示本条结果是否实际携带可用声纹材料；REST 上传响应使用 `enrollment_used`。`GET /api/asr/enrollment/{enrollment_id}` 可查询声纹 ID 当前是否可用。完整契约以 [实时转写 AST v3 WebSocket API](../../protocols/tuling-ast-v3-protocol.md#角色分离与声纹行为矩阵) 为准，内部实现状态统一维护在 TODO 文档。

@@ -28,6 +28,9 @@ class SegmentReady:
     id: str | None = None
     start_ms: float | None = None
     end_ms: float | None = None
+    # Session-local arrival-order speaker index (0..3). ``None`` means the
+    # diarization sidecar was disabled, unavailable, or had no finalized turn.
+    speaker_index: int | None = None
 
 
 @dataclass

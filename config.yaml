@@ -91,7 +91,7 @@ defaults:
     enable_primary_asr: true
     enable_secondary_asr: true            # 端点未绑 secondary 上游时, 投影强制 false
     enable_dual_asr_fusion: false         # final 是否双模型融合(需 secondary 在线)
-    enable_role_separation: false         # AST v3 兼容开关; 当前不做角色分离, sentence cw.rl 固定 0
+    enable_role_separation: true          # AST v3 客户端省略时默认开启；受下方 sidecar 资源门控制
     primary_asr_timeout: 4.0              # primary 软降级上限(非 HTTP 超时)
     debug_show_dual_asr: false            # 出站附带双 ASR 调试字段(当前主前端不展示)
     asr_segment_voice_gate_enabled: true   # LLM ASR final 前整段人声证据门控，抑制非人声噪音幻觉
@@ -100,6 +100,11 @@ defaults:
     asr_segment_voice_gate_min_ms: 120     # 至少约 120ms 累计人声证据，保留短词/轻声
     asr_segment_voice_gate_min_rms: 0.001  # 近数字静音直接丢弃
     asr_silence_removal_threshold_sec: 0.0 # final LLM ASR 前删除 >= 该秒数的内部连续静音；0 表示关闭
+  diarization:
+    diarization_enabled: true             # 生产启用；sidecar 故障时 AST v3 会话 fail-open 为普通 ASR
+    diarization_target: localhost:50052
+    diarization_connect_timeout_sec: 2.0
+    diarization_result_timeout_sec: 2.0   # 单段最多等待角色结果，超时后本会话永久降级
   fusion:
     fusion_similarity_threshold: 0.85
     fusion_min_primary_score: 0.55

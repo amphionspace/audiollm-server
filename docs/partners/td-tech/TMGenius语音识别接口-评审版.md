@@ -1,5 +1,7 @@
 # TMGenius 语音识别接口
 
+> 本文档为历史评审材料，不再作为当前实现契约。角色分离、声纹与 sidecar 降级的完整行为矩阵以 [TMGenius 语音识别接口（修订版）](TMGenius语音识别接口-修订版.md#4-角色分离与声纹优先级) 和 [AST v3 WebSocket 协议](../../protocols/tuling-ast-v3-protocol.md#角色分离与声纹行为矩阵) 为准。
+
 | 属性     | 值                                                                                                                                                                               |
 | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 文档版本 | V0.2                                                                                                                                                                             |
@@ -557,7 +559,7 @@ POST /api/asr/hotword-pool/clear?hotword_pool_id=default
 }
 ```
 
-> `enrollment_id` 失效不触发 error，服务端回退普通 ASR，并在 AST v3 结果中返回 `enrollment_applied=false` 与可用时的 `enrollment_fallback_reason`。`rl` 仅为角色分离兼容占位，不能用于判断声纹是否生效；CAgent 可结合声纹状态查询接口判断是否需要重新注册。
+> `enrollment_id` 失效不触发 error，服务端回退普通 ASR，并在 AST v3 结果中返回 `enrollment_applied=false` 与可用时的 `enrollment_fallback_reason`。`rl` 是角色变化标记：变化时返回会话内稳定编号 `1..4`，连续同角色或 sidecar 降级时返回 `0`；它不能用于判断声纹是否生效。CAgent 可结合声纹状态查询接口判断是否需要重新注册。
 
 ---
 

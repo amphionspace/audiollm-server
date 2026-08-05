@@ -32,3 +32,5 @@
 | ---- | ---- |
 | [转写任务压测报告](benchmarks/transcription-jobs-benchmark.md) | 离线转写任务压测数据 |
 | [AST v3 多并发性能与极限压测报告](benchmarks/tuling-ast-v3-benchmark.md) | AST v3 WebSocket 压测数据 |
+| [Streaming Sortformer 同卡生产压测报告](benchmarks/speaker-diarization-production-load.md) | 单 H20 上 AST v3 与角色分离 sidecar 的 A/B 性能、过载降级和生产水位 |
+| [Streaming Sortformer 与讯飞角色分离对比](benchmarks/speaker-diarization-iflytek-comparison.md) | AliMeeting 3×60 秒同音频盲分冒烟对比、评分口径与适用边界 |

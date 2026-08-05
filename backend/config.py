@@ -116,9 +116,19 @@ class Config:
     #          partial noise gate functional. Inconsistent combinations
     #          (fusion=True, secondary=False) are downgraded at load time.
     enable_dual_asr_fusion: bool = True
-    # AST v3 compatibility switch accepted from clients. Current service does
-    # not perform role separation; sentence cw.rl remains fixed at 0.
-    enable_role_separation: bool = False
+    # AST v3 client intent. Omitted by the client means enabled; the separate
+    # process-wide ``diarization_enabled`` gate controls whether model resources
+    # are actually used. Keeping the two scopes distinct avoids one switch
+    # silently controlling both public behavior and infrastructure lifecycle.
+    enable_role_separation: bool = True
+
+    # ---- Streaming speaker diarization sidecar ---------------------------
+    # Optional fail-open gRPC service used only by /tuling/ast/v3. These are
+    # infrastructure settings and therefore never client-overridable.
+    diarization_enabled: bool = False
+    diarization_target: str = ""
+    diarization_connect_timeout_sec: float = 2.0
+    diarization_result_timeout_sec: float = 2.0
 
     # ---- ASR: per-endpoint primary override (/tuling/ast/v3) -------------
     # The AST v3 endpoint serves a *different* primary model than the global
@@ -419,6 +429,12 @@ class Config:
             object.__setattr__(self, "k2_voice_gate_threshold", 1.0)
         if self.k2_voice_gate_start_frames < 1:
             object.__setattr__(self, "k2_voice_gate_start_frames", 1)
+        if self.diarization_enabled and not self.diarization_target.strip():
+            object.__setattr__(self, "diarization_enabled", False)
+        if self.diarization_connect_timeout_sec <= 0:
+            object.__setattr__(self, "diarization_connect_timeout_sec", 2.0)
+        if self.diarization_result_timeout_sec <= 0:
+            object.__setattr__(self, "diarization_result_timeout_sec", 2.0)
         if self.asr_segment_voice_gate_threshold < 0:
             object.__setattr__(self, "asr_segment_voice_gate_threshold", 0.0)
         elif self.asr_segment_voice_gate_threshold > 1:
@@ -834,6 +850,13 @@ def _parse(raw: dict[str, Any]) -> ParsedConfig:
         )
     if defaults.get("k2_enabled") and not str(defaults.get("k2_target", "")).strip():
         logger.warning("k2_enabled=true requires k2_target; downgrading k2 to false")
+    if defaults.get("diarization_enabled") and not str(
+        defaults.get("diarization_target", "")
+    ).strip():
+        logger.warning(
+            "diarization_enabled=true requires diarization_target; "
+            "downgrading diarization to false"
+        )
 
     base = _project_base(
         upstreams=upstreams,

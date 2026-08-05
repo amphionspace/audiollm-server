@@ -1,6 +1,6 @@
 # 实时转写 AST v3 WebSocket API
 
-`/tuling/ast/v3` 以讯飞图灵 AST v3 信封协议对外提供实时语音转写。它复用与 `/transcribe-streaming` 相同的 VAD 分段流水线，但按端点策略恒为 primary-only：只调用主模型（由 `astv3_vllm_*` 指定，当前留空，回退全局 primary `vllm_base_url`），不启用本地副模型、partial 静音门与双模型融合。另一处区别在线上协议：音频以 base64 编码放在 JSON 帧的 `payload.audio.audio` 中，`header.status`（0/1/2）驱动开始/中间/结束状态机，结果按 `payload.result` 词图结构返回。
+`/tuling/ast/v3` 以讯飞图灵 AST v3 信封协议对外提供实时语音转写。它复用与 `/transcribe-streaming` 相同的 VAD/k2 分段流水线，并可把同一份 PCM 并行送给 Streaming Sortformer 做最多 4 人的会话内匿名角色分离；角色时间线先把原始段重切成 speaker turn，再逐段调用 ASR。端点策略恒为 primary-only：只调用主模型（由 `astv3_vllm_*` 指定，当前留空，回退全局 primary `vllm_base_url`），不启用本地副模型、partial 静音门与双模型融合。另一处区别在线上协议：音频以 base64 编码放在 JSON 帧的 `payload.audio.audio` 中，`header.status`（0/1/2）驱动开始/中间/结束状态机，结果按 `payload.result` 词图结构返回。
 
 该端点与现有 `/transcribe-streaming` 并存，互不影响。客户端可使用讯飞 `tuling-ast-sdk`（Java）或任意 WebSocket 客户端按本协议对接。
 
@@ -15,7 +15,7 @@
 | 音频输入 | base64 编码的 16 kHz、mono、signed 16-bit little-endian PCM；首帧若为带 RIFF/WAVE 头的整段音频会自动剥离文件头 |
 | 分段策略 | 服务端 VAD 自动切段 |
 | 中间结果 | 支持，msgtype 为 Progressive，受 `enable_pseudo_stream` 影响，可经 `parameter.asr_config` 覆写 |
-| 最终结果 | 每个语音段一条，msgtype 为 sentence；尾帧（status=2）后 flush 残余音频 |
+| 最终结果 | msgtype 为 sentence；角色开启时一个 VAD/k2 段可能按 speaker turn 拆成多条；尾帧（status=2）后 flush 残余音频 |
 
 ## 调用流程
 
@@ -93,8 +93,8 @@ Client                                      Server
 
 | status | 含义 | 服务端处理 |
 |---|---|---|
-| 0 | 首帧 | 建立会话、捕获 traceId、生成 sid；读取 `payload.text.text` 作为临时请求热词；若本帧带音频则同时送入 VAD |
-| 1 | 中间帧 | 解码音频送入 VAD |
+| 0 | 首帧 | 建立会话、捕获 traceId、生成 sid；读取 `payload.text.text`；需要角色分离时连接 sidecar；音频并行送入 diarizer 与 VAD/k2 |
+| 1 | 中间帧 | 解码音频并行送入 diarizer 与 VAD/k2 |
 | 2 | 尾帧 | 先送本帧音频，再 flush 残余音频结束会话 |
 
 音频建议：每帧约 4096 字节（讯飞 SDK 默认 `32 * 128`），原则上单帧不超过 16 KB，建议至少 40 ms 语音。正常处理过程中客户端不要主动断开。首帧允许携带带 WAV 头的整段音频前缀，服务端会一次性剥离文件头后按裸 PCM 处理。
@@ -105,7 +105,7 @@ Client                                      Server
 
 取值优先级（后者覆盖前者）：`backend/config.py` 内置默认 → `config.yaml` 服务端默认 → `parameter.asr_config` 客户端临时覆写。
 
-只接受白名单内的扁平字段名；未知字段、受限字段（模型地址、密钥、连接池/队列等基础设施项）以及非法值会被忽略并保持服务端默认，不会中断连接。`language`、`hotword_pool_id`、`enable_role_separation`、`enrollment_enable` 和 `enrollment_id` 是特例：`language` 会被用作本次会话语言（等价于 `/transcribe-streaming` 的 `start.language`），`hotword_pool_id` 会被用作热词池隔离 ID（默认 `default`），后三者按“目标说话人（TS-ASR）”章节的矩阵决定是否启用声纹；这些字段不会进入普通配置覆写白名单。
+只接受白名单内的扁平字段名；未知字段、受限字段（模型地址、密钥、连接池/队列等基础设施项）以及非法值会被忽略并保持服务端默认，不会中断连接。`language`、`hotword_pool_id`、`enable_role_separation`、`enrollment_enable` 和 `enrollment_id` 由协议层先行解析：`language` 用作本次会话语言，`hotword_pool_id` 用作热词池隔离 ID（默认 `default`），角色与声纹字段按“目标说话人（TS-ASR）”章节的矩阵路由；其中规范化后的 `enable_role_separation` 还会写入会话配置，用来决定是否连接 sidecar。
 
 可覆写字段与 `/transcribe-streaming` 的 `start.config` 共用同一白名单（`backend/config.py` 的 `CLIENT_OVERRIDABLE_FIELDS`）。下面按类别逐字段说明语义：默认列为服务端 `config.yaml` 当前生效值，本端点列标注该字段在 AST v3 是否产生可观察效果（本端点恒为 primary-only，副模型与融合相关字段即使传入也不生效）。
 
@@ -137,8 +137,10 @@ AST v3 协议兼容：
 
 | 字段 | 类型 | 默认 | 含义 | 本端点 |
 |---|---|---|---|---|
-| enable_role_separation | bool | true | 客户端角色分离开关；省略等价于 true，且优先级高于声纹 | 生效于协议出参和声纹启用矩阵；true 时 sentence 返回 `cw[].rl=0` 兼容占位，false 时 sentence/Progressive 均不返回 `cw[].rl` |
+| enable_role_separation | bool | true | 客户端角色分离开关；省略等价于 true，且优先级高于声纹 | true 时最多分 4 个会话内匿名角色，sentence 按角色变化返回 `cw[].rl`；false 时 sentence/Progressive 均不返回 `cw[].rl` |
 | enrollment_enable | bool | false | 是否显式启用目标说话人声纹 | 仅当 `enable_role_separation=false && enrollment_enable=true && enrollment_id` 非空时启用 |
+
+`diarization_enabled`、`diarization_target`、`diarization_connect_timeout_sec`、`diarization_result_timeout_sec` 是服务端基础设施配置，位于 `config.yaml -> defaults.diarization`，客户端不可覆写。角色模型、部署和显存门槛见 [`services/diarization/README.md`](../../services/diarization/README.md)。
 
 ASR 模型组合 / 超时：
 
@@ -253,14 +255,27 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 说明：
 
 - enrollment_id 仅在首帧读取，整段会话沿用同一目标说话人。
-- 声纹启用矩阵：
-  - `enable_role_separation=true` 或省略：优先角色分离，忽略 `enrollment_enable` 与 `enrollment_id`，响应 `enrollment_applied=false`。
-  - `enable_role_separation=false && enrollment_enable=false` 或省略：不启用声纹，即使传入 `enrollment_id` 也忽略。
-  - `enable_role_separation=false && enrollment_enable=true && enrollment_id` 非空：启用声纹。
-  - `enable_role_separation=false && enrollment_enable=true && enrollment_id` 为空：返回参数错误，不进入普通 ASR。
 - 若启用了声纹但 `enrollment_id` 不可用，服务端回退为普通 ASR，结果中 `enrollment_applied=false`，并尽量返回 `enrollment_fallback_reason`（如 `not_found` / `incompatible` / `upstream_unavailable`）。默认 demo 本地缓存下 enrollment_id 有 TTL（默认 3600 秒、每次使用续期）且服务重启即失效；启用 RAG-ASR 管理服务后，embedding tensor 与元数据会落盘到 RAG-ASR 的 `enrollment_store_dir`（默认 `var/enrollments`），重启不丢，但文件缺失或与当前模型/adapter 不兼容时也按同一兼容语义回退。完整生命周期（存储/有效期/容量/删除）见 [API 总览](../api-reference.md) 注册接口的“生命周期”。
 - `header.resIdList` 不再作为目标说话人字段；若存在仅记录并忽略。
 - 未按矩阵启用声纹时为普通 ASR。
+
+### 角色分离与声纹行为矩阵
+
+以下矩阵是 `/tuling/ast/v3` 的规范行为。`任意` 包括字段省略、空值、有效值和无效值；角色分离开启时，声纹字段不会参与校验。
+
+| `enable_role_separation` | `enrollment_enable` | `enrollment_id` | 实际模式 | sidecar | `sentence` 的 `cw[].rl` | `Progressive` 的 `cw[].rl` | 声纹状态 | 会话结果 |
+|---|---|---|---|---|---|---|---|---|
+| 省略 / `true` | 任意 | 任意 | 角色分离；忽略声纹参数 | 服务端启用时连接 | 正常时：首次/切换角色为 `1..4`，连续同角色为 `0`；sidecar 降级后为 `0` | 不返回 | `enrollment_applied=false`，原因为 `disabled` | 继续识别 |
+| `false` | 省略 / `false` | 任意 | 普通 ASR；忽略 `enrollment_id` | 不连接 | 不返回 | 不返回 | `enrollment_applied=false`，原因为 `disabled` | 继续识别 |
+| `false` | `true` | 非空且可用 | TS-ASR | 不连接 | 不返回 | 不返回 | 正常为 `enrollment_applied=true`；以逐条结果为准 | 继续识别 |
+| `false` | `true` | 非空但不存在、过期、不兼容或上游不可用 | 回退普通 ASR | 不连接 | 不返回 | 不返回 | `enrollment_applied=false`，原因为 `not_found` / `incompatible` / `upstream_unavailable` | 继续识别 |
+| `false` | `true` | 省略 / 空 | 参数错误，不进入 ASR | 不连接 | 无识别结果 | 无识别结果 | 无识别结果 | 返回非零 `header.code` 并结束会话 |
+
+补充约束：
+
+- `enrollment_applied` 是逐条结果的事实字段，表示本条请求是否实际携带可用声纹材料进入 ASR；它不保证声学结果一定完全滤除其他说话人。
+- `cw[].rl` 是否存在可区分客户端模式：请求角色分离但 sidecar 降级时，最终 `sentence` 仍带 `rl=0`；客户端明确设置 `enable_role_separation=false` 时不返回该字段。
+- 终止帧不含识别词图，因此不返回 `cw[].rl`。
 
 ## 服务端响应
 
@@ -319,7 +334,7 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 | ws[].cw | Array | 词语识别候选 |
 | cw[].w | String | 识别文本；msgtype=sentence（最终结果）默认已做 ITN 与车牌规范化，msgtype=Progressive（中间结果）保持口语形式。见“文本规范化”一节 |
 | cw[].lg | String | 语种，如 zh |
-| cw[].rl | int | 角色编号；当前版本暂不做真实角色分离。仅当 `enable_role_separation=true` 或省略时，msgtype=sentence 中固定返回 0 作为兼容占位；`enable_role_separation=false` 时 sentence/Progressive 均不返回该字段 |
+| cw[].rl | int | 角色变化标记。仅 sentence 返回：角色相对上一条 sentence 变化时返回稳定编号 `1..4`，同一角色连续发言返回 `0`，切回旧角色再次返回其原编号。sidecar 降级时返回 `0`；`enable_role_separation=false` 时不返回 |
 | cw[].wb | int | 词开始位置，单位 10 ms 帧（数值 ×10 为毫秒） |
 | cw[].we | int | 词结束位置，单位 10 ms 帧 |
 | cw[].wp | String | 顺滑词类型：s 顺滑词，n 普通字符，p 标点，g 语义分段标志 |
@@ -350,7 +365,7 @@ result 示例（最终结果）：
       "cw": [
         {
           "lg": "zh", "ng": "0.00", "ph": "phone", "sc": "0.00",
-          "rl": 0, "w": "你好兄弟", "wb": 14, "wc": "0.00", "we": 323, "wp": "n"
+          "rl": 1, "w": "你好兄弟", "wb": 14, "wc": "0.00", "we": 323, "wp": "n"
         }
       ]
     }
@@ -369,6 +384,15 @@ result 示例（最终结果）：
 
 ## 降级说明（重要）
 
+角色分离使用可选 gRPC sidecar，连接、结果等待或流中断均采用 fail-open：本会话剩余音频继续走普通 ASR，开启角色分离时 sentence 返回 `rl=0`，不会因 sidecar 故障中断 AST 会话；下一条 WebSocket 会话会重新连接。ASR 最多等待角色 finalized watermark `diarization_result_timeout_sec`（默认 2 秒）。重叠语音按当前段内占用时间更长的角色归属，短于 `min_segment_duration_ms` 的角色抖动并入相邻 turn，PCM 不丢弃。
+
+| 会话状态 | sidecar 行为 | 当前会话输出 | 后续会话 |
+|---|---|---|---|
+| `enable_role_separation=false` | 不建立连接 | 普通 ASR，所有结果均不返回 `cw[].rl` | 仍按下一会话首帧参数路由 |
+| 请求角色分离，sidecar 健康 | 建立双向流并等待 finalized watermark | 按 speaker turn 拆分 `sentence`，正常返回角色标记 | 新会话建立独立连接和角色编号 |
+| sidecar 未启用、启动失败或连接失败 | 本会话不再尝试连接 | 普通 ASR；最终 `sentence` 返回 `rl=0` | 下一会话重新尝试连接 |
+| 结果等待超过 2 秒、流中断或发送队列溢出 | 停止本会话的角色分离 | 已发送结果不变；剩余音频走普通 ASR，最终 `sentence` 返回 `rl=0` | 下一会话重新尝试连接 |
+
 当前 ASR 模型只输出整段文本，不产出词级对齐、词级语种或置信度。因此本端点对 ws/cw 词图采用降级填充，集成方需知悉：
 
 | 字段 | 降级行为 |
@@ -381,7 +405,7 @@ result 示例（最终结果）：
 | cw.sc / cw.wc / cw.ng | 固定字符串 0.00 |
 | cw.ph | 固定字符串 phone |
 | cw.lg | 取段级检测/传入语种映射的短码 |
-| cw.rl | `enable_role_separation=true` 或省略时仅 sentence 返回固定整数 0；`enable_role_separation=false` 时不返回；当前不做真实角色分离 |
+| cw.rl | `enable_role_separation=true` 或省略时仅 sentence 返回角色变化标记 `0..4`；Progressive 不返回；sidecar 故障降级后为 0；`enable_role_separation=false` 时不返回 |
 
 段级 bg/ed 为近似值：它基于流累计消费的样本数，会忽略 VAD 静音判定延迟与尾部裁剪，误差通常在百毫秒量级。
 
@@ -391,7 +415,7 @@ result 示例（最终结果）：
 |---|---|
 | resIdList | 已废弃，仅记录并忽略；目标说话人请使用 `parameter.asr_config.enrollment_id` |
 | parameter.engine | 讯飞引擎透传参数（如 wdec_param_LanguageTypeChoice、wrec_param_language_name）在本服务无对应能力，仅记录日志，不影响识别；如需按连接调参请改用 parameter.asr_config（见配置覆写章节） |
-| 角色分离 | 当前版本暂不做真实角色分离；`enable_role_separation` 默认 true 且优先于声纹，仅影响声纹启用矩阵与 `cw[].rl` 是否作为兼容占位返回 |
+| 角色分离 | 最多 4 位、仅会话内稳定匿名编号；不做跨会话身份关联、声源分离，也不扩展到其他 ASR 入口 |
 | 词级时间戳 | 见降级说明，非逐词真实值 |
 | 鉴权 | 无内置鉴权，需在网关层实现访问控制 |
 
