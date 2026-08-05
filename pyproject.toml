@@ -29,7 +29,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["grpcio-tools>=1.70.0", "ruff"]
+dev = [
+    "grpcio-tools>=1.70.0",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff",
+]
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"

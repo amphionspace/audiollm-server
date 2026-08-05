@@ -46,7 +46,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install test dependencies
-        run: python -m pip install -e ".[dev]" pytest
+        run: python -m pip install -e ".[dev]"
       - name: Lint diarization changes
         run: ruff check backend services scripts tests
       - name: Test fail-open and protocol behavior with fake diarizer
