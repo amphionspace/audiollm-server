@@ -23,6 +23,29 @@
 - 可选：RAG-ASR HTTP 管理服务（通过 `RAG_ASR_MANAGEMENT_BASE_URL` 配置），用于热词池管理和目标说话人 enrollment embedding 下沉
 - 可选：AST v3 Streaming Sortformer 角色分离 sidecar，独立安装方式见 [services/diarization/README.md](services/diarization/README.md)
 
+### AST v3 角色/声纹模式
+
+`WS /tuling/ast/v3` 的 `parameter.asr_config.enable_role_separation` 默认 `true`，并且优先于声纹参数：
+
+| 角色分离 | 声纹设置 | 实际行为 | 最终 `sentence` 的 `cw[].rl` |
+|---|---|---|---|
+| `true` / 省略 | 任意 | 忽略声纹，执行角色分离；sidecar 故障时回退普通 ASR | 正常为首次/切换 `1..4`、连续同角色 `0`；降级后为 `0` |
+| `false` | enrollment 关闭/省略 | 普通 ASR | 不返回 |
+| `false` | enrollment 开启且 ID 非空、可用 | TS-ASR | 不返回 |
+| `false` | enrollment 开启且 ID 非空、不可用 | 回退普通 ASR并返回声纹失败原因 | 不返回 |
+| `false` | enrollment 开启但 ID 为空/省略 | 参数错误并结束会话 | 无识别结果 |
+
+`Progressive` 始终不返回 `cw[].rl`。完整字段和故障矩阵见 [AST v3 WebSocket 协议](docs/protocols/tuling-ast-v3-protocol.md#角色分离与声纹行为矩阵)。
+
+角色分离 sidecar 使用以下服务端配置，均不可由客户端覆写：
+
+| 参数 | 类型 | `config.yaml` 默认值 | 说明 |
+|---|---|---|---|
+| `diarization_enabled` | bool | `true` | 是否为 AST v3 启用角色分离资源；关闭或 sidecar 故障时会话 fail-open |
+| `diarization_target` | string | `localhost:50052` | Sortformer gRPC sidecar 地址 |
+| `diarization_connect_timeout_sec` | float | `2.0` | 建立 sidecar 会话的最长等待时间 |
+| `diarization_result_timeout_sec` | float | `2.0` | 每个 ASR 段等待 finalized turns 的最长时间；超时后本会话永久降级 |
+
 ## 快速开始
 
 ```bash
@@ -45,6 +68,7 @@ bash start.sh
 | 页面 | 路径 | 说明 |
 |---|---|---|
 | 实时语音转写 | / 或 /index.html | 双 ASR 模型并行 + 融合；右侧面板可开启"情感识别"开关，在每条 final 转写下附上情绪与语气 |
+| AST v3 实时语音识别（测试用） | /asr-test.html | 右侧可选择“角色分离 / 目标说话人 / 普通识别”三种互斥模式，并可注册目标说话人声纹；设置在下一次会话首帧生效 |
 | 情感识别 | /emotion.html | 整段语音 SER / SEC |
 
 页面右上角的 EN / 中 切换会持久化到浏览器 localStorage，下次访问保持上次的选择。

@@ -33,6 +33,8 @@ import string
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from ..diarization.turns import MAX_SPEAKERS
+
 logger = logging.getLogger(__name__)
 
 
@@ -542,7 +544,10 @@ class AstV3Protocol:
             raw_speaker = payload.get("speaker_index")
             speaker_index = (
                 int(raw_speaker)
-                if isinstance(raw_speaker, int) and 0 <= raw_speaker < 4
+                if (
+                    isinstance(raw_speaker, int)
+                    and 0 <= raw_speaker < MAX_SPEAKERS
+                )
                 else None
             )
             if speaker_index is None:

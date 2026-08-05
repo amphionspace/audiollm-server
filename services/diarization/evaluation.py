@@ -9,7 +9,7 @@ from typing import Hashable, Iterable
 from pyannote.core import Annotation, Segment, Timeline
 from pyannote.metrics.diarization import DiarizationErrorRate
 
-from .model import ModelTurn
+from .model import MAX_SPEAKERS, ModelTurn
 
 
 @dataclass(frozen=True)
@@ -199,7 +199,10 @@ def project_single_role(
         (
             ModelTurn(int(turn.start_ms), int(turn.end_ms), int(turn.speaker_index))
             for turn in turns
-            if turn.end_ms > turn.start_ms and 0 <= int(turn.speaker_index) < 4
+            if (
+                turn.end_ms > turn.start_ms
+                and 0 <= int(turn.speaker_index) < MAX_SPEAKERS
+            )
         ),
         key=lambda turn: (turn.start_ms, turn.end_ms, turn.speaker_index),
     )

@@ -255,14 +255,27 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 说明：
 
 - enrollment_id 仅在首帧读取，整段会话沿用同一目标说话人。
-- 声纹启用矩阵：
-  - `enable_role_separation=true` 或省略：优先角色分离，忽略 `enrollment_enable` 与 `enrollment_id`，响应 `enrollment_applied=false`。
-  - `enable_role_separation=false && enrollment_enable=false` 或省略：不启用声纹，即使传入 `enrollment_id` 也忽略。
-  - `enable_role_separation=false && enrollment_enable=true && enrollment_id` 非空：启用声纹。
-  - `enable_role_separation=false && enrollment_enable=true && enrollment_id` 为空：返回参数错误，不进入普通 ASR。
 - 若启用了声纹但 `enrollment_id` 不可用，服务端回退为普通 ASR，结果中 `enrollment_applied=false`，并尽量返回 `enrollment_fallback_reason`（如 `not_found` / `incompatible` / `upstream_unavailable`）。默认 demo 本地缓存下 enrollment_id 有 TTL（默认 3600 秒、每次使用续期）且服务重启即失效；启用 RAG-ASR 管理服务后，embedding tensor 与元数据会落盘到 RAG-ASR 的 `enrollment_store_dir`（默认 `var/enrollments`），重启不丢，但文件缺失或与当前模型/adapter 不兼容时也按同一兼容语义回退。完整生命周期（存储/有效期/容量/删除）见 [API 总览](../api-reference.md) 注册接口的“生命周期”。
 - `header.resIdList` 不再作为目标说话人字段；若存在仅记录并忽略。
 - 未按矩阵启用声纹时为普通 ASR。
+
+### 角色分离与声纹行为矩阵
+
+以下矩阵是 `/tuling/ast/v3` 的规范行为。`任意` 包括字段省略、空值、有效值和无效值；角色分离开启时，声纹字段不会参与校验。
+
+| `enable_role_separation` | `enrollment_enable` | `enrollment_id` | 实际模式 | sidecar | `sentence` 的 `cw[].rl` | `Progressive` 的 `cw[].rl` | 声纹状态 | 会话结果 |
+|---|---|---|---|---|---|---|---|---|
+| 省略 / `true` | 任意 | 任意 | 角色分离；忽略声纹参数 | 服务端启用时连接 | 正常时：首次/切换角色为 `1..4`，连续同角色为 `0`；sidecar 降级后为 `0` | 不返回 | `enrollment_applied=false`，原因为 `disabled` | 继续识别 |
+| `false` | 省略 / `false` | 任意 | 普通 ASR；忽略 `enrollment_id` | 不连接 | 不返回 | 不返回 | `enrollment_applied=false`，原因为 `disabled` | 继续识别 |
+| `false` | `true` | 非空且可用 | TS-ASR | 不连接 | 不返回 | 不返回 | 正常为 `enrollment_applied=true`；以逐条结果为准 | 继续识别 |
+| `false` | `true` | 非空但不存在、过期、不兼容或上游不可用 | 回退普通 ASR | 不连接 | 不返回 | 不返回 | `enrollment_applied=false`，原因为 `not_found` / `incompatible` / `upstream_unavailable` | 继续识别 |
+| `false` | `true` | 省略 / 空 | 参数错误，不进入 ASR | 不连接 | 无识别结果 | 无识别结果 | 无识别结果 | 返回非零 `header.code` 并结束会话 |
+
+补充约束：
+
+- `enrollment_applied` 是逐条结果的事实字段，表示本条请求是否实际携带可用声纹材料进入 ASR；它不保证声学结果一定完全滤除其他说话人。
+- `cw[].rl` 是否存在可区分客户端模式：请求角色分离但 sidecar 降级时，最终 `sentence` 仍带 `rl=0`；客户端明确设置 `enable_role_separation=false` 时不返回该字段。
+- 终止帧不含识别词图，因此不返回 `cw[].rl`。
 
 ## 服务端响应
 
@@ -372,6 +385,13 @@ result 示例（最终结果）：
 ## 降级说明（重要）
 
 角色分离使用可选 gRPC sidecar，连接、结果等待或流中断均采用 fail-open：本会话剩余音频继续走普通 ASR，开启角色分离时 sentence 返回 `rl=0`，不会因 sidecar 故障中断 AST 会话；下一条 WebSocket 会话会重新连接。ASR 最多等待角色 finalized watermark `diarization_result_timeout_sec`（默认 2 秒）。重叠语音按当前段内占用时间更长的角色归属，短于 `min_segment_duration_ms` 的角色抖动并入相邻 turn，PCM 不丢弃。
+
+| 会话状态 | sidecar 行为 | 当前会话输出 | 后续会话 |
+|---|---|---|---|
+| `enable_role_separation=false` | 不建立连接 | 普通 ASR，所有结果均不返回 `cw[].rl` | 仍按下一会话首帧参数路由 |
+| 请求角色分离，sidecar 健康 | 建立双向流并等待 finalized watermark | 按 speaker turn 拆分 `sentence`，正常返回角色标记 | 新会话建立独立连接和角色编号 |
+| sidecar 未启用、启动失败或连接失败 | 本会话不再尝试连接 | 普通 ASR；最终 `sentence` 返回 `rl=0` | 下一会话重新尝试连接 |
+| 结果等待超过 2 秒、流中断或发送队列溢出 | 停止本会话的角色分离 | 已发送结果不变；剩余音频走普通 ASR，最终 `sentence` 返回 `rl=0` | 下一会话重新尝试连接 |
 
 当前 ASR 模型只输出整段文本，不产出词级对齐、词级语种或置信度。因此本端点对 ws/cw 词图采用降级填充，集成方需知悉：
 

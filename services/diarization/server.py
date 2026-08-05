@@ -13,7 +13,12 @@ import grpc
 from backend.diarization import diarization_pb2 as pb
 from backend.diarization import diarization_pb2_grpc as pb_grpc
 
-from .model import MODEL_REPO, InsufficientGpuMemoryError, SortformerEngine
+from .model import (
+    MAX_SPEAKERS,
+    MODEL_REPO,
+    InsufficientGpuMemoryError,
+    SortformerEngine,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +50,11 @@ class DiarizationService(pb_grpc.DiarizationServiceServicer):
                     if cfg.sample_rate != 16_000 or cfg.channels != 1:
                         yield _error("invalid_audio", "requires 16 kHz mono PCM_S16LE")
                         return
-                    if cfg.max_speakers < 1 or cfg.max_speakers > 4:
-                        yield _error("invalid_speakers", "max_speakers must be in [1, 4]")
+                    if cfg.max_speakers < 1 or cfg.max_speakers > MAX_SPEAKERS:
+                        yield _error(
+                            "invalid_speakers",
+                            f"max_speakers must be in [1, {MAX_SPEAKERS}]",
+                        )
                         return
                     stream = self.engine.new_stream()
                     started = True
@@ -118,7 +126,10 @@ async def serve(host: str, port: int) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
     await stop.wait()
-    await server.stop(grace=5)
+    try:
+        await server.stop(grace=5)
+    finally:
+        engine.close()
 
 
 def main() -> None:

@@ -539,10 +539,10 @@ def test_recall_knobs_client_overridable() -> None:
     assert out.recall_top_k == 3
 
 
-def test_role_separation_defaults_on_and_remains_client_overridable() -> None:
+def test_role_separation_and_production_diarization_default_on() -> None:
     cfg = load_config()
     assert cfg.enable_role_separation is True
-    assert cfg.diarization_enabled is False
+    assert cfg.diarization_enabled is True
     assert "enable_role_separation" in CLIENT_OVERRIDABLE_FIELDS
 
     out = cfg.override_client(enable_role_separation=False)

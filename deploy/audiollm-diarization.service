@@ -12,6 +12,8 @@ Environment=PYTHONUNBUFFERED=1
 Environment=HF_HUB_OFFLINE=1
 Environment=DIARIZATION_DEVICE=cuda
 Environment=DIARIZATION_MODEL_PATH=/home/ubuntu/models/diar_streaming_sortformer_4spk-v2.1.nemo
+Environment=DIARIZATION_MAX_BATCH_SIZE=8
+Environment=DIARIZATION_BATCH_WAIT_MS=12
 ExecStart=/home/ubuntu/workspace/audiollm-server/services/diarization/.venv/bin/python -m services.diarization.server --host 127.0.0.1 --port 50052
 Restart=on-failure
 RestartPreventExitStatus=78

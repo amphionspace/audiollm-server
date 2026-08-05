@@ -12,6 +12,10 @@ from ..config import SAMPLE_RATE
 if TYPE_CHECKING:
     from ..streaming.events import SegmentReady
 
+# The selected Sortformer checkpoint and AST v3 contract both cap one session
+# at four anonymous speakers.
+MAX_SPEAKERS = 4
+
 
 @dataclass(frozen=True)
 class SpeakerTurn:
@@ -85,7 +89,7 @@ def _normalize_turns(
             speaker_index=int(turn.speaker_index),
         )
         for turn in turns
-        if 0 <= int(turn.speaker_index) < 4
+        if 0 <= int(turn.speaker_index) < MAX_SPEAKERS
         and int(turn.end_ms) > segment_start_ms
         and int(turn.start_ms) < segment_end_ms
     ]

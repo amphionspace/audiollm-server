@@ -11,7 +11,7 @@ import grpc
 from ..config import SAMPLE_RATE, Config
 from . import diarization_pb2 as pb
 from . import diarization_pb2_grpc as pb_grpc
-from .turns import SpeakerTurn
+from .turns import MAX_SPEAKERS, SpeakerTurn
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ class DiarizationSession:
                 trace_id=self.trace_id,
                 sample_rate=SAMPLE_RATE,
                 channels=1,
-                max_speakers=4,
+                max_speakers=MAX_SPEAKERS,
             )
         )
         while True:

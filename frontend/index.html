@@ -81,33 +81,14 @@
 
           <aside class="lg:w-[380px] xl:w-[420px] flex-shrink-0 min-h-0">
             <div id="hotword-panel" class="paper-card p-4 h-full flex flex-col">
-              <div class="flex items-start justify-between gap-3 mb-3">
-                <div>
+              <div class="hotword-panel-header">
+                <div class="hotword-panel-heading">
                   <div class="flex items-center gap-2">
                     <span class="text-[13px] font-semibold" style="letter-spacing:0.02em"
                           data-i18n="asr.hotword.title">Hotwords</span>
                     <span id="hotword-sync-status" class="status-pill" data-state="waiting">Waiting</span>
                   </div>
                   <p class="text-xs text-muted mt-1" data-i18n="asr.hotword.tip">Boost recognition for domain-specific terms.</p>
-                  <div class="mt-3 grid gap-2">
-                    <label for="asr-lang-select" class="block text-[11px] text-faint mb-1"
-                           data-i18n="asr.hotword.lang">Language</label>
-                    <select id="asr-lang-select" class="asr-lang-select w-full max-w-[220px]"
-                            data-i18n-attr-aria-label="asr.hotword.langSelect.aria"
-                            aria-label="ASR input language">
-                      <option value="chinese" data-i18n="asr.hotword.langOption.chinese">Chinese</option>
-                      <option value="english" data-i18n="asr.hotword.langOption.english">English</option>
-                      <option value="indonesian" data-i18n="asr.hotword.langOption.indonesian">Indonesian</option>
-                      <option value="thai" data-i18n="asr.hotword.langOption.thai">Thai</option>
-                    </select>
-                    <p class="text-[10px] text-faint mt-1" data-i18n="asr.hotword.langTip">Only controls ASR input language.</p>
-                    <label for="hotword-user-id" class="block text-[11px] text-faint mb-1"
-                           data-i18n="asr.hotword.user">User ID</label>
-                    <input id="hotword-user-id" type="text" class="hotword-input w-full max-w-[220px]"
-                           data-i18n-attr-placeholder="asr.hotword.user.placeholder"
-                           placeholder="default" />
-                    <p class="text-[10px] text-faint mt-1" data-i18n="asr.hotword.userTip">Hotword pools are isolated by user ID.</p>
-                  </div>
                 </div>
 
                 <label for="hotword-enabled" class="hotword-switch"
@@ -118,8 +99,29 @@
                 </label>
               </div>
 
-              <div class="flex items-center justify-between gap-3 mb-3 pb-3"
-                   style="border-bottom:1px solid var(--line)">
+              <div class="hotword-context-grid">
+                <div class="hotword-field">
+                  <label for="asr-lang-select" data-i18n="asr.hotword.lang">Language</label>
+                  <select id="asr-lang-select" class="asr-lang-select"
+                          data-i18n-attr-aria-label="asr.hotword.langSelect.aria"
+                          aria-label="ASR input language">
+                    <option value="chinese" data-i18n="asr.hotword.langOption.chinese">Chinese</option>
+                    <option value="english" data-i18n="asr.hotword.langOption.english">English</option>
+                    <option value="indonesian" data-i18n="asr.hotword.langOption.indonesian">Indonesian</option>
+                    <option value="thai" data-i18n="asr.hotword.langOption.thai">Thai</option>
+                  </select>
+                  <p data-i18n="asr.hotword.langTip">Only controls ASR input language.</p>
+                </div>
+                <div class="hotword-field">
+                  <label for="hotword-user-id" data-i18n="asr.hotword.user">User ID</label>
+                  <input id="hotword-user-id" type="text" class="hotword-input"
+                         data-i18n-attr-placeholder="asr.hotword.user.placeholder"
+                         placeholder="default" />
+                  <p data-i18n="asr.hotword.userTip">Hotword pools are isolated by user ID.</p>
+                </div>
+              </div>
+
+              <div class="settings-row">
                 <div class="min-w-0">
                   <span class="text-[13px] font-semibold" style="letter-spacing:0.02em"
                         data-i18n="asr.emotion.title">Emotion recognition</span>
@@ -143,8 +145,7 @@
                    path; file upload covers headset-less or pre-recorded usage.
                    Both paths require the mic to be idle (must_before_start).
               -->
-              <div id="enrollment-card" class="mb-3 pb-3"
-                   style="border-bottom:1px solid var(--line)">
+              <div id="enrollment-card" class="settings-section">
                 <div class="flex items-start justify-between gap-3 mb-2">
                   <div class="min-w-0">
                     <span class="text-[13px] font-semibold" style="letter-spacing:0.02em"
@@ -176,30 +177,39 @@
                 <p id="enroll-hint" class="text-[11px] text-faint mt-2" hidden></p>
               </div>
 
-              <div class="flex gap-2 mb-3">
-                <input id="hotword-input" type="text" class="hotword-input flex-1"
-                       data-i18n-attr-placeholder="asr.hotword.placeholder"
-                       placeholder="Add hotword (comma-separated for batch)" />
-                <button id="hotword-add-btn" class="btn-secondary" data-i18n="asr.hotword.add">Add</button>
-                <button id="hotword-reload-btn" class="btn-secondary" data-i18n="asr.hotword.reload">Reload</button>
-                <button id="hotword-clear-btn" class="btn-ghost" data-i18n="asr.hotword.clear">Clear</button>
-              </div>
-
-              <div class="mb-3">
-                <textarea id="hotword-textarea" class="hotword-textarea w-full" rows="4"
-                          data-i18n-attr-placeholder="asr.hotword.textarea.placeholder"
-                          placeholder="Paste long text here to extract hotwords with LLM"></textarea>
-                <div class="mt-2 flex items-center justify-between gap-2">
-                  <button id="hotword-extract-btn" class="btn-primary" data-i18n="asr.hotword.extract">Extract and Add</button>
-                  <span id="hotword-extract-status" class="hotword-extract-status">Idle</span>
+              <div class="hotword-manager">
+                <div class="hotword-manager-header">
+                  <span id="hotword-count" class="text-xs text-muted">0 hotwords</span>
+                  <div class="hotword-manager-tools">
+                    <button id="hotword-reload-btn" class="btn-quiet" type="button"
+                            data-i18n="asr.hotword.reload">Reload</button>
+                    <button id="hotword-clear-btn" class="btn-quiet is-danger" type="button"
+                            data-i18n="asr.hotword.clear">Clear</button>
+                  </div>
                 </div>
-              </div>
+                <div class="hotword-add-row">
+                  <input id="hotword-input" type="text" class="hotword-input"
+                         data-i18n-attr-placeholder="asr.hotword.placeholder"
+                         placeholder="Add hotword (comma-separated for batch)" />
+                  <button id="hotword-add-btn" class="btn-secondary" type="button"
+                          data-i18n="asr.hotword.add">Add</button>
+                </div>
+                <div id="hotword-list" class="hotword-list-surface"></div>
 
-              <div class="flex items-center text-xs text-muted mb-2">
-                <span id="hotword-count">0 hotwords</span>
+                <details class="hotword-extractor">
+                  <summary>
+                    <span data-i18n="asr.hotword.extractSection">Extract from long text</span>
+                    <span id="hotword-extract-status" class="hotword-extract-status">Idle</span>
+                  </summary>
+                  <div class="hotword-extractor-body">
+                    <textarea id="hotword-textarea" class="hotword-textarea" rows="4"
+                              data-i18n-attr-placeholder="asr.hotword.textarea.placeholder"
+                              placeholder="Paste long text here to extract hotwords with LLM"></textarea>
+                    <button id="hotword-extract-btn" class="btn-primary" type="button"
+                            data-i18n="asr.hotword.extract">Extract and Add</button>
+                  </div>
+                </details>
               </div>
-
-              <div id="hotword-list" class="flex flex-wrap gap-2 min-h-[32px] overflow-y-auto pr-1"></div>
             </div>
           </aside>
         </div>

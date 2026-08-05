@@ -18,20 +18,16 @@
   //     msgtype "Progressive" (partial) / "sentence" (final), sharing one
   //     segId per segment.
   //
-  // AST v3 is ASR-only, so the emotion toggle, LLM hotword extraction,
-  // segment replay, dual-ASR debug, file upload and target-speaker enrollment
-  // have no protocol representation here. To keep the UI visually identical to
-  // the realtime page (per the "full UI" choice), those controls stay in the
-  // DOM but are disabled (greyed out) at init.
+  // Unsupported emotion and LLM-extraction controls are omitted from this
+  // page; the shared file-upload control stays disabled. The three recognition
+  // modes map to the AST role/enrollment matrix in the first session frame.
 
-  // Same-origin WebSocket proxy (backend "/astv3-test-proxy") that bridges to
-  // the remote AST v3 backend. Deriving the URL from location keeps it
-  // same-origin, which sidesteps the browser's mixed-content block: an HTTPS
-  // page (playground.amphion.top) yields wss://, plain HTTP/localhost yields
-  // ws://. The real upstream address lives only in the backend, never here.
+  // Connect to the production AST v3 endpoint on the same origin as the page.
+  // HTTPS therefore yields wss:// and HTTP/localhost yields ws:// without a
+  // mixed-content exception or a second proxy/upstream failure domain.
   const AST_V3_URL = (() => {
     const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${scheme}//${window.location.host}/astv3-test-proxy`;
+    return `${scheme}//${window.location.host}/tuling/ast/v3`;
   })();
 
   function initAsrTest() {
@@ -50,12 +46,17 @@
     let workletNode = null;
     let mediaStream = null;
     let isRecording = false;
+    let isStarting = false;
     let startFrameSent = false;     // gate audio frames until status=0 is sent
     let sessionSeq = 0;             // bumped per recording; namespaces bubble ids
     let currentSessionSeq = 0;      // the seq the open ws belongs to
     let traceId = '';
     let bizId = '';
     let closeTimer = null;          // fallback close after stop if no terminal
+    let sessionRecognitionMode = 'diarization';
+    let sessionEnrollmentId = null;
+    let currentSpeakerIndex = null;
+    let enrollmentCtrl = null;
     const doneSegs = new Set();     // segment ids already finalized
 
     // --- Hotword state ---
@@ -64,7 +65,11 @@
 
     const SYNC_PILL_BASE = 'status-pill';
     const HOTWORD_POOL_LIMIT = 1000;
+    const WS_OPEN_TIMEOUT_MS = 5000;
     const HOTWORD_USER_STORAGE_KEY = 'asr_hotword_pool_id';
+    const RECOGNITION_MODE_STORAGE_KEY = 'astv3_recognition_mode';
+    const LEGACY_ROLE_SEPARATION_STORAGE_KEY = 'astv3_role_separation_enabled';
+    const RECOGNITION_MODES = new Set(['diarization', 'target', 'standard']);
     const UI_TO_API_LANG = {
       chinese: 'Chinese',
       english: 'English',
@@ -95,18 +100,22 @@
     const hotwordSyncStatus = document.getElementById('hotword-sync-status');
     const hotwordUserInput = document.getElementById('hotword-user-id');
     const hotwordCount = document.getElementById('hotword-count');
-    const hotwordTextarea = document.getElementById('hotword-textarea');
-    const hotwordExtractBtn = document.getElementById('hotword-extract-btn');
-    const hotwordExtractStatus = document.getElementById('hotword-extract-status');
     const asrLangSelect = document.getElementById('asr-lang-select');
-    const emotionToggle = document.getElementById('emotion-toggle');
-    const uploadBtn = document.getElementById('upload-btn');
-    const uploadInput = document.getElementById('upload-input');
+    const recognitionModeOptions = document.getElementById('recognition-mode-options');
+    const recognitionModeInputs = Array.from(
+      document.querySelectorAll('input[name="recognition-mode"]')
+    );
+    const recognitionModeHint = document.getElementById('recognition-mode-hint');
+    const enrollmentCard = document.getElementById('enrollment-card');
     const enrollUploadBtn = document.getElementById('enroll-upload-btn');
     const enrollFileInput = document.getElementById('enroll-file-input');
     const enrollRecordBtn = document.getElementById('enroll-record-btn');
     const enrollPlayBtn = document.getElementById('enroll-play-btn');
     const enrollClearBtn = document.getElementById('enroll-clear-btn');
+    const enrollStatusPill = document.getElementById('enroll-status-pill');
+    const enrollHint = document.getElementById('enroll-hint');
+    const uploadBtn = document.getElementById('upload-btn');
+    const uploadInput = document.getElementById('upload-input');
 
     // --- Dynamic translation helpers ---
     function setDynText(el, key, vars) {
@@ -132,6 +141,48 @@
         el.textContent = t(key, vars || undefined);
       });
     }
+
+    function currentRecognitionMode() {
+      const selected = recognitionModeInputs.find((input) => input.checked);
+      return selected && RECOGNITION_MODES.has(selected.value)
+        ? selected.value
+        : 'diarization';
+    }
+
+    function refreshRecognitionModeUi() {
+      const mode = currentRecognitionMode();
+      setDynText(recognitionModeHint, `asrtest.mode.hint.${mode}`);
+      if (enrollmentCard) {
+        const missingRequiredEnrollment = (
+          mode === 'target' && !(enrollmentCtrl && enrollmentCtrl.getEnrollmentId())
+        );
+        enrollmentCard.classList.toggle('is-required', missingRequiredEnrollment);
+      }
+    }
+
+    function setRecognitionModeLocked(locked) {
+      recognitionModeInputs.forEach((input) => { input.disabled = locked; });
+      if (recognitionModeOptions) {
+        recognitionModeOptions.classList.toggle('is-locked', locked);
+        recognitionModeOptions.setAttribute('aria-disabled', locked ? 'true' : 'false');
+      }
+    }
+
+    let initialRecognitionMode = localStorage.getItem(RECOGNITION_MODE_STORAGE_KEY);
+    if (!RECOGNITION_MODES.has(initialRecognitionMode)) {
+      initialRecognitionMode = localStorage.getItem(LEGACY_ROLE_SEPARATION_STORAGE_KEY) === 'false'
+        ? 'standard'
+        : 'diarization';
+    }
+    recognitionModeInputs.forEach((input) => {
+      input.checked = input.value === initialRecognitionMode;
+      input.addEventListener('change', () => {
+        if (!input.checked) return;
+        localStorage.setItem(RECOGNITION_MODE_STORAGE_KEY, input.value);
+        refreshRecognitionModeUi();
+      });
+    });
+    refreshRecognitionModeUi();
 
     function currentHotwordUserId() {
       const value = String(
@@ -226,12 +277,6 @@
           setDynText(hotwordSyncStatus, 'asr.sync.offline');
           hotwordSyncStatus.dataset.state = 'offline';
         }
-        if (hotwordExtractStatus) {
-          hotwordExtractStatus.textContent = t('asr.hotword.poolError', {
-            msg: err && err.message ? err.message : String(err),
-          });
-          hotwordExtractStatus.classList.add('is-error');
-        }
       }
     }
 
@@ -261,10 +306,6 @@
         );
         await readJsonResponse(resp);
         await loadHotwordPool();
-        if (hotwordExtractStatus) {
-          hotwordExtractStatus.textContent = t('asr.hotword.reloaded');
-          hotwordExtractStatus.className = 'hotword-extract-status is-success';
-        }
       } finally {
         setHotwordPoolBusy(false);
       }
@@ -308,12 +349,6 @@
         hotwordSyncStatus.className = SYNC_PILL_BASE;
         setDynText(hotwordSyncStatus, 'asr.sync.offline');
         hotwordSyncStatus.dataset.state = 'offline';
-      }
-      if (hotwordExtractStatus) {
-        hotwordExtractStatus.textContent = t('asr.hotword.poolError', {
-          msg: err && err.message ? err.message : String(err),
-        });
-        hotwordExtractStatus.className = 'hotword-extract-status is-error';
       }
     }
 
@@ -379,22 +414,29 @@
         el.title = tip;
         el.setAttribute('aria-disabled', 'true');
       };
-      mark(emotionToggle);
-      mark(hotwordTextarea);
-      mark(hotwordExtractBtn);
       mark(uploadBtn);
       mark(uploadInput);
-      mark(enrollUploadBtn);
-      mark(enrollFileInput);
-      mark(enrollRecordBtn);
-      mark(enrollPlayBtn);
-      mark(enrollClearBtn);
-      if (hotwordExtractStatus) {
-        hotwordExtractStatus.textContent = tip;
-        hotwordExtractStatus.classList.add('is-disabled-astv3');
-      }
     }
     disableUnsupported();
+
+    if (window.Amphion && window.Amphion.Enrollment && enrollStatusPill) {
+      enrollmentCtrl = window.Amphion.Enrollment.attach({
+        elements: {
+          card: enrollmentCard,
+          uploadBtn: enrollUploadBtn,
+          fileInput: enrollFileInput,
+          recordBtn: enrollRecordBtn,
+          playBtn: enrollPlayBtn,
+          clearBtn: enrollClearBtn,
+          statusPill: enrollStatusPill,
+          hint: enrollHint,
+        },
+        isMicRecording: () => isRecording || isStarting,
+        t,
+        onChange: refreshRecognitionModeUi,
+      });
+      refreshRecognitionModeUi();
+    }
 
     // --- Connection status (sidebar dot) ---
     function setConnState(state) {
@@ -423,17 +465,20 @@
 
     function sendStartFrame() {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const targetSpeakerMode = sessionRecognitionMode === 'target';
+      const asrConfig = {
+        language: apiLangFromUi(srcLangUi),
+        hotword_pool_id: currentHotwordUserId(),
+        enable_role_separation: sessionRecognitionMode === 'diarization',
+        enrollment_enable: targetSpeakerMode,
+        vad_start_frames: 10,
+        pseudo_stream_first_partial_ms: 100,
+      };
+      if (targetSpeakerMode) asrConfig.enrollment_id = sessionEnrollmentId;
       const frame = {
         header: { traceId, bizId, status: 0 },
         // 低延迟调参：首帧 asr_config 覆写仅对本连接生效、不落盘，字段属与 /transcribe-streaming 共用的覆写白名单（见 docs/protocols/tuling-ast-v3-protocol.md 配置覆写）。
-        parameter: {
-          asr_config: {
-            language: apiLangFromUi(srcLangUi),
-            hotword_pool_id: currentHotwordUserId(),
-            vad_start_frames: 10,
-            pseudo_stream_first_partial_ms: 100,
-          },
-        },
+        parameter: { asr_config: asrConfig },
         payload: { audio: { audio: '' } },
       };
       ws.send(JSON.stringify(frame));
@@ -487,6 +532,32 @@
       return s;
     }
 
+    function latticeRole(result) {
+      const wsArr = Array.isArray(result.ws) ? result.ws : [];
+      for (const word of wsArr) {
+        const candidates = Array.isArray(word.cw) ? word.cw : [];
+        for (const candidate of candidates) {
+          if (!candidate || !Object.prototype.hasOwnProperty.call(candidate, 'rl')) continue;
+          const role = Number(candidate.rl);
+          return Number.isInteger(role) ? role : null;
+        }
+      }
+      return null;
+    }
+
+    function resolveSentenceRole(result) {
+      if (sessionRecognitionMode !== 'diarization') return null;
+      const role = latticeRole(result);
+      if (role >= 1 && role <= 4) currentSpeakerIndex = role;
+      if (role === 0 && currentSpeakerIndex !== null) {
+        return { key: 'asrtest.role.speaker', vars: { index: currentSpeakerIndex }, state: 'ready' };
+      }
+      if (role >= 1 && role <= 4) {
+        return { key: 'asrtest.role.speaker', vars: { index: currentSpeakerIndex }, state: 'ready' };
+      }
+      return { key: 'asrtest.role.unavailable', vars: null, state: 'waiting' };
+    }
+
     function handleServerMessage(frame) {
       const header = frame.header || {};
       if (typeof header.code === 'number' && header.code !== 0) {
@@ -521,7 +592,7 @@
       } else if (result.msgtype === 'sentence' && !result.ls) {
         if (!document.getElementById(`ai-${segId}`)) addAIBubble(segId);
         doneSegs.add(segId);
-        updateAIBubble(segId, text, 'done');
+        updateAIBubble(segId, text, 'done', resolveSentenceRole(result));
       }
     }
 
@@ -556,6 +627,7 @@
                 <p class="text-sm leading-relaxed flex-1 bubble-text"></p>
                 <span class="bubble-replay-slot"></span>
               </div>
+              <div class="bubble-meta-slot"></div>
             </div>
           </div>
         </div>
@@ -582,6 +654,19 @@
       if (body) body.hidden = show;
     }
 
+    function applyRoleMeta(content, roleInfo) {
+      const slot = content.querySelector('.bubble-meta-slot');
+      if (!slot) return;
+      slot.replaceChildren();
+      slot.classList.toggle('mt-1', Boolean(roleInfo));
+      if (!roleInfo) return;
+      const badge = document.createElement('span');
+      badge.className = 'status-pill';
+      badge.dataset.state = roleInfo.state;
+      setDynText(badge, roleInfo.key, roleInfo.vars || undefined);
+      slot.appendChild(badge);
+    }
+
     function applyHotwordHighlights(textEl, text, words) {
       if (!textEl || !words || !words.length) return 0;
       const ranges = collectHotwordRanges(text, words);
@@ -601,7 +686,7 @@
       return ranges.length;
     }
 
-    function updateAIBubble(segId, text, status, _modelHotwords = null, _debugInfo = null) {
+    function updateAIBubble(segId, text, status, roleInfo = null) {
       const bubble = document.getElementById(`ai-${segId}`);
       if (!bubble) return;
       const content = bubble.querySelector('.ai-content');
@@ -628,6 +713,7 @@
         textEl.style.fontStyle = '';
         textEl.style.color = '';
         setBubbleText(textEl, finalText);
+        applyRoleMeta(content, roleInfo);
       } else if (status === 'error') {
         showShimmer(content, false);
         const body = content.querySelector('.bubble-content');
@@ -651,7 +737,19 @@
 
     // --- Audio capture (16 kHz for AST v3) ---
     async function startRecording() {
-      if (isRecording) return;
+      if (isRecording || isStarting) return;
+
+      const nextRecognitionMode = currentRecognitionMode();
+      if (enrollmentCtrl && enrollmentCtrl.isBusy()) {
+        alert(t('asr.enroll.error.busyEnrolling'));
+        return;
+      }
+      const nextEnrollmentId = enrollmentCtrl ? enrollmentCtrl.getEnrollmentId() : null;
+      if (nextRecognitionMode === 'target' && !nextEnrollmentId) {
+        refreshRecognitionModeUi();
+        alert(t('asrtest.mode.enrollmentRequired'));
+        return;
+      }
 
       // getUserMedia needs a secure context (HTTPS or http://localhost). Over
       // plain HTTP on a remote host (e.g. http://<ip>:8080) the browser leaves
@@ -666,6 +764,9 @@
       // recording maps to exactly one AST v3 session (status 0 -> 2).
       closeWs();
       doneSegs.clear();
+      isStarting = true;
+      setRecognitionModeLocked(true);
+      if (enrollmentCtrl) enrollmentCtrl.refresh();
 
       try {
         mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -677,6 +778,9 @@
           },
         });
       } catch (err) {
+        isStarting = false;
+        setRecognitionModeLocked(false);
+        if (enrollmentCtrl) enrollmentCtrl.refresh();
         alert(t('asr.mic.alert.denied'));
         return;
       }
@@ -686,26 +790,20 @@
       traceId = genId('web');
       bizId = genId('biz');
       startFrameSent = false;
+      sessionRecognitionMode = nextRecognitionMode;
+      sessionEnrollmentId = nextRecognitionMode === 'target' ? nextEnrollmentId : null;
+      currentSpeakerIndex = null;
 
       try {
         ws = new WebSocket(AST_V3_URL);
       } catch (err) {
-        // Defensive: a same-origin wss:// (via the backend proxy) should not
-        // throw synchronously. If the URL is somehow rejected, release the mic
-        // we just grabbed and surface it instead of failing silently.
+        closeWs();
+        stopRecording();
+        setConnState('error');
         alert(t('asrtest.ws.blocked'));
-        if (mediaStream) {
-          mediaStream.getTracks().forEach((tr) => { try { tr.stop(); } catch (_) { /* ignore */ } });
-          mediaStream = null;
-        }
         return;
       }
       setConnState('pending');
-      ws.onopen = () => {
-        sendStartFrame();
-        startFrameSent = true;
-        setConnState('listening');
-      };
       ws.onmessage = (evt) => {
         try {
           handleServerMessage(JSON.parse(evt.data));
@@ -713,37 +811,86 @@
           /* ignore non-JSON */
         }
       };
-      ws.onerror = () => {
+
+      try {
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error('AST v3 WebSocket open timeout')),
+            WS_OPEN_TIMEOUT_MS,
+          );
+          ws.onopen = () => {
+            clearTimeout(timer);
+            sendStartFrame();
+            startFrameSent = true;
+            setConnState('listening');
+            resolve();
+          };
+          ws.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error('AST v3 WebSocket open failed'));
+          };
+          ws.onclose = () => {
+            clearTimeout(timer);
+            reject(new Error('AST v3 WebSocket closed before opening'));
+          };
+        });
+      } catch (err) {
+        closeWs();
+        stopRecording();
         setConnState('error');
-      };
-      ws.onclose = () => {
+        alert(t('asrtest.ws.connectFailed'));
+        return;
+      }
+
+      let connectionLossHandled = false;
+      const handleConnectionLoss = () => {
+        if (connectionLossHandled) return;
+        connectionLossHandled = true;
         startFrameSent = false;
-        if (!isRecording && !isDisposed) setConnState('idle');
+        if (isRecording || isStarting) {
+          stopRecording();
+          setConnState('error');
+          alert(t('asrtest.ws.connectionLost'));
+        } else if (!isDisposed) {
+          setConnState('idle');
+        }
       };
+      ws.onerror = handleConnectionLoss;
+      ws.onclose = handleConnectionLoss;
 
       // 16 kHz capture: the AudioContext resamples the mic input, so the
       // worklet emits 16 kHz frames directly (no server-side resample needed).
-      audioCtx = new AudioContext({ sampleRate: 16000 });
       try {
+        audioCtx = new AudioContext({ sampleRate: 16000 });
         await audioCtx.audioWorklet.addModule('audio-processor.js?v=' + Date.now());
+        if (
+          isDisposed
+          || !isStarting
+          || !ws
+          || ws.readyState !== WebSocket.OPEN
+        ) {
+          stopRecording();
+          return;
+        }
+
+        const source = audioCtx.createMediaStreamSource(mediaStream);
+        workletNode = new AudioWorkletNode(audioCtx, 'audio-capture-processor');
+        workletNode.port.onmessage = (evt) => {
+          if (evt.data.type !== 'audio') return;
+          if (!ws || ws.readyState !== WebSocket.OPEN || !startFrameSent) return;
+          sendAudioFrame(floatToPcmB64(evt.data.samples));
+        };
+        source.connect(workletNode);
+        workletNode.connect(audioCtx.destination);
       } catch (err) {
         alert(t('asr.mic.alert.denied'));
         stopRecording();
         return;
       }
-      if (isDisposed) { stopRecording(); return; }
 
-      const source = audioCtx.createMediaStreamSource(mediaStream);
-      workletNode = new AudioWorkletNode(audioCtx, 'audio-capture-processor');
-      workletNode.port.onmessage = (evt) => {
-        if (evt.data.type !== 'audio') return;
-        if (!ws || ws.readyState !== WebSocket.OPEN || !startFrameSent) return;
-        sendAudioFrame(floatToPcmB64(evt.data.samples));
-      };
-      source.connect(workletNode);
-      workletNode.connect(audioCtx.destination);
-
+      isStarting = false;
       isRecording = true;
+      if (enrollmentCtrl) enrollmentCtrl.refresh();
       micBtn.classList.add('recording');
       micIcon.setAttribute('fill', 'currentColor');
       setDynText(micStatus, 'asr.mic.listening');
@@ -751,7 +898,7 @@
     }
 
     function stopRecording() {
-      if (!isRecording && !workletNode && !audioCtx) return;
+      if (!isRecording && !isStarting && !workletNode && !audioCtx && !mediaStream && !ws) return;
 
       if (workletNode) {
         workletNode.port.onmessage = null;
@@ -773,7 +920,10 @@
         mediaStream = null;
       }
 
+      isStarting = false;
       isRecording = false;
+      setRecognitionModeLocked(false);
+      if (enrollmentCtrl) enrollmentCtrl.refresh();
       micBtn.classList.remove('recording');
       micIcon.setAttribute('fill', 'none');
       setDynText(micStatus, 'asr.mic.start');
@@ -841,6 +991,8 @@
     // --- Language change refresh ---
     i18nUnsub = onLangChange(() => {
       refreshHotwordStatus();
+      refreshRecognitionModeUi();
+      if (enrollmentCtrl && enrollmentCtrl.refreshLabels) enrollmentCtrl.refreshLabels();
       setDynText(micStatus, isRecording ? 'asr.mic.listening' : 'asr.mic.start');
       applyDyn(document);
     });
@@ -865,12 +1017,17 @@
         } catch (_) { /* ignore */ }
         mediaStream = null;
       }
+      isStarting = false;
       isRecording = false;
       closeWs();
       doneSegs.clear();
       if (typeof i18nUnsub === 'function') {
         try { i18nUnsub(); } catch (_) { /* ignore */ }
         i18nUnsub = null;
+      }
+      if (enrollmentCtrl) {
+        try { enrollmentCtrl.dispose(); } catch (_) { /* ignore */ }
+        enrollmentCtrl = null;
       }
     };
   }

@@ -1,0 +1,77 @@
+name: Diarization
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/diarization.yml"
+      - "backend/diarization/**"
+      - "backend/streaming/**"
+      - "backend/tasks/asr.py"
+      - "services/diarization/**"
+      - "tests/test_ast_v3_ws_client.py"
+      - "tests/test_config.py"
+      - "tests/test_diarization.py"
+      - "tests/test_diarization_gpu.py"
+      - "tests/test_health.py"
+      - "tests/test_streaming_unit.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/diarization.yml"
+      - "backend/diarization/**"
+      - "backend/streaming/**"
+      - "backend/tasks/asr.py"
+      - "services/diarization/**"
+      - "tests/test_ast_v3_ws_client.py"
+      - "tests/test_config.py"
+      - "tests/test_diarization.py"
+      - "tests/test_diarization_gpu.py"
+      - "tests/test_health.py"
+      - "tests/test_streaming_unit.py"
+  workflow_dispatch:
+    inputs:
+      run_gpu:
+        description: Run the real Sortformer checkpoint test on a self-hosted GPU runner
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  fake-diarizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install -e ".[dev]" pytest
+      - name: Lint diarization changes
+        run: ruff check backend services scripts tests
+      - name: Test fail-open and protocol behavior with fake diarizer
+        run: >-
+          pytest -q -m "not gpu"
+          tests/test_ast_v3_ws_client.py
+          tests/test_config.py
+          tests/test_diarization.py
+          tests/test_health.py
+          tests/test_streaming_unit.py
+
+  real-sortformer-gpu:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_gpu
+    runs-on: [self-hosted, linux, x64, gpu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Validate pre-downloaded checkpoint
+        env:
+          DIARIZATION_GPU_TEST_MODEL: ${{ vars.DIARIZATION_GPU_TEST_MODEL }}
+        run: test -n "$DIARIZATION_GPU_TEST_MODEL" && test -f "$DIARIZATION_GPU_TEST_MODEL"
+      - name: Run real checkpoint smoke test
+        env:
+          DIARIZATION_GPU_TEST_MODEL: ${{ vars.DIARIZATION_GPU_TEST_MODEL }}
+          DIARIZATION_GPU_TEST_AUDIO: ${{ vars.DIARIZATION_GPU_TEST_AUDIO }}
+        run: >-
+          uv run --project services/diarization --with pytest
+          pytest -q tests/test_diarization_gpu.py
