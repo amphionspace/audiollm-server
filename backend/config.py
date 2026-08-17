@@ -98,6 +98,9 @@ class Config:
     vllm_base_url: str = "http://localhost:8000"
     vllm_model_name: str = "Amphion/AmphionASR-4.3B"
     vllm_prompt_template: str = "amphion_asr"
+    split_asr_enabled: bool = False
+    split_asr_base_url: str = ""
+    split_asr_final_only: bool = False
     secondary_vllm_base_url: str = "http://localhost:8001"
     secondary_vllm_model_name: str = "Qwen/Qwen3-ASR-1.7B"
     enable_secondary_asr: bool = True
@@ -135,6 +138,15 @@ class Config:
     fusion_hotword_boost: float = 0.12
     fusion_primary_score_margin: float = 0.08
 
+    # ---- ASR: Triton hotword recall ---------------------------------------
+    # RAG-ASR owns the large process-wide hotword pool and returns top-K words
+    # per VAD final segment. The split ASR path receives only recalled words.
+    enable_hotword_recall: bool = False
+    recall_top_k: int = 50
+    recall_custom_hotword_limit: int = 50
+    recall_max_concurrent: int = 4
+    recall_queue_timeout_ms: int = 200
+
     # ---- ASR: inverse text normalization (ITN) + license plate -----------
     # The model emits spoken-form text (六五四三八, 二零二四年); for display we
     # normalize finals to written form. Two independent switches (final only —
@@ -152,8 +164,145 @@ class Config:
 
     # ---- Common: HTTP / pseudo-streaming ---------------------------------
     asr_request_timeout: float = 120
+    asr_repetition_penalty: float = 1.0
     enable_pseudo_stream: bool = True
     pseudo_stream_interval_ms: int = 500
+    asr_first_partial_max_concurrent: int = 24
+    asr_partial_refresh_max_concurrent: int = 4
+    asr_partial_refresh_queue_timeout_ms: int = 0
+    asr_partial_first_max_tokens: int = 64
+    asr_partial_refresh_max_tokens: int = 128
+    asr_final_max_tokens: int = 256
+    asr_final_max_concurrent: int = 20
+    asr_final_executor_workers: int = 20
+    asr_stop_flush_max_concurrent: int = 20
+    asr_stop_flush_executor_workers: int = 20
+    # Random jitter applied before vLLM dispatch for stop-flush segments.
+    # When BS52 streams all end simultaneously, 52 stop-flush requests arrive
+    # at once. A uniform random delay in [0, jitter_ms] spreads them across a
+    # time window, reducing KV-cache burst pressure on vLLM.
+    # 0 = disabled (original behavior, fully backward-compatible).
+    asr_stop_flush_jitter_ms: int = 0
+    # Max number of final-ASR tasks that one session may dispatch in parallel.
+    # 1 = legacy serial behaviour; 2 = allows the next segment's encode to
+    # overlap with the current segment's vLLM decode, reducing per-session
+    # queue wait under BS52 high-segment-density conditions.
+    asr_final_session_parallel: int = 2
+    asr_first_partial_priority_ms: int = 0
+    # Partial backend selection:
+    #   vllm   -> existing pseudo-streaming path via primary/secondary ASR
+    #   sherpa -> local sherpa-onnx streaming recognizer for partials only;
+    #             final/stop_flush remain on the normal ASR path.
+    #   k2_om  -> local Ascend OM online transducer runtime for partials.
+    streaming_partial_backend: str = "vllm"
+    sherpa_model_dir: str = ""
+    sherpa_provider: str = "cpu"
+    sherpa_num_threads: int = 2
+    sherpa_executor_workers: int = 4
+    sherpa_blank_penalty: float = 0.0
+    sherpa_use_int8: bool = True
+    sherpa_runtime_pool_size: int = 1
+    k2_om_model_dir: str = ""
+    k2_om_soc_version: str = ""
+    k2_om_runtime_pool_size: int = 1
+    k2_partial_first_text_interval_ms: int = 500
+    k2_partial_post_text_interval_ms: int = 3000
+    k2_decode_batch_wait_ms: int = 0
+    k2_decode_batch_max_size: int = 16
+    k2_online_scheduler_enabled: bool = False
+    k2_online_result_wait_ms: int = 0
+    k2_online_result_wait_min_audio_ms: int = 800
+    k2_online_ready_coalesce_ms: int = 0
+    k2_first_partial_decode_max_steps: int = 0
+    k2_partial_decode_max_steps: int = 0
+    ctc_om_model_dir: str = ""
+    ctc_om_model_path: str = ""
+    ctc_onnx_model_path: str = ""
+    ctc_tokens_path: str = ""
+    ctc_decode_batch_size: int = 52
+    ctc_decode_wait_ms: int = 10
+    ctc_ready_coalesce_ms: int = 30
+    ctc_result_wait_ms: int = 120
+    # Keep the 116 CTC OM state tensors resident on the NPU across decode ticks
+    # (fixed per-stream device slot + device-to-device state_b->state_a) instead
+    # of the per-tick ~126MB host round-trip that bottlenecks the decode loop
+    # under BS52 (design F4/F5). Default false (gated rollout); the legacy host
+    # round-trip path remains the fallback.
+    ctc_device_resident_state: bool = False
+    # Device-resident decode pacing (ms). 0 = auto (~0.75x chunk_shift), <0 =
+    # disabled. Batches in-phase streams into fast pure-device ticks.
+    ctc_resident_pace_ms: int = 0
+    # First-frame priority: skip the ready_coalesce second-wait when a brand-new
+    # (never-decoded) stream is already ready, so BS52 burst registration does
+    # not inflate first-word latency by up to ready_coalesce_ms per stream.
+    ctc_firstframe_bypass_coalesce: bool = True
+    # AscendK2Stream prefill warmup cap (ms). The gate-closed prefill CTC
+    # session only needs enough audio to warm the encoder state so the first
+    # partial fires ~85ms after gate-open. Feeding (and decoding) it every chunk
+    # through inter-segment silence keeps up to ~52 discarded-result streams in
+    # the CTC decode batch, inflating per-tick state I/O (design F4/F5/F7) and
+    # driving the device-resident preserve host-merge storm (F6). When >0, feed
+    # the prefill only until it has this many ms of audio, then PARK it (stop
+    # feeding -> not is_ready -> dropped from the decode batch) until gate-open,
+    # where the pre-speech ring is fed to restore pre-roll continuity.
+    # 0 = legacy unbounded feeding (fully backward-compatible).
+    ctc_prefill_warmup_ms: int = 0
+    ctc_partial_post_first_interval_ms: int = 500
+    ctc_prefeed_emit_enabled: bool = True
+    # When enabled, CTC partial work is paused during the trailing-silence
+    # window after the first partial has already been sent. TEN VAD continues
+    # to endpoint the segment; this only prevents non-essential CTC refreshes
+    # from competing with the imminent split final request.
+    ctc_final_tail_pause_enabled: bool = False
+    ctc_final_tail_pause_silence_ms: int = 200
+    ctc_device_id: int = 0
+    # AscendK2Stream: event-driven CTC partial + acoustic endpoint detection.
+    # Replaces VadSegmentedStream on Ascend 910B3/B4 when enabled.
+    ascend_k2_enabled: bool = False
+    k2_endpoint_silence_sec: float = 1.2
+    # VAD-silence endpoint (design F9-A). The default endpoint fires
+    # endpoint_silence_sec after the last *CTC token*, so under BS52 the CTC
+    # decode backlog (min_ready up to ~3.3s, F7) delays segment close and
+    # inflates vad_lag by that backlog, which accumulates through the stream.
+    # TEN VAD already runs in feed() in realtime (unaffected by CTC backlog),
+    # so tracking silence on the audio timeline lets the endpoint fire relative
+    # to the *true* speech end. When enabled, the gate closes on whichever of
+    # {VAD silence, CTC token silence} fires first (CTC kept as backstop), which
+    # removes the backlog term from vad_lag without changing correctness on
+    # natural sentence pauses (>= threshold). Default off (A/B gated rollout).
+    k2_vad_endpoint_enabled: bool = False
+    # VAD-silence endpoint threshold (sec). 0 = reuse k2_endpoint_silence_sec.
+    k2_vad_endpoint_silence_sec: float = 0.0
+    k2_max_segment_sec: float = 30.0
+    # Delivery target for 10-minute realtime streaming on Ascend 910B:
+    # BS52, TTFT around 800 ms, final lag <= 3 s, and visible mid-utterance
+    # refresh. Under final pressure, refresh snapshots are lower priority than
+    # final segments and self-throttle instead of piling up stale vLLM calls.
+    asr_partial_refresh_adaptive_enabled: bool = True
+    asr_partial_refresh_pressure_final_backlog: int = 8
+    asr_partial_refresh_pressure_interval_ms: int = 3000
+    asr_partial_refresh_high_pressure_final_backlog: int = 24
+    asr_partial_refresh_high_pressure_interval_ms: int = 8000
+    asr_partial_refresh_pressure_feed_queue_depth: int = 256
+    asr_partial_refresh_high_pressure_feed_queue_depth: int = 1024
+    stream_feed_batch_max_frames: int = 16
+    # First-word window now coalesces already-queued backlog (was 1). Measured:
+    # under BS52 the feed thread pool (TEN VAD) is the bottleneck, not per-chunk
+    # freshness, so draining up to N queued chunks per stream.feed cuts feed-call
+    # count and first-word latency (BS52@40ms ttft p50 2393->1288, @200ms
+    # 1636->1473) with no accuracy loss. Draining only merges backlog that has
+    # ALREADY arrived, so it adds no latency when the server keeps up (BS1/low
+    # concurrency see ~1 chunk per feed and are unchanged).
+    stream_feed_initial_batch_max_frames: int = 16
+    stream_feed_drain_batch_max_frames: int = 1024
+    # Optional duration-quantum coalescing (ms per stream.feed). >0 merges queued
+    # backlog up to this many ms instead of a chunk count. Kept for clients that
+    # send sub-frame chunks, but DEFAULT 0: a fixed ms quantum over-merges large
+    # client chunks (600ms quantum regressed BS52@200ms first-word 1473->1870),
+    # whereas chunk-count draining self-limits to the actual backlog depth.
+    stream_feed_target_ms: int = 0
+    stream_feed_drain_timeout_sec: float = 8.0
+    asr_post_chat_timing_enabled: bool = True
 
     # ---- ASR: target speaker enrollment ----------------------------------
     # When a target-speaker enrollment is uploaded the primary ASR prompt
@@ -169,6 +318,21 @@ class Config:
     asr_enrollment_max_sec: float = 8.0
     asr_enrollment_ttl_sec: float = 3600.0
     asr_enrollment_max_entries: int = 256
+    # Durable enrollment store (最终版 §声纹管理/§查询声纹状态). When set, each
+    # enrollment persists as ``<store_dir>/<scope>/<id>.json`` (metadata + model
+    # fingerprint) plus ``<id>.wav`` (canonical clip) so ``GET
+    # /api/asr/enrollment/{id}`` can report ok/not_found/deleted/incompatible
+    # across restarts, and the realtime path can rehydrate the clip after a
+    # reload. Mount this dir on a durable volume in the delivery run. Empty
+    # disables persistence (pure in-memory, legacy behavior).
+    asr_enrollment_store_dir: str = "var/enrollments"
+    asr_enrollment_scope: str = "default"
+    # Throttle interval for persisting last_used_at touches on status/read.
+    asr_enrollment_metadata_touch_interval_sec: float = 60.0
+    # Optional explicit model fingerprint override; empty derives it from the
+    # primary ASR model + prompt template so a model/adapter swap flips stored
+    # enrollments to ``incompatible``.
+    asr_enrollment_model_fingerprint: str = ""
 
     # ---- ASR: VAD segmentation -------------------------------------------
     # These VAD defaults mirror config.yaml's vad block. They are pure
@@ -176,7 +340,7 @@ class Config:
     # fallback equal to the shipped values avoids a confusing third number;
     # config.yaml still overrides them at load time.
     vad_threshold: float = 0.65
-    silence_duration_ms: int = 350
+    silence_duration_ms: int = 1200
     vad_smoothing_alpha: float = 0.3
     vad_start_frames: int = 20
     vad_pre_speech_ms: int = 500
@@ -199,11 +363,10 @@ class Config:
     # POST /api/asr/transcriptions decodes the upload, replays it through the
     # same VAD segmentation as the streaming endpoints, and transcribes the
     # segments via the shared one-shot dual-ASR path. Knobs:
-    #   transcribe_max_concurrent_jobs   -> jobs running at once; total vLLM
-    #   transcribe_segment_concurrency      pressure is the product of the two
-    #                                       (defaults 2 x 4 = 8 in-flight
-    #                                       segment requests, matching the
-    #                                       emotion stores' ceiling).
+    #   transcribe_max_concurrent_jobs   -> jobs running at once; each job runs
+    #                                       its own segments serially in file
+    #                                       order, so one upload cannot fan out
+    #                                       many vLLM requests at once.
     #   transcribe_max_segment_sec       -> force-cut ceiling for uninterrupted
     #                                       speech (VAD only cuts on silence);
     #                                       sized well under the 60 s one-shot
@@ -221,7 +384,7 @@ class Config:
     #   transcribe_silence_duration_ms   -> offline-only override of the VAD
     #                                       cut pause. 0 = follow the global
     #                                       silence_duration_ms. The global one
-    #                                       is tuned for live latency (350 ms);
+    #                                       follows deployment VAD tuning;
     #                                       minutes-style transcripts read
     #                                       better with longer pauses (~800 ms)
     #                                       and offline has no latency cost,
@@ -233,7 +396,7 @@ class Config:
     #                                       knobs stay shared: there is no
     #                                       offline reason for them to differ.
     transcribe_max_concurrent_jobs: int = 2
-    transcribe_segment_concurrency: int = 4
+    transcribe_segment_concurrency: int = 1
     transcribe_job_queue_max: int = 8
     transcribe_job_ttl_sec: float = 3600.0
     transcribe_max_segment_sec: float = 30.0
@@ -279,8 +442,8 @@ class Config:
     emotion_spec_job_ttl_sec: float = 3600.0
 
     # Shared httpx pool ceiling for all vLLM / upstream HTTP calls.
-    http_max_connections: int = 32
-    http_max_keepalive_connections: int = 16
+    http_max_connections: int = 128
+    http_max_keepalive_connections: int = 64
 
     # ---- Text cleanup LLM (DashScope OpenAI-compatible) -------------------
     text_cleanup_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"

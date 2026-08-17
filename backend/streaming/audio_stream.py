@@ -75,8 +75,11 @@ class VadSegmentedStream:
         # continuous, monotonic clock.
         self._consumed_samples: int = 0
         self._cfg: Config | None = None
+        self._first_partial_delay: float = 0.35
         self._partial_interval: float = 0.5
         self._last_partial_time: float = 0.0
+        self._speech_started_time: float = 0.0
+        self._sent_first_partial: bool = False
         # ``None`` means "follow cfg.enable_pseudo_stream"; callers that know
         # their downstream engine doesn't consume partials (e.g. emotion) can
         # pass ``False`` to skip the snapshot bookkeeping entirely regardless
@@ -88,14 +91,12 @@ class VadSegmentedStream:
         # (whether the resulting segment was usable or got dropped) so
         # the next silent->speaking transition fires exactly one event.
         self._announced_speech: bool = False
+        self._ctc_tail_pause_logged: bool = False
 
     def configure(self, cfg: Config) -> None:
         self._cfg = cfg
-        # Push the per-connection VAD tunables onto the live processor. Without
-        # this, start.config / parameter.asr_config overrides for vad_threshold,
-        # silence_duration_ms, etc. would silently no-op (the VAD was frozen to
-        # process-wide defaults at construction).
         self.vad.apply_config(cfg)
+        self._first_partial_delay = max(0, cfg.pseudo_stream_first_partial_ms) / 1000.0
         self._partial_interval = cfg.pseudo_stream_interval_ms / 1000.0
         if self._partial_override is None:
             # Partial snapshots only make sense if at least one ASR engine is
@@ -112,6 +113,28 @@ class VadSegmentedStream:
             raise RuntimeError("VadSegmentedStream.configure() not called")
         return self._cfg
 
+    def prefeed_partial_snapshot(self) -> PartialSnapshot | None:
+        """Return the latest in-flight audio for low-latency local partials.
+
+        Unlike normal partial snapshots, this is not throttled and is intended
+        only for local streaming backends that separate audio feed from result
+        publication.
+        """
+        if not self._enable_partial:
+            return None
+        now = time.monotonic()
+        if self.vad.is_speaking:
+            snapshot = self.vad.snapshot_incomplete_speech()
+            if snapshot is None or snapshot.size == 0:
+                return None
+            return PartialSnapshot(
+                pcm=snapshot,
+                speech_started_at=self._speech_started_time or now,
+                snapshot_at=now,
+                is_first=not self._sent_first_partial,
+            )
+        return None
+
     def feed(self, pcm_bytes: bytes) -> list[StreamEvent]:
         events: list[StreamEvent] = []
         pcm = _pcm_bytes_to_float32(pcm_bytes)
@@ -127,23 +150,20 @@ class VadSegmentedStream:
 
         cfg = self.cfg
         min_samples = int(SAMPLE_RATE * cfg.min_segment_duration_ms / 1000)
-        # The first partial of each utterance uses its own decoupled floor:
-        # lowering it speeds up the first partial without relaxing the
-        # final-segment short-noise filter, which keeps using ``min_samples``
-        # (line below and in ``flush``). Snapshots grow monotonically within an
-        # utterance, so this floor only ever gates the first partial; later ones
-        # are already longer. ``Config.__post_init__`` guarantees
-        # pseudo_stream_first_partial_ms <= min_segment_duration_ms, so this
-        # floor is never stricter than final's.
-        first_partial_min_samples = int(
-            SAMPLE_RATE * cfg.pseudo_stream_first_partial_ms / 1000
-        )
 
         base = self._consumed_samples
-        for i in range(0, used, hop):
-            was_speaking = self.vad.is_speaking
-            segment = self.vad.process(pcm[i : i + hop])
-            now_speaking = self.vad.is_speaking
+        if hasattr(self.vad, "process_chunk"):
+            vad_results = self.vad.process_chunk(pcm[:used])
+        else:
+            vad_results = []
+            for i in range(0, used, hop):
+                was_speaking = self.vad.is_speaking
+                segment = self.vad.process(pcm[i : i + hop])
+                now_speaking = self.vad.is_speaking
+                vad_results.append((segment, was_speaking, now_speaking))
+
+        for idx, (segment, was_speaking, now_speaking) in enumerate(vad_results):
+            i = idx * hop
 
             # Silent -> speaking transition: announce immediately so any
             # downstream engine that wants to paint a placeholder ("识别
@@ -151,8 +171,23 @@ class VadSegmentedStream:
             # utterance.
             if not was_speaking and now_speaking and not self._announced_speech:
                 self._announced_speech = True
-                self._last_partial_time = 0.0
-                events.append(SpeechStarted())
+                self._ctc_tail_pause_logged = False
+                now = time.monotonic()
+                self._speech_started_time = now
+                self._last_partial_time = now
+                self._sent_first_partial = False
+                speech_timeline_ms = (base + i + hop) * 1000.0 / SAMPLE_RATE
+                logger.info(
+                    "VAD_TIMING event=speech_started timeline_ms=%.1f "
+                    "consumed_ms=%.1f threshold=%.3f start_frames=%s "
+                    "silence_frames=%s",
+                    speech_timeline_ms,
+                    base * 1000.0 / SAMPLE_RATE,
+                    self.vad.threshold,
+                    self.vad.start_frames,
+                    self.vad.silence_frames,
+                )
+                events.append(SpeechStarted(started_at=now))
 
             if segment is None:
                 continue
@@ -163,6 +198,7 @@ class VadSegmentedStream:
             # announcement window has ended.
             announced = self._announced_speech
             self._announced_speech = False
+            self._ctc_tail_pause_logged = False
 
             if len(segment) < min_samples:
                 logger.info(
@@ -178,13 +214,59 @@ class VadSegmentedStream:
 
         if self._enable_partial and self.vad.is_speaking:
             now = time.monotonic()
-            if now - self._last_partial_time >= self._partial_interval:
-                snapshot = self.vad.snapshot_incomplete_speech()
-                if snapshot is not None and len(snapshot) >= first_partial_min_samples:
+            # Gate on the cheap buffered length FIRST; only pay the O(n)
+            # np.concatenate snapshot copy when we will actually emit a
+            # partial. Computing the snapshot every feed made it O(n^2) over
+            # an utterance (7% of BS52 feed-thread CPU in py-spy).
+            buffered = self.vad.buffered_speech_samples()
+            if buffered > 0:
+                if not self._sent_first_partial:
+                    first_samples = max(
+                        self.vad.hop_size,
+                        int(SAMPLE_RATE * self._first_partial_delay),
+                    )
+                    should_emit = buffered >= first_samples
+                else:
+                    should_emit = (
+                        now - self._last_partial_time >= self._partial_interval
+                        and buffered >= min_samples
+                    )
+                snapshot = self.vad.snapshot_incomplete_speech() if should_emit else None
+                if should_emit and snapshot is not None:
+                    is_first = not self._sent_first_partial
                     self._last_partial_time = now
-                    events.append(PartialSnapshot(pcm=snapshot))
+                    self._sent_first_partial = True
+                    if is_first:
+                        logger.info(
+                            "VAD_TIMING event=first_partial_snapshot "
+                            "snapshot_audio_ms=%.1f speech_elapsed_ms=%.1f",
+                            len(snapshot) * 1000.0 / SAMPLE_RATE,
+                            (now - self._speech_started_time) * 1000.0,
+                        )
+                    events.append(
+                        PartialSnapshot(
+                            pcm=snapshot,
+                            speech_started_at=self._speech_started_time,
+                            snapshot_at=now,
+                            is_first=is_first,
+                        )
+                    )
 
         return events
+
+    def ctc_final_tail_pause_active(self) -> bool:
+        cfg = self.cfg
+        if not bool(getattr(cfg, "ctc_final_tail_pause_enabled", False)):
+            return False
+        if not self._enable_partial or not self._sent_first_partial:
+            return False
+        if not self.vad.is_speaking:
+            return False
+        threshold_ms = max(
+            0, int(getattr(cfg, "ctc_final_tail_pause_silence_ms", 200) or 0)
+        )
+        threshold_frames = max(1, int(np.ceil(threshold_ms / self.vad.frame_ms)))
+        return self.vad.silent_count >= threshold_frames
 
     def flush(self, *, force: bool) -> list[StreamEvent]:
         events: list[StreamEvent] = []

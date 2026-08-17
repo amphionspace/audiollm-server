@@ -63,6 +63,7 @@ async def run_oneshot_asr(
     hotwords: list[str],
     language: str,
     enrollment_b64: str | None = None,
+    enrollment_id: str | None = None,
 ) -> dict:
     """Transcribe one clip with the configured primary/secondary models.
 
@@ -81,6 +82,7 @@ async def run_oneshot_asr(
                     hotwords=hotwords,
                     src_lang=language or "N/A",
                     enrollment_wav_base64=enrollment_b64,
+                    enrollment_id=enrollment_id,
                     base_url=cfg.vllm_base_url,
                     model_name=cfg.vllm_model_name,
                     prompt_template=cfg.vllm_prompt_template,

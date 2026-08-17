@@ -1,0 +1,25 @@
+---
+description: Persist Ascend 910B K2 OM delivery architecture and B3/B4 compatibility rules
+alwaysApply: true
+---
+
+# Ascend K2 OM Delivery
+
+- The delivered ASR image must be one customer-facing image that works on both Ascend 910B3 and 910B4 when the matching OM directories are packaged.
+- The delivery Dockerfile/build context must copy/package both `om_b3` and `om_b4`. Do not ship an image that contains only the local machine's OM directory.
+- K2 OM files are SOC-specific. Do not run `om_b3` on 910B4 or `om_b4` on 910B3.
+- Delivery startup must auto-detect the chip with `npu-smi info` and choose:
+  - `Ascend910B3` -> `/home/workspace/models/k2_0610_zhen/om_b3`
+  - `Ascend910B4` -> `/home/workspace/models/k2_0610_zhen/om_b4`
+- Keep `K2_OM_MODEL_DIR` as a manual override for customer field deployment.
+- The inference code path is shared across B3/B4; startup selects only the OM directory, not a different business/runtime implementation.
+- Streaming partial ASR should use K2 Ascend OM (`streaming_partial_backend=k2_om`); VAD finals should stay on the split dual-vLLM service path.
+- The K2 OM backend is implemented through the custom `sherpa-onnx` Ascend online transducer runtime, not by launching the smoke binary per request.
+- `sherpa_executor_workers` is Python executor concurrency feeding the K2 batcher; it is not the OM/runtime instance count.
+- `k2_om_runtime_pool_size` controls K2 recognizer/runtime instances. On one Ascend card, keep it at `1` until the C++ ACL lifecycle is fixed; pool size `2` caused `aclInit` failures and can compete with the single-card HBM budget.
+- If higher workers expose `Memory_Allocation_Failure`, do not keep tuning only Python parameters. First inspect/optimize C++ Ascend buffer allocation, especially per-call `aclrtMalloc`/`aclrtFree` in encoder/decoder/joiner `Run()`.
+- Prefer one dynamic-batch OM runtime plus a real queue/batcher over multiple OM runtimes on the same card unless benchmarks prove otherwise.
+- Reusing input/output device buffers removes one obvious per-call allocation source, but it is not sufficient proof of stability: long BS52 can still fail inside `aclmdlExecute` with `Memory_Allocation_Failure`, likely from OM workspace/dynamic-shape execution pressure.
+- workers=16/batch=16 may form larger batches but worsened queue/decode latency in BS52 smoke. Do not promote larger Python worker counts without full stability and latency evidence.
+- Original `om_b3`/`om_b4` K2 OM files are fixed batch=1, including decoder/joiner and encoder cached states. They are useful for single-stream smoke but cannot directly back `decode_streams` batched partial ASR; batched service needs dynamic-batch OM such as `1~8` or `1~16`.
+- Build or validate optimized OM files with the same CANN/runtime version used by the delivery container. A host CANN 8.5.2 optimized encoder OM failed to load in a CANN 8.5.1 container with `aclmdlLoadFromFile`/`rtsBinaryLoadFromFile` AICPU binary errors, while the same experiment rebuilt inside the 8.5.1 container loaded successfully.

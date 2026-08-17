@@ -4,15 +4,15 @@ Replays an entire decoded recording through the same
 :class:`~backend.streaming.audio_stream.VadSegmentedStream` the live WS
 endpoints use (so a given recording produces identical segment boundaries
 whether it arrives as a stream or as a file), then runs the shared one-shot
-dual-ASR inference per segment with bounded concurrency.
+dual-ASR inference per segment in file order.
 
 What the streaming stack does NOT provide and is added here:
 
 - a max-segment force-cut: VAD only finalizes a segment on silence, so an
   uninterrupted monologue would otherwise grow without bound and exceed what
   a single model call can handle;
-- parallel per-segment inference (a live session is inherently sequential,
-  a file is not);
+- serial per-segment inference within one uploaded file, so one long recording
+  cannot fan out many VAD segments and flood the shared vLLM backend;
 - single-retry + partial-failure semantics: one bad segment must not throw
   away an hour of meeting transcript.
 """
@@ -148,15 +148,17 @@ async def transcribe_pcm_i16(
     hotwords = hotwords or []
     duration_sec = len(pcm_i16) / _BYTES_PER_SAMPLE / SAMPLE_RATE
 
-    # CPU-bound segmentation takes ~13 s per half-hour of audio; run it in a
-    # worker thread so it doesn't freeze the event loop (and with it every
-    # live WS endpoint and concurrent job poll) for that long.
+    # CPU-bound segmentation runs in a worker thread so it doesn't freeze the
+    # event loop (and with it every live WS endpoint and concurrent job poll).
+    total_start = asyncio.get_running_loop().time()
+    segment_start = asyncio.get_running_loop().time()
     segments = await asyncio.to_thread(
         segment_pcm_offline,
         pcm_i16,
         cfg,
         max_segment_sec=cfg.transcribe_max_segment_sec,
     )
+    segment_elapsed = asyncio.get_running_loop().time() - segment_start
     # Drop our local binding too, otherwise the caller's release_input()
     # can't actually free the full-recording buffer (segments own copies).
     del pcm_i16
@@ -165,7 +167,12 @@ async def transcribe_pcm_i16(
     if on_segments_planned is not None:
         on_segments_planned(len(segments))
     logger.info(
-        "Offline transcription: %.1fs audio -> %d segments", duration_sec, len(segments)
+        "TRANSCRIBE_TIMING stage=segment audio_sec=%.3f segments=%d "
+        "segment_ms=%.1f segment_rtf=%.4f",
+        duration_sec,
+        len(segments),
+        segment_elapsed * 1000.0,
+        segment_elapsed / duration_sec if duration_sec > 0 else 0.0,
     )
 
     base_result = {
@@ -179,7 +186,6 @@ async def transcribe_pcm_i16(
     if not segments:
         return base_result
 
-    semaphore = asyncio.Semaphore(max(1, int(cfg.transcribe_segment_concurrency)))
     done_count = 0
 
     async def infer(wav_b64: str) -> dict:
@@ -189,38 +195,66 @@ async def transcribe_pcm_i16(
 
     async def run_one(seg: OfflineSegment) -> dict:
         nonlocal done_count
-        async with semaphore:
-            entry: dict = {
-                "id": seg.index,
-                "start_ms": round(seg.start_ms),
-                "end_ms": round(seg.end_ms),
-                "text": "",
-            }
-            wav_b64 = pcm_to_wav_base64(seg.pcm)
+        seg_start = asyncio.get_running_loop().time()
+        entry: dict = {
+            "id": seg.index,
+            "start_ms": round(seg.start_ms),
+            "end_ms": round(seg.end_ms),
+            "text": "",
+        }
+        encode_start = asyncio.get_running_loop().time()
+        wav_b64 = pcm_to_wav_base64(seg.pcm)
+        encode_elapsed = asyncio.get_running_loop().time() - encode_start
+        try:
             try:
-                try:
-                    res = await infer(wav_b64)
-                except Exception:
-                    # One retry absorbs transient upstream hiccups; a second
-                    # failure is recorded on the entry, not raised, so one bad
-                    # segment can't sink the rest of the meeting.
-                    res = await infer(wav_b64)
-                entry["text"] = str(res.get("text") or "")
-                if res.get("language"):
-                    entry["language"] = res["language"]
-            except Exception as exc:  # noqa: BLE001 - per-segment isolation
-                logger.warning(
-                    "Transcription segment %d failed after retry: %s",
-                    seg.index,
-                    exc,
-                )
-                entry["error"] = str(exc)
-            done_count += 1
-            if on_segment_done is not None:
-                on_segment_done(done_count)
-            return entry
+                infer_start = asyncio.get_running_loop().time()
+                res = await infer(wav_b64)
+                infer_elapsed = asyncio.get_running_loop().time() - infer_start
+            except Exception:
+                # One retry absorbs transient upstream hiccups; a second
+                # failure is recorded on the entry, not raised, so one bad
+                # segment can't sink the rest of the meeting.
+                infer_start = asyncio.get_running_loop().time()
+                res = await infer(wav_b64)
+                infer_elapsed = asyncio.get_running_loop().time() - infer_start
+            entry["text"] = str(res.get("text") or "")
+            if res.get("language"):
+                entry["language"] = res["language"]
+        except Exception as exc:  # noqa: BLE001 - per-segment isolation
+            logger.warning(
+                "Transcription segment %d failed after retry: %s",
+                seg.index,
+                exc,
+            )
+            entry["error"] = str(exc)
+            infer_elapsed = 0.0
+        done_count += 1
+        if on_segment_done is not None:
+            on_segment_done(done_count)
+        seg_elapsed = asyncio.get_running_loop().time() - seg_start
+        if done_count <= 3 or done_count == len(segments) or done_count % 25 == 0:
+            audio_sec = len(seg.pcm) / SAMPLE_RATE
+            logger.info(
+                "TRANSCRIBE_TIMING stage=segment_infer idx=%d done=%d/%d "
+                "audio_sec=%.3f encode_ms=%.1f infer_ms=%.1f total_ms=%.1f "
+                "infer_rtf=%.4f text_chars=%d error=%s",
+                seg.index,
+                done_count,
+                len(segments),
+                audio_sec,
+                encode_elapsed * 1000.0,
+                infer_elapsed * 1000.0,
+                seg_elapsed * 1000.0,
+                infer_elapsed / audio_sec if audio_sec > 0 else 0.0,
+                len(str(entry.get("text") or "")),
+                "error" in entry,
+            )
+        return entry
 
-    entries = await asyncio.gather(*(run_one(seg) for seg in segments))
+    entries = []
+    for seg in segments:
+        entries.append(await run_one(seg))
+    infer_total_elapsed = asyncio.get_running_loop().time() - total_start - segment_elapsed
 
     failed = [e for e in entries if "error" in e]
     if len(failed) == len(entries):
@@ -240,4 +274,17 @@ async def transcribe_pcm_i16(
     result["segments"] = kept
     result["full_text"] = "\n".join(e["text"] for e in kept if e.get("text"))
     result["failed_segments"] = len(failed)
+    total_elapsed = asyncio.get_running_loop().time() - total_start
+    logger.info(
+        "TRANSCRIBE_TIMING stage=job_done audio_sec=%.3f segments=%d kept=%d "
+        "failed=%d segment_ms=%.1f infer_total_ms=%.1f total_ms=%.1f rtf=%.4f",
+        duration_sec,
+        len(segments),
+        len(kept),
+        len(failed),
+        segment_elapsed * 1000.0,
+        infer_total_elapsed * 1000.0,
+        total_elapsed * 1000.0,
+        total_elapsed / duration_sec if duration_sec > 0 else 0.0,
+    )
     return result

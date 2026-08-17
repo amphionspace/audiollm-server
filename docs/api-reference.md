@@ -26,7 +26,7 @@
 | `/tuling/ast/v3` | 通用流式 ASR（讯飞图灵 AST v3 协议） | 对接讯飞 tuling-ast-sdk 或按 AST v3 信封集成 | `payload.result` 词图（msgtype sentence / Progressive） |
 | `/astv3-test-proxy` | AST v3 同源代理（测试用） | 仅供 HTTPS 前端规避 mixed content，透明转发到写死的远程 AST v3 后端 | 同 `/tuling/ast/v3`（透明转发） |
 
-`/tuling/ast/v3` 与上面两个任务接口的线上协议不同：音频以 base64 放在 JSON 帧，`header.status`（0/1/2）驱动状态机，无 `ready`/`start`/`stop`，结果为词图结构。模型组合上也不同：本端点恒为 primary-only（强制关闭副模型/本地 Qwen/融合，客户端无法经 `parameter.asr_config` 重开），主模型由 `astv3_vllm_*` 指定（当前留空，回退全局 primary `vllm_base_url`），而 `/transcribe-streaming` 仍按 `config.yaml` 走双模型。它支持热词（`payload.text.text`）、目标说话人（先经 `POST /api/asr/enrollment` 注册，再把 id 放进首帧 `header.resIdList[0]`）与配置覆写（首帧 `parameter.asr_config`，等价于其他端点的 `start.config`）。它不遵循下文“WebSocket 调用流程”，详见 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md)。
+`/tuling/ast/v3` 与上面两个任务接口的线上协议不同：音频以 base64 放在 JSON 帧，`header.status`（0/1/2）驱动状态机，无 `ready`/`start`/`stop`，结果为词图结构。模型组合上也不同：本端点恒为 primary-only（强制关闭副模型/本地 Qwen/融合，客户端无法经 `parameter.asr_config` 重开），主模型由 `astv3_vllm_*` 指定（当前留空，回退全局 primary `vllm_base_url`），而 `/transcribe-streaming` 仍按 `config.yaml` 走双模型。它支持热词（`payload.text.text`）、目标说话人（先经 `POST /api/asr/enrollment` 注册，再在首帧 `parameter.asr_config` 设置 `enable_role_separation=false`、`enrollment_enable=true`、`enrollment_id`）与配置覆写（首帧 `parameter.asr_config`，等价于其他端点的 `start.config`）。`header.resIdList` 已废弃并被忽略。它不遵循下文“WebSocket 调用流程”，详见 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md)。
 
 `/astv3-test-proxy` 是为「实时语音识别（测试用）」前端页面临时搭的同源 WebSocket 代理。该页经 HTTPS 提供，浏览器 mixed-content 策略禁止它直接打开明文 `ws://` 的远程 AST v3 后端；由后端在同源 `wss://`（经反向代理）接入后，把每一帧原样双向转发到写死的上游 `ws://159.138.9.106:18082/tuling/ast/v3`。它不解析 AST v3 信封，线上协议与 `/tuling/ast/v3` 完全一致（见 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md)）；上游连接失败时服务端以 close code 1011 关闭连接。临时测试设施：上游地址写死、前端不暴露任何可选项，外部集成请直接使用 `/tuling/ast/v3`。
 
@@ -236,7 +236,7 @@ curl -X POST http://172.16.0.3:8080/api/asr/transcriptions \
 
 ### 目标说话人注册
 
-`POST /api/asr/enrollment` 上传一段目标说话人音频，返回不透明的 `enrollment_id` 供后续请求复用：`/transcribe-streaming` 放进 `start.enrollment_id`、`/tuling/ast/v3` 放进首帧 `header.resIdList[0]`、REST 的 `/api/asr/upload` 与 `/api/audio/analyze` 作为表单字段 `enrollment_id`。
+`POST /api/asr/enrollment` 上传一段目标说话人音频，返回不透明的 `enrollment_id` 供后续请求复用：`/transcribe-streaming` 放进 `start.enrollment_id`、`/tuling/ast/v3` 放进首帧 `parameter.asr_config.enrollment_id`（同时 `enable_role_separation=false`、`enrollment_enable=true`）、REST 的 `/api/asr/upload` 与 `/api/audio/analyze` 作为表单字段 `enrollment_id`。
 
 ```bash
 curl -X POST http://172.16.0.3:8080/api/asr/enrollment \
@@ -254,7 +254,7 @@ curl -X POST http://172.16.0.3:8080/api/asr/enrollment \
 
 #### 请求约束
 
-音频为 WAV，服务端解码为 16 kHz mono。短于 `asr_enrollment_min_sec`（默认 1.0 秒）返回 400 且 `detail.code=too_short`；长于 `asr_enrollment_max_sec`（默认 8.0 秒）不拒绝，服务端尾截到上限。上传体为空或解码后无音频返回 `detail.code=empty`，WAV 损坏或解码失败返回 `detail.code=decode_failed`。
+音频为 WAV/MP3/16 kHz mono s16le PCM，服务端解码并规范化为一份 16 kHz mono canonical WAV。短于 `asr_enrollment_min_sec`（默认 1.0 秒）返回 400 且 `detail.code=too_short`；长于 `asr_enrollment_max_sec`（默认 8.0 秒）不拒绝，服务端尾截到上限。上传体为空或解码后无音频返回 `detail.code=empty`，容器不支持返回 `detail.code=unsupported_format`，WAV/MP3 损坏或解码失败返回 `detail.code=decode_failed`。
 
 #### 生命周期
 
@@ -262,15 +262,16 @@ curl -X POST http://172.16.0.3:8080/api/asr/enrollment \
 
 | 项目 | 行为 |
 |---|---|
-| 存储 | 进程内内存缓存，服务重启全部失效，不跨实例共享 |
-| 有效期 | TTL 由 `asr_enrollment_ttl_sec`（默认 3600 秒）控制；每次被成功使用都会续期，持续使用不会过期 |
+| 存储 | 双层：内存热层 + 磁盘冷层。磁盘保存 `<id>.json` 元数据、`<id>.wav` canonical WAV、可选 `<id>.embeds.json` 派生 projector embedding；不是保存两份 WAV |
+| 有效期 | 内存 TTL 由 `asr_enrollment_ttl_sec`（默认 3600 秒）控制；每次被成功使用都会续期。磁盘层不因 TTL 自动删除，重启可从磁盘 rehydrate |
 | 断连 | WebSocket 断开不删除，重连后仍可复用（受 TTL 约束） |
-| 容量 | 上限 `asr_enrollment_max_entries`（默认 256），超出按最近最少使用（LRU）淘汰最旧条目 |
-| 删除 | `DELETE /api/asr/enrollment/{enrollment_id}` 立即清除；未知 id 也返回 204，可安全重试 |
+| 容量 | 内存上限 `asr_enrollment_max_entries`（默认 256），超出按最近最少使用（LRU）淘汰最旧内存条目；磁盘条目保留 |
+| embedding | 上传后 best-effort 后台预计算；若 split encoder 未就绪，首个声纹 final 懒 encode。embedding 是 enrollment clip 的 projector frames，作为第一段音频 embedding 注入，目标 utterance embedding 为第二段 |
+| 删除 | `DELETE /api/asr/enrollment/{enrollment_id}` 删除 WAV 与 embedding 文件并写 deleted tombstone；未知 id 也返回 204，可安全重试 |
 
-`enrollment_id` 失效（过期 / 重启 / 被 LRU 淘汰 / 删除）后再被使用时，服务端静默回退为普通 ASR、不返回 error：WS 路径仅记 WARN（见“WebSocket 错误消息”），REST `/api/asr/upload` 响应 `enrollment_used` 为 `false`。集成方应对失效有预期，必要时重新注册并更新所携带的 id。
+`enrollment_id` 失效（未找到 / 被删除 / 模型 fingerprint 不兼容）后再被使用时，服务端静默回退为普通 ASR、不返回 error：WS 路径仅记 WARN（见“WebSocket 错误消息”），REST `/api/asr/upload` 响应 `enrollment_used` 为 `false`。集成方应对失效有预期，必要时重新注册并更新所携带的 id。
 
-`asr_enrollment_min_sec` / `asr_enrollment_max_sec` / `asr_enrollment_ttl_sec` 虽在客户端覆写白名单内（见“临时配置覆写”），但注册是独立的 REST 调用、恒按服务端默认执行；流式端点首帧覆写这些值不会改变已注册 id 的行为。通用流式端点的 `start.enrollment_id` / `update_hotwords.enrollment_id` 用法与 TS-ASR 双音频 prompt 模板见 [通用流式 ASR WebSocket](transcribe-streaming-protocol.md)；AST v3 集成只需按本节注册，并按 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md) 把 id 放入 `header.resIdList[0]`。
+`asr_enrollment_min_sec` / `asr_enrollment_max_sec` / `asr_enrollment_ttl_sec` 虽在客户端覆写白名单内（见“临时配置覆写”），但注册是独立的 REST 调用、恒按服务端默认执行；流式端点首帧覆写这些值不会改变已注册 id 的行为。通用流式端点的 `start.enrollment_id` / `update_hotwords.enrollment_id` 用法与 TS-ASR 双音频 prompt 模板见 [通用流式 ASR WebSocket](transcribe-streaming-protocol.md)；AST v3 集成只需按本节注册，并按 [实时转写 AST v3 WebSocket](tuling-ast-v3-protocol.md) 把 id 放入 `parameter.asr_config.enrollment_id`。
 
 ### 情感上传
 

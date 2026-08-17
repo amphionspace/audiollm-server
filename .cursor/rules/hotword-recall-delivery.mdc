@@ -1,0 +1,18 @@
+---
+description: Preserve RAG-ASR hotword recall delivery requirements and validation checks
+alwaysApply: true
+---
+
+# Hotword Recall Delivery
+
+- Delivery includes a recall service with a managed 100k-level hotword pool. Users manage hotwords through recall-service CRUD APIs, not by passing prompt hotwords through the old non-split path.
+- The container must provide durable storage for hotword metadata and precomputed embeddings so restart/reload does not lose the prepared pool.
+- Validate add/list/delete/reload behavior before claiming hotword readiness.
+- Validate the end-to-end recall path: user audio or projector features -> hotword embedding retrieval -> threshold/top-k ranking -> selected hotwords injected into the split VAD-final decoder request.
+- In the split architecture, prefer projector recall using the existing vLLM encoder output. Avoid starting a separate Triton encoder unless Ascend compatibility and latency are proven.
+- Track hotword latency as components: queue wait, feature/projector preparation, model/adapter inference, embedding similarity search, top-k/threshold filtering, serialization, and decoder request integration.
+- Hotword recall affects VAD final latency, not K2 streaming partial latency, unless the integration explicitly moves recall earlier.
+- Accuracy validation must include expected hotwords appearing in final text and no obvious degradation of non-hotword transcript content.
+- The ASR hotword-pool wrapper must use the same backend protocol as the running RAG-ASR service. If only the HTTP service is running, do not let `RAG_ASR_SERVICE_BACKEND=auto` fall back to Triton `/v2` calls.
+- The delivery image must include RAG-ASR runtime dependencies such as `lhotse`; missing dependencies make the wrapper return 502 even when the ASR API is healthy.
+- For Qwen3ASR-based hotword recall, preserve compatibility fixes for default RoPE and missing `pad_token_id` when the container's `transformers` version lacks those defaults.

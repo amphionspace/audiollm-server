@@ -11,6 +11,7 @@ Covers
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -23,11 +24,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.asr.client import (  # noqa: E402
+    _enrollment_embeds_sync,
     build_audio_only_messages,
     build_primary_messages,
+    clear_enrollment_embedding_cache_for_tests,
     detect_and_fix_repetitions,
     parse_model_output,
 )
+import backend.asr.enrollment as enr_mod  # noqa: E402
 from backend.asr.enrollment import (  # noqa: E402
     EnrollmentError,
     _Store,
@@ -329,3 +333,107 @@ def test_store_overflow_evicts_lru():
     assert store.get(ids[1]) is not None
     assert store.get(ids[2]) is not None
     assert store.get(new_entry.enrollment_id) is not None
+
+
+def test_persist_embedding_updates_metadata_and_loads(tmp_path, monkeypatch):
+    monkeypatch.setattr(enr_mod, "current_model_fingerprint", lambda: "model-A")
+    store = _Store(ttl_sec=60.0, max_entries=4, store_dir=str(tmp_path), scope="default")
+    entry = store.put(_wav_b64(2.0), 2.0)
+
+    ok = store.persist_embedding(
+        entry.enrollment_id,
+        entry.wav_base64,
+        "EMBEDS_B64",
+        encode_response={
+            "dtype": "float16",
+            "serialization": "torch",
+            "shape": [17, 128],
+            "token_len": 17,
+            "feature_len": 34,
+        },
+    )
+
+    assert ok is True
+    meta_path = tmp_path / "default" / f"{entry.enrollment_id}.json"
+    embed_path = tmp_path / "default" / f"{entry.enrollment_id}.embeds.json"
+    assert embed_path.exists()
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta["embedding_status"] == "ready"
+    assert meta["embedding"]["projector_len"] == 17
+    assert store.load_embedding(entry.enrollment_id, entry.wav_base64) == "EMBEDS_B64"
+
+
+def test_stale_embedding_misses_and_lazy_encode_refreshes(tmp_path, monkeypatch):
+    monkeypatch.setattr(enr_mod, "current_model_fingerprint", lambda: "model-A")
+    store = _Store(ttl_sec=60.0, max_entries=4, store_dir=str(tmp_path), scope="default")
+    entry = store.put(_wav_b64(2.0), 2.0)
+    store.persist_embedding(entry.enrollment_id, entry.wav_base64, "OLD_EMBEDS")
+    assert store.load_embedding(entry.enrollment_id, entry.wav_base64) == "OLD_EMBEDS"
+
+    monkeypatch.setattr(enr_mod, "current_model_fingerprint", lambda: "model-B")
+    assert store.load_embedding(entry.enrollment_id, entry.wav_base64) is None
+
+
+def test_delete_removes_embedding_file_and_keeps_tombstone(tmp_path, monkeypatch):
+    monkeypatch.setattr(enr_mod, "current_model_fingerprint", lambda: "model-A")
+    store = _Store(ttl_sec=60.0, max_entries=4, store_dir=str(tmp_path), scope="default")
+    entry = store.put(_wav_b64(2.0), 2.0)
+    store.persist_embedding(entry.enrollment_id, entry.wav_base64, "EMBEDS_B64")
+    embed_path = tmp_path / "default" / f"{entry.enrollment_id}.embeds.json"
+    assert embed_path.exists()
+
+    assert store.delete(entry.enrollment_id) is True
+    assert not embed_path.exists()
+    assert store.status(entry.enrollment_id).reason == "deleted"
+
+
+def test_enrollment_embeds_sync_uses_persisted_before_encode(tmp_path, monkeypatch):
+    monkeypatch.setattr(enr_mod, "current_model_fingerprint", lambda: "model-A")
+    clear_enrollment_embedding_cache_for_tests()
+    store = _Store(ttl_sec=60.0, max_entries=4, store_dir=str(tmp_path), scope="default")
+    entry = store.put(_wav_b64(2.0), 2.0)
+    store.persist_embedding(entry.enrollment_id, entry.wav_base64, "PERSISTED_EMBEDS")
+
+    monkeypatch.setattr("backend.asr.client.get_enrollment_store", lambda: store)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("encoder should not be called on persisted hit")
+
+    monkeypatch.setattr("backend.asr.client._post_split_encode_sync", _boom)
+    out = _enrollment_embeds_sync(
+        entry.wav_base64,
+        enrollment_id=entry.enrollment_id,
+        base_url="http://split",
+        timeout=1.0,
+        trace_id="test",
+        request_kind="final",
+    )
+    assert out == "PERSISTED_EMBEDS"
+
+
+def test_enrollment_embeds_sync_persists_lazy_encode(tmp_path, monkeypatch):
+    monkeypatch.setattr(enr_mod, "current_model_fingerprint", lambda: "model-A")
+    clear_enrollment_embedding_cache_for_tests()
+    store = _Store(ttl_sec=60.0, max_entries=4, store_dir=str(tmp_path), scope="default")
+    entry = store.put(_wav_b64(2.0), 2.0)
+    monkeypatch.setattr("backend.asr.client.get_enrollment_store", lambda: store)
+
+    calls = {"count": 0}
+
+    def _fake_encode(*args, **kwargs):
+        calls["count"] += 1
+        return "LAZY_EMBEDS", {"shape": [9, 128], "token_len": 9, "dtype": "float16"}
+
+    monkeypatch.setattr("backend.asr.client._post_split_encode_sync", _fake_encode)
+    out = _enrollment_embeds_sync(
+        entry.wav_base64,
+        enrollment_id=entry.enrollment_id,
+        base_url="http://split",
+        timeout=1.0,
+        trace_id="test",
+        request_kind="final",
+    )
+    assert out == "LAZY_EMBEDS"
+    assert calls["count"] == 1
+    clear_enrollment_embedding_cache_for_tests()
+    assert store.load_embedding(entry.enrollment_id, entry.wav_base64) == "LAZY_EMBEDS"

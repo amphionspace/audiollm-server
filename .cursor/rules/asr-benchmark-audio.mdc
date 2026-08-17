@@ -1,0 +1,16 @@
+---
+description: Persist the fixed ASR benchmark audio source and 10-minute random crop requirement
+alwaysApply: true
+---
+
+# ASR Benchmark Audio
+
+- For streaming BS52 same/random target validation, use:
+  `/home/workspace/amphion-asr-delivery/test_audio/20200623_S_R001S01C01.flac`
+- Random tests should randomly crop 10 minutes from that FLAC unless the user gives a different test source.
+- The delivery target remains 52 concurrent realtime streams, 10-minute audio, TTFT around 800 ms, and final-word latency under 3 s.
+- First-word latency is measured from the first VAD activation of a speech segment to the first non-empty ASR text returned to the client.
+- Final-word latency is measured from the last VAD final trigger of a segment to all ASR results for that VAD segment being returned.
+- While validating streaming, also check that intermediate ASR partial refresh frequency is normal; text existence alone is not enough.
+- For debugging and performance analysis, short 20-second crops may be used temporarily. They are smoke/debug tests only.
+- Short synthetic or public speech samples are smoke tests only; do not use them to claim delivery performance.

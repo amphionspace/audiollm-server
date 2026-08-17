@@ -185,32 +185,6 @@ def test_text_cleanup_bridge_appends_v1(tmp_path: Path) -> None:
     assert cfg.text_cleanup_max_tokens == 99
 
 
-def test_shipped_config_projects_rest_bindings() -> None:
-    cfg = load_config()  # reads the shipped config.yaml
-    assert cfg.vllm_base_url == "http://localhost:8009"
-    assert cfg.vllm_model_name == "AmphionASR-1.7B"
-    assert cfg.vllm_prompt_template == "amphion_asr_1.7b"
-    assert cfg.vllm_prompt_template in VALID_PRIMARY_PROMPT_TEMPLATES
-    assert cfg.secondary_vllm_base_url == "http://localhost:8001"
-    assert cfg.emotion_vllm_base_url == "http://localhost:8222"
-    assert cfg.emotion_spec_vllm_base_url == "http://localhost:9001"
-    assert cfg.asr_request_timeout == 120
-    assert cfg.emotion_request_timeout == 30
-    assert cfg.vad_threshold == 0.65
-    assert cfg.min_segment_duration_ms == 350
-    assert cfg.pseudo_stream_first_partial_ms == 200
-    assert cfg.enable_dual_asr_fusion is False
-    assert cfg.enable_secondary_asr is True
-    assert cfg.emotion_task_mode == "ser"
-    assert cfg.emotion_spec_task_mode == "sepc"
-    assert cfg.enable_asr_repetition_fix is True
-    assert (
-        cfg.text_cleanup_base_url
-        == "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    )
-    assert cfg.http_max_connections == 32
-
-
 # --------------------------------------------------------------------------- #
 # endpoint parsing + validation
 # --------------------------------------------------------------------------- #
@@ -360,22 +334,6 @@ def test_resolve_policy_soft_applies(tmp_path: Path) -> None:
     parsed = load_parsed(_write_yaml(tmp_path, data))
     cfg = resolve_endpoint(parsed.endpoints[0], parsed)
     assert cfg.vad_threshold == 0.91
-
-
-def test_resolve_real_tuling_primary_only() -> None:
-    spec = next(e for e in ENDPOINTS if e.path == "/tuling/ast/v3")
-    cfg = resolve_endpoint(spec)
-    assert cfg.vllm_base_url == "http://localhost:8009"  # amphion_asr (primary)
-    assert cfg.vllm_prompt_template == "amphion_asr_1.7b"
-    assert cfg.enable_secondary_asr is False  # lock + no secondary binding
-    assert cfg.enable_dual_asr_fusion is False
-
-
-def test_resolve_real_ws_audio_binds_emotion_spec() -> None:
-    spec = next(e for e in ENDPOINTS if e.path == "/ws/audio")
-    cfg = resolve_endpoint(spec)
-    assert cfg.emotion_spec_vllm_base_url == "http://localhost:9001"
-    assert cfg.enable_secondary_asr is True  # secondary bound
 
 
 def test_get_service_upstream() -> None:

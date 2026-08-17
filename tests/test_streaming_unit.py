@@ -64,6 +64,21 @@ def _tone_pcm_bytes(n_samples: int, freq: float = 440.0, sr: int = 16000) -> byt
     return (np.clip(sig, -1, 1) * 32767).astype(np.int16).tobytes()
 
 
+class _AmplitudeBackend:
+    """Deterministic fake TEN backend for stream unit tests."""
+
+    def process(self, frame: np.ndarray) -> float:
+        return 1.0 if float(np.abs(frame).max()) > 0.1 else 0.0
+
+
+@pytest.fixture(autouse=True)
+def fake_ten_vad_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "backend.audio.vad.VADProcessor._create_vad_backend",
+        lambda self: _AmplitudeBackend(),
+    )
+
+
 class FakeWebSocket:
     """Minimal fake of starlette/fastapi WebSocket for session tests."""
 
@@ -188,6 +203,10 @@ class _SpeakingFakeVad:
         self.hop_size = hop_size
         self.is_speaking = False
         self._snap = np.zeros(snapshot_samples, dtype=np.float32)
+        # Referenced only by the VAD_TIMING speech_started log line.
+        self.threshold = 0.5
+        self.start_frames = 1
+        self.silence_frames = 1
 
     def apply_config(self, cfg) -> None:  # noqa: D401 - test stub
         pass
@@ -350,6 +369,86 @@ async def test_session_partial_dispatch_is_serialized():
     # At most one partial fired since the second arrives while the first is in
     # flight (serialized non-overlapping policy).
     assert len(engine.partials) <= 1
+
+
+@pytest.mark.asyncio
+async def test_session_allows_refresh_after_first_partial():
+    first = PartialSnapshot(
+        pcm=np.ones(400, dtype=np.float32) * 0.05,
+        is_first=True,
+    )
+    refresh = PartialSnapshot(
+        pcm=np.ones(800, dtype=np.float32) * 0.05,
+        is_first=False,
+    )
+    stream = _ScriptedStream(feed_events=[], flush_events=[])
+    engine = _RecorderEngine()
+    session = StreamingSession(FakeWebSocket([]), stream=stream, engine=engine)
+
+    session._maybe_launch_partial(first)
+    if session._partial_task:
+        await asyncio.gather(session._partial_task, return_exceptions=True)
+    session._maybe_launch_partial(refresh)
+    if session._partial_task:
+        await asyncio.gather(session._partial_task, return_exceptions=True)
+    await session.cleanup()
+
+    assert engine.partials == [first, refresh]
+
+
+@pytest.mark.asyncio
+async def test_session_allows_first_partial_for_each_speech_segment():
+    first_a = PartialSnapshot(
+        pcm=np.ones(400, dtype=np.float32) * 0.05,
+        speech_started_at=1.0,
+        is_first=True,
+    )
+    first_b = PartialSnapshot(
+        pcm=np.ones(400, dtype=np.float32) * 0.05,
+        speech_started_at=2.0,
+        is_first=True,
+    )
+    stream = _ScriptedStream(feed_events=[], flush_events=[])
+    engine = _RecorderEngine()
+    session = StreamingSession(FakeWebSocket([]), stream=stream, engine=engine)
+
+    session._maybe_launch_partial(first_a)
+    if session._partial_task:
+        await asyncio.gather(session._partial_task, return_exceptions=True)
+    session._maybe_launch_partial(first_b)
+    if session._partial_task:
+        await asyncio.gather(session._partial_task, return_exceptions=True)
+    await session.cleanup()
+
+    assert engine.partials == [first_a, first_b]
+
+
+@pytest.mark.asyncio
+async def test_session_replaces_queued_partial_refresh_with_latest_snapshot():
+    # snapshot_at spaced beyond pseudo_stream_interval_ms (default 1000 ms) so
+    # the adaptive refresh gate lets refresh2 through to the replace-queued path
+    # instead of dropping it by interval.
+    refresh1 = PartialSnapshot(
+        pcm=np.ones(400, dtype=np.float32) * 0.05,
+        is_first=False,
+        snapshot_at=100.0,
+    )
+    refresh2 = PartialSnapshot(
+        pcm=np.ones(800, dtype=np.float32) * 0.05,
+        is_first=False,
+        snapshot_at=102.0,
+    )
+    stream = _ScriptedStream(feed_events=[], flush_events=[])
+    engine = _RecorderEngine()
+    session = StreamingSession(FakeWebSocket([]), stream=stream, engine=engine)
+
+    session._maybe_launch_partial(refresh1)
+    session._maybe_launch_partial(refresh2)
+    if session._partial_task:
+        await asyncio.gather(session._partial_task, return_exceptions=True)
+    await session.cleanup()
+
+    assert engine.partials == [refresh2]
 
 
 @pytest.mark.asyncio
@@ -809,31 +908,175 @@ def test_ast_v3_asr_config_language_only():
     assert "config" not in ctrl
 
 
-def test_ast_v3_residlist_maps_to_enrollment_id():
-    """header.resIdList[0] becomes the target-speaker enrollment id."""
+def test_ast_v3_hotword_pool_id_routed_out_of_config():
+    """asr_config.hotword_pool_id -> start.hotword_pool_id, not start.config."""
+    p = AstV3Protocol()
+    acts = p.decode_inbound(
+        _ast_frame(
+            header={"status": 0},
+            parameter={
+                "asr_config": {"hotword_pool_id": "team-42", "vad_threshold": 0.3}
+            },
+        )
+    )
+    ctrl = acts[0].ctrl
+    assert ctrl["hotword_pool_id"] == "team-42"
+    assert ctrl["config"] == {"vad_threshold": 0.3}
+
+
+def test_ast_v3_no_hotword_pool_id_omits_key():
+    """Without hotword_pool_id the synthesized start omits the key (default pool)."""
+    p = AstV3Protocol()
+    acts = p.decode_inbound(
+        _ast_frame(header={"status": 0}, parameter={"asr_config": {"language": "en"}})
+    )
+    assert "hotword_pool_id" not in acts[0].ctrl
+
+
+def test_ast_v3_residlist_is_deprecated_and_ignored():
+    """header.resIdList is no longer a voiceprint entry (contract V0.4-review)."""
     p = AstV3Protocol()
     acts = p.decode_inbound(
         _ast_frame(header={"traceId": "t", "status": 0, "resIdList": ["enr-abc"]})
     )
     assert acts[0].ctrl["type"] == "start"
-    assert acts[0].ctrl["enrollment_id"] == "enr-abc"
+    assert "enrollment_id" not in acts[0].ctrl
 
 
-def test_ast_v3_residlist_only_uses_first_entry():
-    """Multiple resIdList entries: only the first is used (no multi-speaker)."""
+def test_ast_v3_role_separation_default_on_ignores_enrollment():
+    """Omitting enable_role_separation defaults to role separation, which takes
+    priority over enrollment and does not route the enrollment id."""
     p = AstV3Protocol()
     acts = p.decode_inbound(
-        _ast_frame(header={"status": 0, "resIdList": ["one", "two", "three"]})
+        _ast_frame(
+            header={"status": 0},
+            parameter={
+                "asr_config": {
+                    "enrollment_enable": True,
+                    "enrollment_id": "enr-abc",
+                }
+            },
+        )
     )
-    assert acts[0].ctrl["enrollment_id"] == "one"
+    assert acts[0].ctrl["type"] == "start"
+    assert "enrollment_id" not in acts[0].ctrl
+    assert p._role_separation_active is True
 
 
-def test_ast_v3_no_enrollment_when_residlist_absent_or_empty():
-    for res in (None, [], [None]):
-        p = AstV3Protocol()
-        header = {"status": 0} if res is None else {"status": 0, "resIdList": res}
-        acts = p.decode_inbound(_ast_frame(header=header))
-        assert "enrollment_id" not in acts[0].ctrl, f"resIdList={res!r}"
+def test_ast_v3_enrollment_routed_when_role_separation_off():
+    """enable_role_separation=false + enrollment_enable + valid id -> enrollment."""
+    p = AstV3Protocol()
+    acts = p.decode_inbound(
+        _ast_frame(
+            header={"status": 0},
+            parameter={
+                "asr_config": {
+                    "enable_role_separation": False,
+                    "enrollment_enable": True,
+                    "enrollment_id": "enr-abc",
+                }
+            },
+        )
+    )
+    assert acts[0].ctrl["enrollment_id"] == "enr-abc"
+    assert p._role_separation_active is False
+
+
+def test_ast_v3_enrollment_disabled_ignores_id_when_role_separation_off():
+    """Role separation off + enrollment_enable false -> plain ASR, id ignored."""
+    p = AstV3Protocol()
+    acts = p.decode_inbound(
+        _ast_frame(
+            header={"status": 0},
+            parameter={
+                "asr_config": {
+                    "enable_role_separation": False,
+                    "enrollment_id": "enr-abc",
+                }
+            },
+        )
+    )
+    assert "enrollment_id" not in acts[0].ctrl
+    assert p._role_separation_active is False
+
+
+def test_ast_v3_param_error_on_enrollment_enable_without_id():
+    """Role separation off + enrollment_enable true + empty id -> parameter error."""
+    p = AstV3Protocol()
+    acts = p.decode_inbound(
+        _ast_frame(
+            header={"status": 0},
+            parameter={
+                "asr_config": {
+                    "enable_role_separation": False,
+                    "enrollment_enable": True,
+                }
+            },
+        )
+    )
+    assert len(acts) == 1
+    assert acts[0].ctrl["type"] == "protocol_error"
+
+
+def test_ast_v3_sentence_frame_carries_rl_when_role_separation_on():
+    """Role separation active -> sentence cw[].rl present; enrollment_used=False."""
+    p = AstV3Protocol()
+    p.decode_inbound(_ast_frame(header={"status": 0}))
+    frame = p.encode_outbound(
+        {"type": "final", "text": "你好", "bg_ms": 0, "ed_ms": 100, "language": "zh"}
+    )
+    result = frame["payload"]["result"]
+    assert result["msgtype"] == "sentence"
+    assert result["enrollment_used"] is False
+    assert result["ws"][0]["cw"][0]["rl"] == 0
+
+
+def test_ast_v3_sentence_frame_omits_rl_when_role_separation_off():
+    """Role separation off -> sentence cw[] has no rl field."""
+    p = AstV3Protocol()
+    p.decode_inbound(
+        _ast_frame(
+            header={"status": 0},
+            parameter={"asr_config": {"enable_role_separation": False}},
+        )
+    )
+    frame = p.encode_outbound(
+        {"type": "final", "text": "你好", "bg_ms": 0, "ed_ms": 100, "language": "zh"}
+    )
+    cw = frame["payload"]["result"]["ws"][0]["cw"][0]
+    assert "rl" not in cw
+
+
+def test_ast_v3_progressive_never_carries_rl():
+    """Progressive results omit cw[].rl even when role separation is active."""
+    p = AstV3Protocol()
+    p.decode_inbound(_ast_frame(header={"status": 0}))
+    frame = p.encode_outbound({"type": "partial", "text": "你", "language": "zh"})
+    result = frame["payload"]["result"]
+    assert result["msgtype"] == "Progressive"
+    assert "rl" not in result["ws"][0]["cw"][0]
+
+
+def test_ast_v3_enrollment_used_reflects_set_enrollment_used():
+    """set_enrollment_used(True) surfaces enrollment_used=True on sentences."""
+    p = AstV3Protocol()
+    p.decode_inbound(
+        _ast_frame(
+            header={"status": 0},
+            parameter={
+                "asr_config": {
+                    "enable_role_separation": False,
+                    "enrollment_enable": True,
+                    "enrollment_id": "enr-abc",
+                }
+            },
+        )
+    )
+    p.set_enrollment_used(True)
+    frame = p.encode_outbound(
+        {"type": "final", "text": "你好", "bg_ms": 0, "ed_ms": 100, "language": "zh"}
+    )
+    assert frame["payload"]["result"]["enrollment_used"] is True
 
 
 def test_ast_v3_status_two_appends_stop():
@@ -966,8 +1209,12 @@ def test_ast_v3_terminal_is_status_two_and_idempotent():
     p.encode_outbound({"type": "final", "text": "hi", "language": "zh"})  # advances seg
     term = p.encode_terminal()
     assert term["header"]["status"] == 2
-    assert term["payload"]["result"]["ls"] is True
-    assert "ws" not in term["payload"]["result"]  # getWs() == null -> SDK skips
+    result = term["payload"]["result"]
+    assert result["ls"] is True
+    # Customer/SDK contract: terminal frame MUST carry an empty ``ws`` placeholder
+    # (client always receives + parses ws even though the word is empty).
+    assert "ws" in result
+    assert result["ws"][0]["cw"][0]["w"] == ""
     assert p.encode_terminal() is None  # emitted at most once
 
 

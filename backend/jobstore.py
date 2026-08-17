@@ -170,7 +170,15 @@ class JobStore(Generic[TJob]):
 
         assert self._semaphore is not None
         try:
+            wait_start = time.time()
             async with self._semaphore:
+                wait_ms = (time.time() - wait_start) * 1000.0
+                logger.info(
+                    "%s job %s starting after queue_wait_ms=%.1f",
+                    self.label,
+                    job_id,
+                    wait_ms,
+                )
                 await self._set_status(job_id, JOB_STATUS_RUNNING)
                 await self._execute(job_id)
         except Exception:

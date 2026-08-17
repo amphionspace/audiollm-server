@@ -259,7 +259,7 @@ python docs/examples/rest_upload.py asr sample.wav \
 
 ## 目标说话人注册接口
 
-`POST /api/asr/enrollment` 上传一段 1-8 秒的目标说话人音频。服务端把音频规范化为 16 kHz mono WAV、写入进程内缓存，并返回不透明的 `enrollment_id`。后续 WebSocket `start` / `update_hotwords` 或 `/api/asr/upload` 携带该 id 时，主模型 prompt 自动切换为 TS-ASR 双音频形态（先 enrollment 后 target），具体文本位置由服务端 `prompt_template` 随模型选择。
+`POST /api/asr/enrollment` 上传一段 1-8 秒的目标说话人音频。服务端把音频规范化为一份 16 kHz mono canonical WAV，写入内存热层和可选磁盘冷层，并返回不透明的 `enrollment_id`。后台会 best-effort 预计算 enrollment projector embedding；若 encoder 未就绪，首个声纹 final 懒 encode 并持久化。后续 WebSocket `start` / `update_hotwords` 或 `/api/asr/upload` 携带该 id 时，split final ASR 把 enrollment embedding 作为第一段音频、target utterance embedding 作为第二段音频注入 decoder，具体 prompt 文本由服务端 `prompt_template` 随模型选择。
 
 ### 请求
 
@@ -280,7 +280,7 @@ HTTP 200。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `enrollment_id` | string | 后续请求复用的不透明 id；TTL 默认 3600 秒，每次成功 `get` 刷新过期时间 |
+| `enrollment_id` | string | 后续请求复用的不透明 id；内存 TTL 默认 3600 秒，每次成功 `get` 刷新过期时间；磁盘持久化目录存在时可跨服务重启恢复 |
 | `duration_sec` | number | 服务端最终缓存的音频时长（裁剪后） |
 
 ### 错误响应
@@ -300,13 +300,14 @@ HTTP 400，`detail` 为结构化对象：
 |---|---|
 | empty | 上传体为空或解码后没有音频帧 |
 | too_short | 音频时长不足 `asr_enrollment_min_sec`（默认 1.0 秒） |
-| decode_failed | WAV 容器损坏或解码失败 |
+| unsupported_format | 非 WAV / MP3 / 16 kHz mono s16le PCM |
+| decode_failed | 识别到的容器损坏或解码失败 |
 
 时长超过上限不会拒绝，服务端会自动尾截到 `asr_enrollment_max_sec`（默认 8.0 秒）。
 
 ### 删除注册音频
 
-`DELETE /api/asr/enrollment/{enrollment_id}` 立即清除缓存条目。对未知 id 也返回 204，调用方可安全重试。
+`DELETE /api/asr/enrollment/{enrollment_id}` 立即清除内存条目、canonical WAV 和派生 embedding 文件，并保留 deleted tombstone。对未知 id 也返回 204，调用方可安全重试。
 
 ### 服务端可配置项
 
@@ -316,6 +317,7 @@ HTTP 400，`detail` 为结构化对象：
 | asr_enrollment_max_sec | 8.0 | 最大时长，超出尾截 |
 | asr_enrollment_ttl_sec | 3600 | 缓存 TTL；最近一次 get 后重新计时 |
 | asr_enrollment_max_entries | 256 | 进程内缓存条目上限，溢出按 LRU 淘汰 |
+| asr_enrollment_store_dir | var/enrollments | 持久化冷层目录；保存 `<id>.json`、`<id>.wav`、可选 `<id>.embeds.json` |
 
 ### 与 fusion 的关系
 

@@ -1,32 +1,185 @@
-# =============================================================================
-# AudioLLM Server 配置(声明式单一真源)
-#
-# 本文件是运行参数的唯一入口, 取代旧的 backend/config.json 与 backend/api.json。
-# 密钥不写明文: 用 ${ENV_VAR} 引用环境变量(见 .env.example), 未设置则插值为空串。
-# 可用 CONFIG_PATH 环境变量指向其他配置文件。
-# =============================================================================
-
-# 共享 httpx 连接池上限(所有 vLLM / 上游 HTTP 调用复用同一个连接池)。
+defaults:
+  asr:
+    asr_repetition_penalty: 1.0
+    debug_show_dual_asr: false
+    enable_dual_asr_fusion: false
+    enable_primary_asr: true
+    enable_secondary_asr: false
+    primary_asr_timeout: 30.0
+    split_asr_base_url: http://127.0.0.1:8102
+    split_asr_enabled: true
+    split_asr_final_only: false
+  emotion:
+    emotion_job_queue_max: 64
+    emotion_job_ttl_sec: 3600
+    emotion_max_audio_seconds: 20.0
+    emotion_max_concurrent_jobs: 8
+    emotion_task_mode: ser
+  emotion_spec:
+    emotion_spec_job_queue_max: 64
+    emotion_spec_job_ttl_sec: 3600
+    emotion_spec_max_audio_seconds: 20.0
+    emotion_spec_max_concurrent_jobs: 8
+    emotion_spec_task_mode: sepc
+  enrollment:
+    asr_enrollment_max_entries: 256
+    asr_enrollment_max_sec: 8.0
+    asr_enrollment_min_sec: 1.0
+    asr_enrollment_ttl_sec: 3600
+  fusion:
+    fusion_disagreement_threshold: 0.55
+    fusion_hotword_boost: 0.12
+    fusion_max_repetition_ratio: 0.35
+    fusion_min_primary_score: 0.55
+    fusion_primary_score_margin: 0.08
+    fusion_similarity_threshold: 0.85
+  hotword_recall:
+    enable_hotword_recall: true
+    recall_custom_hotword_limit: 50
+    recall_max_concurrent: 4
+    recall_queue_timeout_ms: 500
+    recall_top_k: 50
+  itn:
+    asr_itn_enable_0_to_9: false
+    enable_asr_itn: true
+    enable_asr_plate_normalize: true
+    enable_asr_repetition_fix: true
+  pseudo_stream:
+    ascend_k2_enabled: false
+    asr_final_executor_workers: 20
+    asr_final_max_concurrent: 20
+    asr_final_max_tokens: 256
+    asr_final_session_parallel: 2
+    asr_first_partial_max_concurrent: 24
+    asr_first_partial_priority_ms: 0
+    asr_partial_first_max_tokens: 64
+    asr_partial_refresh_adaptive_enabled: true
+    asr_partial_refresh_high_pressure_feed_queue_depth: 1024
+    asr_partial_refresh_high_pressure_final_backlog: 24
+    asr_partial_refresh_high_pressure_interval_ms: 8000
+    asr_partial_refresh_max_concurrent: 4
+    asr_partial_refresh_max_tokens: 128
+    asr_partial_refresh_pressure_feed_queue_depth: 256
+    asr_partial_refresh_pressure_final_backlog: 8
+    asr_partial_refresh_pressure_interval_ms: 3000
+    asr_partial_refresh_queue_timeout_ms: 0
+    asr_post_chat_timing_enabled: true
+    asr_stop_flush_executor_workers: 52
+    asr_stop_flush_max_concurrent: 52
+    asr_stop_flush_jitter_ms: 500
+    ctc_decode_batch_size: 52
+    ctc_decode_wait_ms: 10
+    ctc_device_id: 0
+    ctc_device_resident_state: false
+    ctc_prefill_warmup_ms: 0
+    ctc_om_model_dir: /home/workspace/models/ctc_candidates/pkufool-zipformer-small-streaming-ctc-zhen/om_bs52_forcefp32_ascend910b3_cann851
+    ctc_om_model_path: /home/workspace/models/ctc_candidates/pkufool-zipformer-small-streaming-ctc-zhen/om_bs52_forcefp32_ascend910b3_cann851/model_bs52_linux_aarch64.om
+    ctc_onnx_model_path: /home/workspace/models/ctc_candidates/pkufool-zipformer-small-streaming-ctc-zhen/ctc-chunk-16-left-64.onnx
+    ctc_final_tail_pause_enabled: false
+    ctc_final_tail_pause_silence_ms: 200
+    ctc_partial_post_first_interval_ms: 500
+    ctc_prefeed_emit_enabled: true
+    ctc_ready_coalesce_ms: 30
+    ctc_result_wait_ms: 120
+    ctc_tokens_path: /home/workspace/models/ctc_candidates/pkufool-zipformer-small-streaming-ctc-zhen/tokens.txt
+    enable_pseudo_stream: true
+    k2_decode_batch_max_size: 16
+    k2_decode_batch_wait_ms: 0
+    k2_endpoint_silence_sec: 2.5
+    k2_max_segment_sec: 30.0
+    k2_om_model_dir: ''
+    k2_om_runtime_pool_size: 1
+    k2_om_soc_version: ''
+    k2_online_ready_coalesce_ms: 0
+    k2_online_result_wait_min_audio_ms: 800
+    k2_online_result_wait_ms: 0
+    k2_partial_first_text_interval_ms: 500
+    k2_partial_post_text_interval_ms: 600
+    pseudo_stream_first_partial_ms: 200
+    pseudo_stream_interval_ms: 600
+    sherpa_blank_penalty: 0.0
+    sherpa_model_dir: /home/workspace/models/k2_0610_zhen
+    sherpa_num_threads: 2
+    sherpa_provider: cpu
+    sherpa_runtime_pool_size: 1
+    sherpa_use_int8: true
+    stream_feed_batch_max_frames: 32
+    stream_feed_drain_batch_max_frames: 1024
+    stream_feed_drain_timeout_sec: 3.0
+    stream_feed_initial_batch_max_frames: 16
+    stream_feed_target_ms: 0
+    streaming_partial_backend: ctc_om
+    sherpa_executor_workers: 4
+    ctc_resident_pace_ms: 0
+  transcribe:
+    transcribe_job_queue_max: 8
+    transcribe_job_ttl_sec: 3600
+    transcribe_max_audio_sec: 10800
+    transcribe_max_concurrent_jobs: 2
+    transcribe_max_segment_sec: 30.0
+    transcribe_max_upload_bytes: 536870912
+    transcribe_segment_concurrency: 1
+    transcribe_silence_duration_ms: 800
+  vad:
+    min_segment_duration_ms: 350
+    silence_duration_ms: 1200
+    vad_keep_tail_ms: 40
+    vad_pre_speech_ms: 500
+    vad_smoothing_alpha: 0.3
+    vad_start_frames: 20
+    vad_threshold: 0.45
+endpoints:
+- client_overridable: true
+  path: /transcribe-streaming
+  protocol: native
+  task: asr
+  upstreams:
+    primary: amphion_asr
+    secondary: qwen_asr
+- lock:
+    enable_secondary_asr: false
+  path: /tuling/ast/v3
+  protocol: astv3
+  task: asr
+  upstreams:
+    primary: amphion_asr
+- path: /emotion-segmented-streaming
+  protocol: native
+  task: emotion
+  upstreams:
+    emotion: amphion_emotion
+- input_sample_rate: 48000
+  path: /ws/audio
+  protocol: native
+  task: browser_demo
+  upstreams:
+    emotion_spec: amphion_spec
+    primary: amphion_asr
+    secondary: qwen_asr
 http_pool:
-  max_connections: 32
-  max_keepalive_connections: 16
-
-# 下游服务实例池。
-#   base_url 一律为"服务根"(不含 /v1), 调用层统一拼 /v1/chat/completions。
-#   timeout  = 该后端单次 HTTP 请求超时(秒)。
-#   api_key  非空即以 Authorization: Bearer 发送; 留空则不加鉴权头。
+  max_connections: 64
+  max_keepalive_connections: 0
+rest:
+  routes:
+    transcribe:
+      enable_dual_asr_fusion: false
+      upstreams:
+        primary: amphion_asr
+        secondary: qwen_asr
+  upstreams:
+    emotion: amphion_emotion
+    emotion_spec: amphion_spec
+    primary: amphion_asr
+    secondary: qwen_asr
+services:
+  hotword: hotword_llm
+  recall: rag_asr_recall
+  text_cleanup: dashscope_cleanup
 upstreams:
   amphion_asr:
-    base_url: http://localhost:8009
+    base_url: http://127.0.0.1:8102
     model_name: AmphionASR-1.7B
-    # Prompt template follows the served checkpoint:
-    #   AmphionASR-4.3B -> amphion_asr
-    #   AmphionASR-1.7B -> amphion_asr_1.7b
     prompt_template: amphion_asr_1.7b
-    timeout: 120
-  qwen_asr:
-    base_url: http://localhost:8001
-    model_name: Qwen/Qwen3-ASR-1.7B
     timeout: 120
   amphion_emotion:
     base_url: http://localhost:8222
@@ -37,130 +190,21 @@ upstreams:
     model_name: AmphionSPEC
     timeout: 30
   dashscope_cleanup:
-    base_url: https://dashscope.aliyuncs.com/compatible-mode
-    model_name: qwen2.5-32b-instruct
     api_key: ${DASHSCOPE_API_KEY}
-    timeout: 30
+    base_url: https://dashscope.aliyuncs.com/compatible-mode
     max_tokens: 1024
-  hotword_llm:                 # 取代旧 backend/api.json(热词抽取 LLM)
+    model_name: qwen2.5-32b-instruct
+    timeout: 30
+  hotword_llm:
+    api_key: ${HOTWORD_API_KEY}
     base_url: ${HOTWORD_BASE_URL}
     model_name: ${HOTWORD_MODEL}
-    api_key: ${HOTWORD_API_KEY}
     timeout: 30
-
-# 全局默认 tuning; 端点的 policy 可逐项软覆盖, lock 可硬锁定。
-# 注: base_url/model/timeout 属 upstreams, 不在此; 这里只放纯调参。
-defaults:
-  vad:
-    vad_threshold: 0.65
-    silence_duration_ms: 1000
-    vad_smoothing_alpha: 0.3
-    vad_start_frames: 20
-    vad_pre_speech_ms: 500
-    vad_keep_tail_ms: 40
-    min_segment_duration_ms: 350
-  pseudo_stream:
-    enable_pseudo_stream: true
-    pseudo_stream_interval_ms: 800
-    pseudo_stream_first_partial_ms: 200   # 不变量: <= min_segment_duration_ms
-  asr:
-    enable_primary_asr: true
-    enable_secondary_asr: true            # 端点未绑 secondary 上游时, 投影强制 false
-    enable_dual_asr_fusion: false         # final 是否双模型融合(需 secondary 在线)
-    primary_asr_timeout: 4.0              # primary 软降级上限(非 HTTP 超时)
-    debug_show_dual_asr: false            # 出站附带双 ASR 调试视图(主要给 /ws/audio)
-  fusion:
-    fusion_similarity_threshold: 0.85
-    fusion_min_primary_score: 0.55
-    fusion_max_repetition_ratio: 0.35
-    fusion_disagreement_threshold: 0.55
-    fusion_hotword_boost: 0.12
-    fusion_primary_score_margin: 0.08
-  itn:
-    enable_asr_itn: true
-    asr_itn_enable_0_to_9: false
-    enable_asr_plate_normalize: true
-    enable_asr_repetition_fix: true
-  enrollment:
-    asr_enrollment_min_sec: 1.0
-    asr_enrollment_max_sec: 8.0
-    asr_enrollment_ttl_sec: 3600
-    asr_enrollment_max_entries: 256       # 进程级 store 容量(非 per-endpoint)
-  transcribe:                             # 离线长音频转写 job (POST /api/asr/transcriptions)
-                                          # 本组只放纯调参; 用哪个模型/是否融合在下方 rest.routes.transcribe
-                                          # 调参依据: docs/transcription-jobs-benchmark.md(H20 实测扫参)
-    transcribe_max_concurrent_jobs: 2     # 同时 running 的 job 数; 提到 4 吞吐不变(瓶颈在段级
-                                          # 并发), 只多占内存且拖慢先到任务
-    transcribe_segment_concurrency: 4     # 单 job 内并行推理的段数(总 vLLM 压力 = 两者乘积);
-                                          # 提到 8 单 job 仅 -3.6s, 但峰值压力翻倍挤压实时流量
-    transcribe_job_queue_max: 8           # 排队上限(含 running); 8 个 32min 会议实测 41.5s 清空
-    transcribe_job_ttl_sec: 3600          # 终态 job 结果保留时长
-    transcribe_max_segment_sec: 30.0      # 连续语音强切上限(VAD 只在静音处切); 15/30 性能无差异
-    transcribe_max_upload_bytes: 536870912  # 512MB; 2h 16k mono WAV ≈ 220MB
-    transcribe_max_audio_sec: 10800       # 超长直接 400 拒绝(不尾截, 不静默丢内容)
-    transcribe_silence_duration_ms: 800   # 仅离线转写的切段停顿; 0 = 跟随全局
-                                          # silence_duration_ms(350, 为实时调的低延迟值)。
-                                          # 离线无延迟代价, 拉长可让纪要段落更完整且更快
-                                          # (实测 350ms: 636 段 p50 1.5s; 800ms: 303 段
-                                          #  p50 3.2s, e2e 还快 11%)
-  emotion:
-    emotion_task_mode: ser
-    emotion_max_audio_seconds: 20.0
-    emotion_max_concurrent_jobs: 8        # 进程级 job 背压
-    emotion_job_queue_max: 64
-    emotion_job_ttl_sec: 3600
-  emotion_spec:
-    emotion_spec_task_mode: sepc
-    emotion_spec_max_audio_seconds: 20.0
-    emotion_spec_max_concurrent_jobs: 8
-    emotion_spec_job_queue_max: 64
-    emotion_spec_job_ttl_sec: 3600
-
-# 全局单例辅助服务: 不随端点变化, 所有端点/REST 共享(工具型外部服务)。
-services:
-  hotword: hotword_llm
-  text_cleanup: dashscope_cleanup
-
-# REST/HTTP 路由的上游绑定: upstreams 是所有 REST 接口的共享默认,
-# routes.<name> 是单接口覆写(省略 = 全部跟随共享默认与 defaults 全局开关)。
-rest:
-  upstreams:                     # 共享绑定(/api/asr/upload、/api/audio/analyze、情感 jobs)
-    primary: amphion_asr
-    secondary: qwen_asr
-    emotion: amphion_emotion
-    emotion_spec: amphion_spec
-  routes:
-    transcribe:                  # 长音频离线转写 (POST /api/asr/transcriptions) 专属推理配置
-      upstreams:
-        primary: amphion_asr     # 转写主模型(换模型改这里, 不影响 upload/analyze)
-        secondary: qwen_asr      # 仅 enable_dual_asr_fusion=true 时参与
-      enable_dual_asr_fusion: false  # 转写是否双模型融合。离线无延迟压力, 质量优先可改 true
-                                     # (每段 2 个 vLLM 请求, 吞吐约减半, 见 benchmark 文档)
-
-# WS 端点: 每个端点自主声明 协议/任务/上游绑定/策略(不从全局隐式继承)。
-#   protocol: native | astv3   (browser_demo 复用 native wire, 故归在 task)
-#   task:     asr | emotion | browser_demo
-#   upstreams: 角色 -> upstream 名 (primary/secondary/emotion/emotion_spec)
-#   policy:   软默认(client_overridable 端点的白名单字段可再覆盖)
-#   lock:     硬锁定(客户端覆盖后强制重施)
-# 注: 阶段三才接入动态注册; 当前 backend/main.py 仍静态注册这些路由。
-endpoints:
-  - path: /transcribe-streaming
-    protocol: native
-    task: asr
-    upstreams: { primary: amphion_asr, secondary: qwen_asr }
-    client_overridable: true
-  - path: /tuling/ast/v3
-    protocol: astv3
-    task: asr
-    upstreams: { primary: amphion_asr }     # 只声明 primary => primary-only
-    lock: { enable_secondary_asr: false }   # 硬锁定: 客户端不可撤销
-  - path: /emotion-segmented-streaming
-    protocol: native
-    task: emotion
-    upstreams: { emotion: amphion_emotion }
-  - path: /ws/audio
-    protocol: native
-    task: browser_demo
-    upstreams: { primary: amphion_asr, secondary: qwen_asr, emotion_spec: amphion_spec }
-    input_sample_rate: 48000
+  qwen_asr:
+    base_url: http://localhost:8001
+    model_name: Qwen/Qwen3-ASR-1.7B
+    timeout: 120
+  rag_asr_recall:
+    base_url: http://127.0.0.1:10001
+    model_name: rag_asr_retrieve
+    timeout: 30.0

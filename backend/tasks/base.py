@@ -81,6 +81,14 @@ class BaseTaskEngine:
 
     name: str = "base"
 
+    def _use_sherpa_partial(self, cfg) -> bool:
+        """Whether partial decoding runs on the native sherpa/K2/CTC path.
+
+        The session calls this generically on ``self.engine`` to pick the
+        partial-refresh strategy. Non-ASR engines default to the vLLM path.
+        """
+        return False
+
     async def on_start(self, ctrl: dict, ctx: SessionContext) -> None:
         return None
 

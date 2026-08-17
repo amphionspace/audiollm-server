@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import backend.audio.vad as vad_mod  # noqa: E402
 from backend.audio.vad import VADProcessor  # noqa: E402
 from backend.config import load_config  # noqa: E402
 
@@ -32,8 +33,9 @@ from backend.config import load_config  # noqa: E402
 class _ToggleBackend:
     """Deterministic VAD backend: returns whatever probability we set."""
 
-    def __init__(self) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
         self.prob = 0.0
+        self.hop_size = int(kwargs.get("hop_size", 256))
 
     def process(self, frame: np.ndarray) -> float:
         return self.prob
@@ -47,7 +49,12 @@ def _make_processor(**kwargs: object) -> VADProcessor:
     return v
 
 
-def test_cut_fires_exactly_at_silence_frames() -> None:
+@pytest.fixture
+def fake_ten_vad(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(vad_mod, "_TenVadOnnx", _ToggleBackend)
+
+
+def test_cut_fires_exactly_at_silence_frames(fake_ten_vad) -> None:
     v = _make_processor(silence_duration_ms=60, keep_tail_ms=0)
     frame = np.zeros(v.hop_size, dtype=np.float32)
 
@@ -68,7 +75,7 @@ def test_cut_fires_exactly_at_silence_frames() -> None:
     assert v.silence_frames < 18
 
 
-def test_apply_config_pushes_per_connection_tunables() -> None:
+def test_apply_config_pushes_per_connection_tunables(fake_ten_vad) -> None:
     v = VADProcessor()
     cfg = load_config().override(
         vad_threshold=0.21,
@@ -93,6 +100,16 @@ def test_end_frames_param_is_rejected() -> None:
         VADProcessor(end_frames=5)
 
 
-def test_no_end_frames_attribute() -> None:
+def test_no_end_frames_attribute(fake_ten_vad) -> None:
     v = VADProcessor()
     assert not hasattr(v, "end_frames")
+
+
+def test_ten_vad_initialization_failure_is_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _BrokenTenVad:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            raise FileNotFoundError("missing ten-vad runtime")
+
+    monkeypatch.setattr(vad_mod, "_TenVadOnnx", _BrokenTenVad)
+    with pytest.raises(RuntimeError, match="TEN VAD ONNX backend is required"):
+        VADProcessor()

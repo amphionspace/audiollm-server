@@ -18,8 +18,10 @@
   ttft_final  首个 final（msgtype=sentence，已 ITN）相对第一帧发送
   resp_last   首个非空文本相对"末帧（status=2）发送完成"；realtime 下若首字
               在发送途中已到达则为 0（说明边发边出字）
-  final_lag   末帧发送完成 -> 最后一个 final（sentence）——尾字时延，用户停止
-              说话后等多久拿到完整识别结果（含尾段 flush + 推理）
+  final_lag   末帧发送完成 -> 最后一个 final（sentence）。它只衡量 stop
+              后还有没有 final 未返回；长流中最后一个 VAD final 早于 stop 时会是 0。
+  vad_lag     每个 final sentence 的接收时间 - result.ed，近似每个 VAD 段
+              结束后多久拿到该段完整识别结果；长音频尾字时延优先看这个。
   full        会话结束（status=2 终止帧）相对末帧发送——整段完成时延
   rtf         会话墙钟（第一帧发送 -> 终止帧）/ 音频时长。fast 模式下反映服务端
               纯处理速度（<1 快于实时）；realtime 模式下发送侧按实时节奏走，
@@ -75,6 +77,8 @@ import websockets
 # 复用已验证的 client 音频工具（解码 + 重采样到 16 kHz s16le PCM）。
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _EXAMPLES = _REPO_ROOT / "docs" / "examples"
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 if str(_EXAMPLES) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES))
 
@@ -83,12 +87,11 @@ from audio_common import chunk_bytes, make_ssl_context, read_audio_as_pcm  # noq
 SAMPLE_RATE = 16000
 
 
-def _speech_onset_ms(pcm: bytes, *, frame_ms: int = 10, ratio: float = 0.10) -> float:
+def _energy_speech_onset_ms(pcm: bytes, *, frame_ms: int = 10, ratio: float = 0.10) -> float:
     """用短时能量估计起音点（用户开始说话的文件偏移，ms）。
 
     把 PCM 切成 frame_ms 帧算每帧 RMS，取首个 RMS >= max_rms*ratio 的帧位置。
-    用于把"相对第一帧发送"的首字延迟换算成"相对用户开始说话"，剔除前导静音。
-    这是参考点定位，不是 VAD 复刻：服务端切段用的是 ten-vad，此处只为统计口径。
+    这是 VAD 初始化失败时的兜底参考点，不作为主统计口径。
     """
     import numpy as _np
 
@@ -104,6 +107,16 @@ def _speech_onset_ms(pcm: bytes, *, frame_ms: int = 10, ratio: float = 0.10) -> 
         return 0.0
     idx = int(_np.argmax(rms >= peak * ratio))
     return float(idx * frame_ms)
+
+
+def _speech_onset_ms(pcm: bytes) -> float:
+    """Use the client-side energy activation point for TTFT-onset.
+
+    This intentionally does not mirror server VAD. The delivery target defines
+    first-word latency from the client's first energy/VAD activation to the
+    first non-empty ASR text received from the server.
+    """
+    return _energy_speech_onset_ms(pcm)
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +357,7 @@ class Marks:
     t_end: float = math.nan
     first_partial_text: str = ""
     final_texts: list[str] = field(default_factory=list)
+    sentence_lag_ms: list[float] = field(default_factory=list)
     n_partials: int = 0
     err: str = ""
     code: int = 0
@@ -360,7 +374,8 @@ class SampleResult:
     ttft_partial_ms: float = math.nan
     ttft_final_ms: float = math.nan
     resp_last_ms: float = math.nan
-    final_lag_ms: float = math.nan   # 末帧发送完成 -> 最后一个 final（尾字时延）
+    final_lag_ms: float = math.nan   # 末帧发送完成 -> 最后一个 final（stop 后尾延）
+    vad_lag_ms: list[float] = field(default_factory=list)  # 每个 sentence: recv - ed
     full_ms: float = math.nan        # 末帧发送完成 -> 终止帧（会话完成时延）
     rtf: float = math.nan            # 会话墙钟 / 音频时长（fast 模式才有意义）
     n_finals: int = 0
@@ -396,8 +411,16 @@ async def _receive(ws, marks: Marks) -> None:
                 marks.t_first_final = now
             marks.t_last_final = now
             marks.final_texts.append(text)
-        # 终止帧：status==2 且无 ws。
-        if header.get("status") == 2 and not result.get("ws"):
+            if not math.isnan(marks.t_first_send):
+                try:
+                    ed_ms = float(result.get("ed") or 0.0)
+                except (TypeError, ValueError):
+                    ed_ms = 0.0
+                if ed_ms > 0:
+                    recv_ms = (now - marks.t_first_send) * 1000.0
+                    marks.sentence_lag_ms.append(max(0.0, recv_ms - ed_ms))
+        # 终止帧：本服务的 status=2 payload 可能仍带空 ws/cw/w 结构。
+        if header.get("status") == 2:
             marks.t_end = now
             return
 
@@ -422,7 +445,14 @@ async def measure_one(
     marks = Marks()
     try:
         async with websockets.connect(
-            url, ssl=ssl_ctx, open_timeout=connect_timeout, max_size=None
+            url,
+            ssl=ssl_ctx,
+            open_timeout=connect_timeout,
+            max_size=None,
+            # Long realtime soak tests may keep many connections busy for
+            # 10+ minutes. Let application traffic drive liveness so the
+            # benchmark client does not self-close on delayed keepalive pongs.
+            ping_interval=None,
         ) as ws:
             recv_task = asyncio.create_task(_receive(ws, marks))
             try:
@@ -461,7 +491,17 @@ async def measure_one(
         # error 帧之后连接随即关闭，send 会抛 ConnectionClosed；保留服务端
         # 的原始错误信息，不被随后的连接异常覆盖。
         if not marks.err:
-            marks.err = f"{type(exc).__name__}: {exc}"[:200]
+            has_response = (
+                marks.n_partials > 0
+                or bool(marks.final_texts)
+                or not math.isnan(marks.t_first_partial)
+                or not math.isnan(marks.t_first_final)
+                or not math.isnan(marks.t_end)
+            )
+            if has_response and "ConnectionClosed" in type(exc).__name__:
+                marks.t_end = time.perf_counter()
+            else:
+                marks.err = f"{type(exc).__name__}: {exc}"[:200]
 
     return _build_result(sample, marks, send_mode)
 
@@ -475,6 +515,7 @@ def _build_result(sample: Sample, m: Marks, send_mode: str = "realtime") -> Samp
         ref_text=sample.ref_text,
         n_finals=len(m.final_texts),
         n_partials=m.n_partials,
+        vad_lag_ms=list(m.sentence_lag_ms),
         err=m.err,
     )
     if m.err:
@@ -561,6 +602,15 @@ def summarize(results: list[SampleResult], wall_s: float = math.nan) -> str:
         Metric("ttft_final", [r.ttft_final_ms for r in ok if not math.isnan(r.ttft_final_ms)]),
         Metric("resp_last", [r.resp_last_ms for r in ok if not math.isnan(r.resp_last_ms)]),
         Metric("final_lag", [r.final_lag_ms for r in ok if not math.isnan(r.final_lag_ms)]),
+        Metric(
+            "vad_lag",
+            [
+                v
+                for r in ok
+                for v in r.vad_lag_ms
+                if not math.isnan(v)
+            ],
+        ),
         Metric("full", [r.full_ms for r in results if not math.isnan(r.full_ms)]),
     ]
 
@@ -812,7 +862,8 @@ async def main_async(args: argparse.Namespace) -> int:
         "\nLegend: ttft_onset=用户开始说话->首字(realtime 主指标,已剔除前导静音);\n"
         "        ttft_text=首字相对第一帧发送; ttft_part/final=首个partial/final;\n"
         "        resp_last=末帧发完到首字(realtime下可能为0);\n"
-        "        final_lag=末帧发完到最后一个final(尾字时延); full=末帧到终止帧;\n"
+        "        final_lag=末帧发完到最后一个final(仅表示stop后尾延，长流中可能为0);\n"
+        "        vad_lag=每个sentence接收时间-ed，近似每个VAD段尾字响应; full=末帧到终止帧;\n"
         "        rtf=会话墙钟/音频时长(fast 模式才反映服务端处理速度);\n"
         "        agg_xRT=sum(音频时长)/批次墙钟，跨并发可比的吞吐。"
     )

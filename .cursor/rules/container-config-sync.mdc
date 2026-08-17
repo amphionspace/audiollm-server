@@ -1,0 +1,41 @@
+---
+description: Keep ASR runtime config synchronized across host source, container, and delivery scripts
+alwaysApply: true
+---
+
+# Container Config Sync
+
+When changing ASR runtime code or configuration, keep these three sources aligned:
+
+- Host service config: `config.yaml` and any legacy `backend/config.json` still present.
+- Running container config: `/home/workspace/audiollm-server/config.yaml` inside the target ASR container.
+- Delivery scripts: `amphion-asr-delivery/entrypoint.sh` and `run_container.sh`.
+
+Do not rely on a container-only patch as the final state. If a value is meant to survive restart or image rebuild, set it in the host `config.yaml` and in `entrypoint.sh` defaults/env override logic.
+
+During performance tuning, do not rebuild or fully restart the delivery container for every small change. Patch the running container first and restart only the affected service process, then copy durable changes back to host source and delivery scripts after the result is proven.
+
+Known efficient restart boundaries:
+
+- Python API/backend code or `config.yaml`: restart the API/uvicorn process only.
+- vLLM memory/concurrency env changes: restart the split vLLM decoder service only if possible.
+- C++ `sherpa-onnx` Ascend runtime changes: rebuild/reinstall the Python extension in the container, then restart the API process.
+- Image rebuild: reserve for packaging validation after latency, accuracy, and stability are already acceptable.
+
+After any config or delivery-script change, verify with:
+
+```bash
+docker exec <container> bash -lc 'cd /home/workspace/audiollm-server && python - <<PY
+from backend.config import load_config, load_transcribe_config
+c = load_config()
+t = load_transcribe_config()
+print(c.silence_duration_ms, c.pseudo_stream_first_partial_ms, c.pseudo_stream_interval_ms)
+print(t.transcribe_segment_concurrency)
+PY'
+```
+
+Important deployment defaults for the 910B ASR container:
+
+- `silence_duration_ms` must remain `1200` unless the user explicitly changes it.
+- `pseudo_stream_first_partial_ms` must remain `200`.
+- `transcribe_segment_concurrency` must remain `1`, so one uploaded long recording does not fan out many VAD segments to vLLM concurrently.

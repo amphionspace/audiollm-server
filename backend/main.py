@@ -1,13 +1,25 @@
 import asyncio
 import base64
 import logging
+import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import websockets
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Body,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from starlette.types import Receive, Scope, Send
 
 from .asr.enrollment import (
@@ -15,8 +27,12 @@ from .asr.enrollment import (
     decode_and_validate,
     get_enrollment_store,
 )
+from .asr.client import precompute_enrollment_embedding_sync
 from .asr.jobs import get_transcription_job_store
 from .asr.oneshot import OneshotAsrError, run_oneshot_asr
+from .asr.recall import manage_hotword_pool, normalize_hotword_pool_id
+from .asr.ctc_streaming import maybe_warmup_from_app as maybe_warmup_ctc_from_app
+from .asr.sherpa_streaming import maybe_warmup_from_app
 from .asr.transcribe import float_pcm_to_i16_bytes
 from .audio.utils import wav_base64_to_pcm_16k_mono, wav_bytes_to_pcm_16k_mono
 from .config import SAMPLE_RATE, load_config, load_transcribe_config
@@ -24,26 +40,248 @@ from .emotion.client import query_emotion_model
 from .emotion.jobs import JobQueueFullError, get_emotion_job_store
 from .emotion.service import EmotionDecodeError, decode_wav_capped
 from .emotion_spec.jobs import get_emotion_spec_job_store
-from .http_client import close_client
+from .http_client import close_client, get_client
 from .session import AudioSession
+from .asr.ctc_streaming import config_from_app as ctc_config_from_app
 from .streaming import AstV3Protocol, StreamingSession, VadSegmentedStream
+from .streaming.ascend_k2_stream import AscendK2Stream
 from .tasks import AsrTaskEngine, EmotionTaskEngine
 from .text_cleanup import clean_asr_text
 from .text_cleanup.client import TextCleanupConfigError
 
 logging.basicConfig(level=logging.INFO)
+
+
+# High-frequency per-segment / per-partial timing logs (ASR_TIMING, VAD_TIMING,
+# STREAM_QUEUE_TIMING, ASR_SPLIT/HTTP_TIMING, ...) dominate log output under
+# BS52 — a 10-minute run emits ~270k lines (~450/s). Formatting each record
+# holds the GIL and the docker json-file handler serializes the writes, which
+# measurably slows the single event loop / feed pipeline and feeds the ~1.2%/s
+# server real-time deficit that accumulates vad_lag (design F12). Drop these
+# records in a logging Filter *before* the (expensive) %-formatting and I/O.
+# Set ASR_PERF_LOG=1 to restore full timing traces for debugging.
+if os.environ.get("ASR_PERF_LOG", "").strip().lower() not in ("1", "true", "yes"):
+    _PERF_LOG_TOKENS = (
+        "ASR_TIMING",
+        "ASR_SPLIT_TIMING",
+        "ASR_SPLIT_GAP",
+        "ASR_HTTP_TIMING",
+        "HOTWORD_RECALL_TIMING",
+        "VAD_TIMING",
+        "STREAM_QUEUE_TIMING",
+        "STREAM_INPUT_TIMING",
+        "CTC_ONLINE_STATUS",
+        "CTC_ONLINE_BATCH_TIMING",
+    )
+
+    class _PerfLogFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.msg
+            if isinstance(msg, str) and msg[:24].lstrip().startswith(
+                _PERF_LOG_TOKENS
+            ):
+                return False
+            return True
+
+    _perf_filter = _PerfLogFilter()
+    for _h in logging.getLogger().handlers:
+        _h.addFilter(_perf_filter)
+
 logger = logging.getLogger(__name__)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 
+def _make_asr_stream(cfg=None) -> VadSegmentedStream | AscendK2Stream:
+    """Return the appropriate AudioStream for ASR based on config."""
+    if cfg is None:
+        cfg = load_config()
+    if not bool(getattr(cfg, "ascend_k2_enabled", False)):
+        return VadSegmentedStream()
+    ctc_cfg = ctc_config_from_app(cfg)
+    stream = AscendK2Stream(ctc_cfg)
+    logger.info("AscendK2Stream selected (ascend_k2_enabled=True)")
+    return stream
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    cfg = load_config()
+    backend = str(getattr(cfg, "streaming_partial_backend", "vllm")).lower()
+    if backend in {"sherpa", "k2_om"}:
+        logger.info("Warming streaming partial recognizer")
+        await asyncio.to_thread(maybe_warmup_from_app, cfg)
+    elif backend == "ctc_om":
+        logger.info("Warming CTC OM streaming partial runtime")
+        await asyncio.to_thread(maybe_warmup_ctc_from_app, cfg)
     yield
     await close_client()
 
 
 app = FastAPI(title="AudioLLM Server", lifespan=lifespan)
+
+
+class HotwordPoolUpdateRequest(BaseModel):
+    hotwords: list[str] = Field(default_factory=list)
+    hotword_pool_id: str = ""
+
+
+class HotwordPoolScopeRequest(BaseModel):
+    """Body for pool-scoped actions (clear/reload) that carry only the pool id."""
+
+    hotword_pool_id: str | None = None
+
+
+def _normalize_pool_id_or_400(raw: object) -> str:
+    """Normalize a hotword_pool_id, mapping validation errors to HTTP 400."""
+    try:
+        return normalize_hotword_pool_id(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _resolve_pool_id_or_400(body_raw: object, query_raw: object) -> str:
+    """Resolve ``hotword_pool_id`` from an optional body value and query param.
+
+    Contract (最终版 §5/§6): both absent -> default pool (""); exactly one
+    present -> use it; both present and inconsistent -> 400 parameter error.
+    """
+    body_present = body_raw is not None and str(body_raw).strip() != ""
+    query_present = query_raw is not None and str(query_raw).strip() != ""
+    if body_present and query_present:
+        body_id = _normalize_pool_id_or_400(body_raw)
+        query_id = _normalize_pool_id_or_400(query_raw)
+        if body_id != query_id:
+            raise HTTPException(
+                status_code=400,
+                detail="conflicting hotword_pool_id in body and query",
+            )
+        return body_id
+    if body_present:
+        return _normalize_pool_id_or_400(body_raw)
+    if query_present:
+        return _normalize_pool_id_or_400(query_raw)
+    return ""
+
+
+def _hotword_pool_payload(result) -> dict[str, object]:
+    # Some backends double-wrap the human message as {"message": "..."}; flatten
+    # it so the customer response carries a plain string per the interface doc.
+    message = result.message
+    if isinstance(message, dict):
+        message = message.get("message", message)
+    payload: dict[str, object] = {
+        "action": result.action,
+        "status": result.status,
+        "message": message,
+        "hotwords": result.hotwords,
+        "hotword_count": result.total_count,
+        "total_count": result.total_count,
+        "hotword_pool_id": result.hotword_pool_id,
+    }
+    # Pass through per-operation statistics (added/deleted/invalid/...) so
+    # clients get the same CRUD detail the RAG-ASR backend reports.
+    stats = dict(result.stats) if result.stats else {}
+    if stats:
+        payload.update(stats)
+        # Interface-doc (TMGenius 语音识别接口 §3/§4) aliases. The RAG-ASR backend
+        # reports terse keys (added/skipped_duplicates/invalid/duplicates/deleted/
+        # missing); the customer contract names them *_count / ignored_hotwords /
+        # missing_hotwords. Emit both so CAgent can parse the documented names
+        # while existing consumers of the terse keys keep working.
+        invalid = list(stats.get("invalid") or [])
+        duplicates = list(stats.get("duplicates") or [])
+        missing = list(stats.get("missing") or [])
+        if "added" in stats:
+            payload["added_count"] = int(stats.get("added") or 0)
+            payload["duplicate_count"] = int(stats.get("skipped_duplicates") or 0)
+            payload["invalid_count"] = len(invalid)
+            # Words present in the request but not added (invalid + duplicate).
+            payload["ignored_hotwords"] = invalid + duplicates
+        if "deleted" in stats:
+            payload["deleted_count"] = int(stats.get("deleted") or 0)
+            payload["missing_count"] = len(missing)
+            payload["missing_hotwords"] = missing
+    return payload
+
+
+
+@app.get("/health")
+async def health():
+    """Deployment health check for container probes and customer runbooks."""
+    cfg = load_config()
+    split_enabled = bool(getattr(cfg, "split_asr_enabled", False))
+    split_final_only = bool(getattr(cfg, "split_asr_final_only", False))
+    partial_backend = str(
+        getattr(cfg, "streaming_partial_backend", "vllm") or "vllm"
+    ).strip().lower()
+    vllm_required = (
+        not split_enabled
+        or not split_final_only
+        or partial_backend != "sherpa"
+    )
+    split_base_url = (
+        str(getattr(cfg, "split_asr_base_url", "") or "").strip()
+        or cfg.vllm_base_url
+    )
+    vllm_url = (
+        f"{cfg.vllm_base_url.rstrip('/')}/v1/models"
+        if split_final_only or not split_enabled
+        else f"{cfg.vllm_base_url.rstrip('/')}/health"
+    )
+    split_url = f"{split_base_url.rstrip('/')}/health"
+    vllm: dict[str, object] = {
+        "ready": False,
+        "url": vllm_url,
+        "split_asr": split_enabled,
+        "required": vllm_required,
+    }
+    if vllm_required:
+        try:
+            resp = await get_client().get(vllm_url, timeout=3.0)
+            vllm["status_code"] = resp.status_code
+            vllm["ready"] = 200 <= resp.status_code < 300
+            if vllm["ready"]:
+                data = resp.json()
+                vllm["served_models"] = [
+                    item.get("id")
+                    for item in data.get("data", [])
+                    if isinstance(item, dict) and item.get("id")
+                ]
+        except Exception as exc:
+            vllm["error"] = str(exc)
+    else:
+        vllm["ready"] = True
+        vllm["skipped_reason"] = "streaming partials use sherpa and finals use split ASR"
+    split_asr: dict[str, object] | None = None
+    if split_enabled:
+        split_asr = {
+            "ready": False,
+            "url": split_url,
+            "final_only": split_final_only,
+        }
+        try:
+            resp = await get_client().get(split_url, timeout=3.0)
+            split_asr["status_code"] = resp.status_code
+            split_asr["ready"] = 200 <= resp.status_code < 300
+        except Exception as exc:
+            split_asr["error"] = str(exc)
+
+    return {
+        "service": "AudioLLM ASR API Service",
+        "asr": {
+            "base_url": cfg.vllm_base_url,
+            "split_base_url": split_base_url if split_enabled else "",
+            "model": cfg.vllm_model_name,
+            "prompt_template": cfg.vllm_prompt_template,
+            "split_enabled": split_enabled,
+            "split_final_only": split_final_only,
+            "streaming_partial_backend": partial_backend,
+            "secondary_enabled": cfg.enable_secondary_asr,
+        },
+        "vllm": vllm,
+        "split_asr": split_asr,
+    }
 
 
 @app.websocket("/ws/audio")
@@ -61,9 +299,10 @@ async def audio_ws(websocket: WebSocket):
 async def transcribe_streaming_ws(websocket: WebSocket, language: str = ""):
     await websocket.accept()
     logger.info("Transcribe-streaming connected (language=%s)", language)
+    cfg = load_config()
     session = StreamingSession(
         websocket,
-        stream=VadSegmentedStream(),
+        stream=_make_asr_stream(cfg),
         engine=AsrTaskEngine(),
         language=language,
     )
@@ -87,7 +326,16 @@ async def tuling_ast_v3_ws(websocket: WebSocket):
 
     See ``docs/tuling-ast-v3-protocol.md``.
     """
+    route_enter_at = time.monotonic()
+    client = getattr(websocket, "client", None)
+    client_addr = f"{client.host}:{client.port}" if client else "-"
+    logger.info("WS_SESSION event=route_enter path=/tuling/ast/v3 client=%s", client_addr)
     await websocket.accept()
+    logger.info(
+        "WS_SESSION event=accepted path=/tuling/ast/v3 client=%s accept_ms=%.1f",
+        client_addr,
+        (time.monotonic() - route_enter_at) * 1000.0,
+    )
     logger.info("Tuling AST v3 connected (/tuling/ast/v3)")
     # Endpoint policy: primary-only (no secondary / no local Qwen / no fusion),
     # with the primary pinned to the AST v3-specific upstream when configured
@@ -105,7 +353,7 @@ async def tuling_ast_v3_ws(websocket: WebSocket):
         astv3_overrides["vllm_prompt_template"] = cfg.astv3_vllm_prompt_template
     session = StreamingSession(
         websocket,
-        stream=VadSegmentedStream(),
+        stream=_make_asr_stream(cfg),
         engine=AsrTaskEngine(emit_timing=True),
         protocol=AstV3Protocol(),
         config_overrides=astv3_overrides,
@@ -113,7 +361,13 @@ async def tuling_ast_v3_ws(websocket: WebSocket):
     try:
         await session.run()
     finally:
+        cleanup_start = time.monotonic()
         await session.cleanup()
+        logger.info(
+            "WS_SESSION event=cleanup_done path=/tuling/ast/v3 client=%s cleanup_ms=%.1f",
+            client_addr,
+            (time.monotonic() - cleanup_start) * 1000.0,
+        )
 
 
 # Hard-coded remote AST v3 backend that the "实时语音识别（测试用）" page targets.
@@ -352,10 +606,15 @@ def _public_cleanup_payload(result: dict) -> dict:
 def _resolve_enrollment_b64(enrollment_id: str | None) -> str | None:
     """Look up an enrollment id, refreshing its TTL. Missing/expired ids
     return ``None`` (caller decides to error or silently fall back)."""
+    entry = _resolve_enrollment_entry(enrollment_id)
+    return entry.wav_base64 if entry is not None else None
+
+
+def _resolve_enrollment_entry(enrollment_id: str | None):
+    """Return the enrollment entry so callers can preserve the id for embeddings."""
     if not enrollment_id:
         return None
-    entry = get_enrollment_store().get(enrollment_id)
-    return entry.wav_base64 if entry is not None else None
+    return get_enrollment_store().get(enrollment_id)
 
 
 async def _run_dual_asr_upload(
@@ -365,6 +624,7 @@ async def _run_dual_asr_upload(
     hotwords: list[str],
     language: str,
     enrollment_b64: str | None = None,
+    enrollment_id: str | None = None,
 ) -> dict:
     """Route-facing wrapper over :func:`run_oneshot_asr`.
 
@@ -378,6 +638,7 @@ async def _run_dual_asr_upload(
             hotwords=hotwords,
             language=language,
             enrollment_b64=enrollment_b64,
+            enrollment_id=enrollment_id,
         )
     except OneshotAsrError as exc:
         raise HTTPException(status_code=502, detail=exc.to_detail()) from exc
@@ -391,8 +652,9 @@ async def asr_enrollment_create(audio: UploadFile = File(...)):
     then passes the returned ``enrollment_id`` on every ``/api/asr/upload``
     call and the WS ``start`` payload. The server validates duration,
     canonicalises to 16 kHz mono WAV, and stores the base64 result so
-    primary inference can splice it into the dual-audio prompt without
-    re-decoding on every segment.
+    final ASR can inject its projector embeddings before target utterance
+    embeddings. Embedding precompute is best-effort and never blocks successful
+    registration.
     """
     raw = await _read_audio_bytes(audio)
     wav_b64 = base64.b64encode(raw).decode("ascii")
@@ -413,11 +675,55 @@ async def asr_enrollment_create(audio: UploadFile = File(...)):
     store.configure(
         ttl_sec=cfg.asr_enrollment_ttl_sec,
         max_entries=cfg.asr_enrollment_max_entries,
+        store_dir=str(getattr(cfg, "asr_enrollment_store_dir", "") or ""),
+        scope=str(getattr(cfg, "asr_enrollment_scope", "default") or "default"),
+        touch_interval_sec=float(
+            getattr(cfg, "asr_enrollment_metadata_touch_interval_sec", 60.0)
+        ),
     )
     entry = store.put(canonical_b64, duration_sec)
+    if bool(getattr(cfg, "split_asr_enabled", False)):
+        split_base_url = (
+            str(getattr(cfg, "split_asr_base_url", "") or "").strip()
+            or cfg.vllm_base_url
+        )
+        precompute_timeout = min(float(getattr(cfg, "asr_request_timeout", 30.0)), 5.0)
+
+        async def _background_precompute() -> None:
+            try:
+                await asyncio.to_thread(
+                    precompute_enrollment_embedding_sync,
+                    entry.enrollment_id,
+                    canonical_b64,
+                    base_url=split_base_url,
+                    timeout=precompute_timeout,
+                    trace_id=f"enrollment-upload-{entry.enrollment_id[:8]}",
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("enrollment embedding precompute failed", exc_info=True)
+
+        asyncio.create_task(_background_precompute())
     return {
         "enrollment_id": entry.enrollment_id,
         "duration_sec": round(duration_sec, 3),
+    }
+
+
+@app.get("/api/asr/enrollment/{enrollment_id}")
+async def asr_enrollment_status(enrollment_id: str):
+    """Report whether an enrollment id is currently usable.
+
+    Response is strictly ``{enrollment_id, available, reason}`` and never
+    leaks the stored audio/embedding. Reasons: ``ok`` (present + compatible),
+    ``not_found`` (never registered or clip missing), ``deleted`` (explicitly
+    removed), ``incompatible`` (registered fingerprint differs from the
+    current model/adapter), ``upstream_unavailable`` (durable store I/O error).
+    """
+    status = get_enrollment_store().status(enrollment_id)
+    return {
+        "enrollment_id": status.enrollment_id,
+        "available": status.available,
+        "reason": status.reason,
     }
 
 
@@ -430,6 +736,100 @@ async def asr_enrollment_delete(enrollment_id: str):
     """
     get_enrollment_store().delete(enrollment_id)
     return JSONResponse(status_code=204, content=None)
+
+
+@app.get("/api/asr/hotword-pool")
+async def asr_hotword_pool_list(
+    query: str = "",
+    limit: int = 100,
+    offset: int = 0,
+    hotword_pool_id: str = "",
+):
+    """List the RAG-ASR hotword pool for ``hotword_pool_id`` (default when empty)."""
+    pool_id = _normalize_pool_id_or_400(hotword_pool_id)
+    try:
+        result = await manage_hotword_pool(
+            "list",
+            query=query or None,
+            limit=max(0, min(int(limit), 1000)),
+            offset=max(0, int(offset)),
+            hotword_pool_id=pool_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _hotword_pool_payload(result)
+
+
+@app.post("/api/asr/hotword-pool")
+async def asr_hotword_pool_add(req: HotwordPoolUpdateRequest):
+    """Add words to a RAG-ASR hotword pool and update its embeddings."""
+    pool_id = _normalize_pool_id_or_400(req.hotword_pool_id)
+    try:
+        result = await manage_hotword_pool(
+            "add", hotwords=req.hotwords, hotword_pool_id=pool_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _hotword_pool_payload(result)
+
+
+@app.delete("/api/asr/hotword-pool")
+async def asr_hotword_pool_delete(req: HotwordPoolUpdateRequest):
+    """Delete words from a RAG-ASR hotword pool."""
+    pool_id = _normalize_pool_id_or_400(req.hotword_pool_id)
+    try:
+        result = await manage_hotword_pool(
+            "delete", hotwords=req.hotwords, hotword_pool_id=pool_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _hotword_pool_payload(result)
+
+
+@app.post("/api/asr/hotword-pool/delete")
+async def asr_hotword_pool_delete_post(req: HotwordPoolUpdateRequest):
+    """Delete words from clients that cannot send a JSON body with DELETE."""
+    return await asr_hotword_pool_delete(req)
+
+
+@app.post("/api/asr/hotword-pool/clear")
+async def asr_hotword_pool_clear(
+    body: HotwordPoolScopeRequest | None = Body(default=None),
+    hotword_pool_id: str = "",
+):
+    """Clear all hotwords in one pool and refresh its runtime words + embeddings.
+
+    Accepts ``hotword_pool_id`` from JSON body or query string; a conflicting
+    pair returns 400. Only the named pool is affected.
+    """
+    pool_id = _resolve_pool_id_or_400(
+        body.hotword_pool_id if body else None, hotword_pool_id
+    )
+    try:
+        result = await manage_hotword_pool("clear", hotword_pool_id=pool_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _hotword_pool_payload(result)
+
+
+@app.post("/api/asr/hotword-pool/reload")
+async def asr_hotword_pool_reload(
+    body: HotwordPoolScopeRequest | None = Body(default=None),
+    hotword_pool_id: str = "",
+):
+    """Reload one hotword pool file and rebuild only its embedding cache.
+
+    Accepts ``hotword_pool_id`` from JSON body or query string; a conflicting
+    pair returns 400. Reload never implicitly touches other pools.
+    """
+    pool_id = _resolve_pool_id_or_400(
+        body.hotword_pool_id if body else None, hotword_pool_id
+    )
+    try:
+        result = await manage_hotword_pool("reload", hotword_pool_id=pool_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _hotword_pool_payload(result)
 
 
 @app.post("/api/asr/upload")
@@ -455,13 +855,15 @@ async def asr_upload(
     wav_b64 = base64.b64encode(wav_bytes).decode("ascii")
     cfg = load_config()
     hw_list = _parse_csv(hotwords)
-    enrollment_b64 = _resolve_enrollment_b64(enrollment_id)
+    enrollment_entry = _resolve_enrollment_entry(enrollment_id)
+    enrollment_b64 = enrollment_entry.wav_base64 if enrollment_entry is not None else None
     asr_result = await _run_dual_asr_upload(
         wav_b64,
         cfg=cfg,
         hotwords=hw_list,
         language=language,
         enrollment_b64=enrollment_b64,
+        enrollment_id=enrollment_entry.enrollment_id if enrollment_entry is not None else None,
     )
 
     return {
@@ -498,14 +900,19 @@ async def asr_transcription_create(
     """
     # Transcription-specific view: rest.routes.transcribe bindings (model
     # choice, fusion switch) layered over the shared REST defaults.
+    req_start = time.monotonic()
     cfg = load_transcribe_config()
+    read_start = time.monotonic()
     raw = await _read_audio_bytes(audio, max_bytes=cfg.transcribe_max_upload_bytes)
+    read_ms = (time.monotonic() - read_start) * 1000.0
+    decode_start = time.monotonic()
     try:
         pcm = wav_bytes_to_pcm_16k_mono(raw)
     except ValueError as exc:
         raise HTTPException(
             status_code=400, detail=f"could not decode audio: {exc}"
         ) from exc
+    decode_ms = (time.monotonic() - decode_start) * 1000.0
     del raw
     if pcm.size == 0:
         raise HTTPException(status_code=400, detail="audio decoded to empty PCM")
@@ -521,11 +928,14 @@ async def asr_transcription_create(
             ),
         )
 
+    convert_start = time.monotonic()
     pcm_i16 = float_pcm_to_i16_bytes(pcm)
+    convert_ms = (time.monotonic() - convert_start) * 1000.0
     del pcm
 
     store = get_transcription_job_store()
     store.configure(cfg)
+    submit_start = time.monotonic()
     try:
         job = await store.submit(
             pcm_i16,
@@ -540,6 +950,19 @@ async def asr_transcription_create(
             detail=str(exc),
             headers={"Retry-After": "5"},
         ) from exc
+    submit_ms = (time.monotonic() - submit_start) * 1000.0
+    logger.info(
+        "TRANSCRIBE_TIMING stage=create job=%s duration_sec=%.3f bytes_i16=%d "
+        "read_ms=%.1f decode_ms=%.1f convert_ms=%.1f submit_ms=%.1f total_ms=%.1f",
+        job.job_id,
+        duration_sec,
+        len(pcm_i16),
+        read_ms,
+        decode_ms,
+        convert_ms,
+        submit_ms,
+        (time.monotonic() - req_start) * 1000.0,
+    )
 
     return JSONResponse(
         status_code=202,
@@ -684,7 +1107,8 @@ async def audio_analyze(
     raw = await _read_audio_bytes(audio)
     cfg = load_config()
     hw_list = _parse_csv(hotwords)
-    enrollment_b64 = _resolve_enrollment_b64(enrollment_id)
+    enrollment_entry = _resolve_enrollment_entry(enrollment_id)
+    enrollment_b64 = enrollment_entry.wav_base64 if enrollment_entry is not None else None
 
     asr_wav_bytes, duration_sec = _wav_to_pcm_capped(raw, _ASR_MAX_SECONDS)
     asr_wav_b64 = base64.b64encode(asr_wav_bytes).decode("ascii")
@@ -700,6 +1124,7 @@ async def audio_analyze(
             hotwords=hw_list,
             language=language,
             enrollment_b64=enrollment_b64,
+            enrollment_id=enrollment_entry.enrollment_id if enrollment_entry is not None else None,
         )
     )
     emotion_ser_task = asyncio.create_task(

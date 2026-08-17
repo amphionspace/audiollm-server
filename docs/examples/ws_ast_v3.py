@@ -19,17 +19,13 @@ from audio_common import chunk_bytes, make_ssl_context, read_audio_as_pcm
 
 
 def _frame(status: int, *, trace_id: str, app_id: str, biz_id: str,
-           audio: bytes, hotwords: str = "", enrollment_id: str = "",
+           audio: bytes, hotwords: str = "",
            asr_config: dict | None = None) -> str:
     header: dict[str, object] = {"traceId": trace_id, "status": status}
     if app_id:
         header["appId"] = app_id
     if biz_id:
         header["bizId"] = biz_id
-    # resIdList[0] carries the target-speaker enrollment id (register first via
-    # POST /api/asr/enrollment to obtain it).
-    if enrollment_id:
-        header["resIdList"] = [enrollment_id]
     # engine stays log-only; asr_config carries per-connection config overrides.
     parameter: dict[str, object] = {"engine": {}}
     if asr_config:
@@ -66,6 +62,10 @@ def _build_asr_config(args: argparse.Namespace) -> dict:
         cfg["vad_threshold"] = args.vad_threshold
     if args.no_pseudo_stream:
         cfg["enable_pseudo_stream"] = False
+    if args.enrollment_id:
+        cfg["enable_role_separation"] = False
+        cfg["enrollment_enable"] = True
+        cfg["enrollment_id"] = args.enrollment_id
     return cfg
 
 
@@ -91,9 +91,8 @@ async def main_async(args: argparse.Namespace) -> None:
                     app_id=args.app_id,
                     biz_id=args.biz_id,
                     audio=chunk,
-                    # Hotwords + enrollment + asr_config ride the first frame only.
+                    # Hotwords + asr_config ride the first frame only.
                     hotwords=args.hotwords if i == 0 else "",
-                    enrollment_id=args.enrollment_id if i == 0 else "",
                     asr_config=asr_config if i == 0 else None,
                 )
             )
@@ -125,7 +124,8 @@ async def receive_messages(ws) -> None:
             for item in (result.get("ws") or [])
             for cw in (item.get("cw") or [])
         )
-        if header.get("status") == 2 and not result.get("ws"):
+        terminal = header.get("status") == 2
+        if terminal and not result.get("ws"):
             print(f"<- end (sid={header.get('sid')})")
         elif result.get("msgtype") == "sentence":
             print(f"<- final: {words} (bg={result.get('bg')}ms ed={result.get('ed')}ms)")
@@ -133,6 +133,8 @@ async def receive_messages(ws) -> None:
             print(f"<- partial: {words}")
         else:
             print(f"<- {json.dumps(msg, ensure_ascii=False)}")
+        if terminal:
+            return
 
 
 def parse_args() -> argparse.Namespace:

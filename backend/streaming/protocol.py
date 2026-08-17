@@ -153,6 +153,17 @@ def _parse_hotword_text(raw: object) -> list[str]:
     return [tok.strip() for tok in _HOTWORD_SPLIT.split(text) if tok.strip()]
 
 
+def _coerce_bool(value: object) -> bool:
+    """Read a JSON-ish boolean leniently (bool / 0-1 / "true"/"false"/...)."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _coerce_status(raw: object) -> int:
     """Read ``header.status`` leniently (int per spec, but tolerate "2"/2.0).
 
@@ -201,6 +212,14 @@ class AstV3Protocol:
         self._pcm_resolved = False
         self._lead_buf = b""
         self._byte_carry = b""
+        # Role-separation / enrollment result state (contract V0.4-review).
+        # Role separation defaults on and takes priority over enrollment, so
+        # sentence frames carry cw[].rl and enrollment_used=False until the
+        # first frame's parameter.asr_config resolves the effective mode.
+        # ``enrollment_used`` is corrected by the session after it actually
+        # resolves the enrollment id (see set_enrollment_used).
+        self._role_separation_active = True
+        self._enrollment_used = False
 
     # -- inbound ------------------------------------------------------------
 
@@ -229,17 +248,33 @@ class AstV3Protocol:
         if not self._inbound_started:
             self._inbound_started = True
             self.trace_id = str(header.get("traceId") or "")
-            # resIdList[0] is treated as the target-speaker enrollment id (the
-            # spec's "resource/speaker id" slot); appId/bizId stay log-only.
+            (
+                language,
+                role_sep,
+                enrollment_enable,
+                enrollment_id,
+                hotword_pool_id,
+                cfg_overrides,
+            ) = self._extract_asr_config(parameter)
             logger.info(
                 "AST v3 session start: sid=%s traceId=%s appId=%s bizId=%s "
-                "resIdList=%s (resIdList[0] used as target-speaker enrollment)",
+                "enable_role_separation=%s enrollment_enable=%s enrollment_id=%s",
                 self.sid,
                 self.trace_id,
                 header.get("appId"),
                 header.get("bizId"),
-                header.get("resIdList"),
+                role_sep,
+                enrollment_enable,
+                bool(enrollment_id),
             )
+            # header.resIdList is deprecated as a voiceprint entry (contract
+            # V0.4-review) and is no longer honored; log it if a stale client
+            # still sends it so operators can see the obsolete field.
+            if header.get("resIdList"):
+                logger.info(
+                    "AST v3: ignoring deprecated header.resIdList=%s",
+                    header.get("resIdList"),
+                )
             # parameter.engine (or the SDK's parameter.service) are engine
             # passthrough knobs with no equivalent in this stack; log them so
             # operators can see what was requested, but do not map behavior.
@@ -249,22 +284,63 @@ class AstV3Protocol:
                     "AST v3 engine passthrough params (not applied): %s",
                     engine_params,
                 )
+            # Resolve the effective mode from the role-separation/enrollment
+            # matrix. Role separation defaults on (None/True) and takes
+            # priority over enrollment; only a closed role separation with
+            # enrollment_enable and an empty id is a parameter error.
+            role_separation_on = role_sep is not False
+            mode = self._resolve_mode(
+                role_separation_on, enrollment_enable, enrollment_id
+            )
+            if mode == "param_error":
+                # Surface an explicit parameter error instead of silently
+                # falling back. The session sends the error frame and ends the
+                # session (see StreamingSession._handle_control).
+                self._role_separation_active = False
+                self._enrollment_used = False
+                logger.warning(
+                    "AST v3 parameter error: enrollment_enable=true requires a "
+                    "non-empty enrollment_id (sid=%s traceId=%s)",
+                    self.sid,
+                    self.trace_id,
+                )
+                return [
+                    ControlAction(
+                        {
+                            "type": "protocol_error",
+                            "message": (
+                                "enrollment_enable=true requires a non-empty "
+                                "enrollment_id"
+                            ),
+                        }
+                    )
+                ]
+            # cw[].rl is only emitted when role separation is active; the value
+            # is a protocol-compatible placeholder because neither the Amphion
+            # ASR model nor the split decode path produces real speaker labels
+            # (see change ast-v3-role-separation-and-enrollment design).
+            self._role_separation_active = mode == "role_separation"
+            self._enrollment_used = False
+
             start_ctrl: dict = {"type": "start"}
+            if self.trace_id:
+                start_ctrl["trace_id"] = self.trace_id
             hotwords = _parse_hotword_text(self._payload_text(payload))
             if hotwords:
                 start_ctrl["hotwords"] = hotwords
-            # Target speaker (TS-ASR): the id must already be registered via
-            # POST /api/asr/enrollment. The session resolves it through the
-            # shared enrollment store and gracefully degrades to plain ASR on
-            # an unknown/expired id, so no extra error path is needed here.
-            enrollment_id = self._extract_enrollment_id(header)
-            if enrollment_id:
+            # hotword_pool_id selects which RAG-ASR pool feeds recall for this
+            # session (empty = default pool). Routed explicitly so it is not
+            # dropped by the start.config whitelist.
+            if hotword_pool_id:
+                start_ctrl["hotword_pool_id"] = hotword_pool_id
+            # Only route the enrollment id downstream when the mode is
+            # enrollment. The session resolves it through the shared enrollment
+            # store and degrades to plain ASR on an unknown/expired id, then
+            # reports the real outcome back via set_enrollment_used.
+            if mode == "enrollment":
                 start_ctrl["enrollment_id"] = enrollment_id
-            # parameter.asr_config is this service's per-connection tuning slot
-            # (distinct from the log-only iFlytek engine block). language is not
-            # a Config field so it rides start.language; the rest becomes
-            # start.config and is whitelist-filtered downstream in the session.
-            language, cfg_overrides = self._extract_asr_config(parameter)
+            # parameter.asr_config language rides start.language; the remaining
+            # keys become start.config and are whitelist-filtered downstream.
             if language:
                 start_ctrl["language"] = language
             if cfg_overrides:
@@ -287,37 +363,69 @@ class AstV3Protocol:
             return text_obj.get("text")
         return None
 
-    @staticmethod
-    def _extract_enrollment_id(header: dict) -> str:
-        """Read the target-speaker enrollment id from ``header.resIdList[0]``.
+    def set_enrollment_used(self, used: bool) -> None:
+        """Record whether enrollment was actually applied for this session.
 
-        Only the first entry is used; multi-speaker separation is not
-        supported. Returns "" when absent so the synthesized start omits the
-        field entirely (no enrollment).
+        Called by the session after it resolves the enrollment id, so sentence
+        frames report a truthful ``enrollment_used`` (an unknown/expired id
+        that fell back to plain ASR reports ``False``).
         """
-        res_ids = header.get("resIdList")
-        if isinstance(res_ids, list) and res_ids and res_ids[0] is not None:
-            return str(res_ids[0]).strip()
-        return ""
+        self._enrollment_used = bool(used)
 
     @staticmethod
-    def _extract_asr_config(parameter: dict) -> tuple[str, dict]:
-        """Split ``parameter.asr_config`` into ``(language, config-overrides)``.
+    def _resolve_mode(
+        role_separation_on: bool, enrollment_enable: bool, enrollment_id: str
+    ) -> str:
+        """Resolve the effective mode from the role-separation matrix.
 
-        ``asr_config`` is this service's extension slot for per-connection
-        tuning; the iFlytek ``parameter.engine`` block stays log-only. The
-        ``language`` key is pulled out because it is not a ``Config`` field (the
-        session maps it separately via ``start.language``); every other key is
-        forwarded verbatim as ``start.config`` and is whitelist-filtered by
-        ``Config.override_client`` downstream, so no validation happens here.
-        Returns ``("", {})`` when the slot is absent or not a dict.
+        Returns one of ``role_separation`` / ``enrollment`` / ``plain_asr`` /
+        ``param_error``. Role separation is highest priority; enrollment only
+        applies when role separation is closed. A closed role separation with
+        ``enrollment_enable`` but an empty id is a parameter error rather than a
+        silent fallback. A non-empty but unknown/expired id resolves to
+        ``enrollment`` here and degrades to plain ASR in the session.
+        """
+        if role_separation_on:
+            return "role_separation"
+        if enrollment_enable:
+            return "enrollment" if enrollment_id else "param_error"
+        return "plain_asr"
+
+    @staticmethod
+    def _extract_asr_config(
+        parameter: dict,
+    ) -> tuple[str, bool | None, bool, str, str, dict]:
+        """Split ``parameter.asr_config`` into routed fields plus overrides.
+
+        Returns ``(language, enable_role_separation, enrollment_enable,
+        enrollment_id, hotword_pool_id, config-overrides)``.
+        ``enable_role_separation`` is ``None`` when the client omits it
+        (equivalent to on) so the caller can distinguish "omitted" from an
+        explicit ``false``. The role-separation, enrollment, and
+        hotword_pool_id keys are consumed here (routed explicitly, not through
+        ``start.config``); language is pulled out because it is not a
+        ``Config`` field; every remaining key is forwarded as ``start.config``
+        and whitelist-filtered by ``Config.override_client`` downstream.
+        Returns defaults when the slot is absent or not a dict.
         """
         cfg = parameter.get("asr_config")
         if not isinstance(cfg, dict) or not cfg:
-            return "", {}
+            return "", None, False, "", "", {}
         overrides = dict(cfg)
         language = str(overrides.pop("language", "") or "").strip()
-        return language, overrides
+        raw_role_sep = overrides.pop("enable_role_separation", None)
+        role_sep = None if raw_role_sep is None else _coerce_bool(raw_role_sep)
+        enrollment_enable = _coerce_bool(overrides.pop("enrollment_enable", False))
+        enrollment_id = str(overrides.pop("enrollment_id", "") or "").strip()
+        hotword_pool_id = str(overrides.pop("hotword_pool_id", "") or "").strip()
+        return (
+            language,
+            role_sep,
+            enrollment_enable,
+            enrollment_id,
+            hotword_pool_id,
+            overrides,
+        )
 
     def _decode_audio(self, payload: dict) -> bytes:
         audio_obj = payload.get("audio")
@@ -380,6 +488,19 @@ class AstV3Protocol:
             return self._progressive_frame(text, payload)
         if mtype == "error":
             return self._error_frame(str(payload.get("message") or "error"))
+        if mtype == "speech_started":
+            # VAD-activated notification.  Clients use the arrival time of this
+            # frame as the base for TTFT measurement so leading silence is
+            # excluded.  Sent as a status=1 result frame with msgtype=speech_started.
+            return {
+                "header": {"sid": self.sid, "status": 1},
+                "payload": {
+                    "result": {
+                        "segId": self._seg_id,
+                        "msgtype": "speech_started",
+                    }
+                },
+            }
         # ready / extract_hotwords_* / unknown have no AST v3 representation.
         return None
 
@@ -387,6 +508,26 @@ class AstV3Protocol:
         if self._terminated:
             return None
         self._terminated = True
+        # CONTRACT — DO NOT REMOVE the empty ``ws`` below.
+        # The terminal (status=2) frame MUST carry an empty ``ws`` placeholder.
+        # This is a customer/SDK agreement: the client always receives ``ws`` and
+        # parses it even though the word is empty. (An older note in
+        # docs/tuling-ast-v3-protocol.md line 379 claiming ``ws`` is forbidden is
+        # OUTDATED — ignore it. See the ascend-asr-delivery skill for the rule.)
+        # Only add fields to this shape in the future; never delete ``ws``.
+        cw = {
+            "lg": "",
+            "ng": "0.00",
+            "ph": "phone",
+            "sc": "0.00",
+            "w": "",
+            "wb": 0,
+            "wc": "0.00",
+            "we": 0,
+            "wp": "n",
+        }
+        if self._role_separation_active:
+            cw["rl"] = 0
         result = {
             "segId": self._seg_id,
             "bg": 0,
@@ -397,6 +538,8 @@ class AstV3Protocol:
             "msgtype": "sentence",
             "sn": self._sn,
             "pa": 0,
+            "enrollment_used": self._enrollment_used,
+            "ws": [{"bg": 0, "cw": [cw]}],
         }
         return self._envelope(result, status=2)
 
@@ -424,6 +567,22 @@ class AstV3Protocol:
         self._seg_id += 1
         self._sn += 1
 
+        cw = {
+            "lg": lg,
+            "ng": "0.00",
+            "ph": "phone",
+            "sc": "0.00",
+            "w": text,
+            "wb": bg_f,
+            "wc": "0.00",
+            "we": ed_f,
+            "wp": "n",
+        }
+        # cw[].rl (role/speaker number) is only present on sentence results
+        # while role separation is active; it is a protocol placeholder (see
+        # set_enrollment_used / design). Progressive results never carry it.
+        if self._role_separation_active:
+            cw["rl"] = 0
         result = {
             "segId": seg_id,
             "bg": bg_ms,
@@ -434,34 +593,21 @@ class AstV3Protocol:
             "msgtype": "sentence",
             "sn": sn,
             "pa": 0,
+            "enrollment_used": self._enrollment_used,
             "vad": {"ws": [{"bg": bg_f, "ed": ed_f}]},
-            "ws": [
-                {
-                    "bg": bg_f,
-                    "cw": [
-                        {
-                            "lg": lg,
-                            "ng": "0.00",
-                            "ph": "phone",
-                            "sc": "0.00",
-                            "w": text,
-                            "wb": bg_f,
-                            "wc": "0.00",
-                            "we": ed_f,
-                            "wp": "n",
-                        }
-                    ],
-                }
-            ],
+            "ws": [{"bg": bg_f, "cw": [cw]}],
         }
         return self._envelope(result, status=1)
 
     def _progressive_frame(self, text: str, payload: dict) -> dict:
         lg = _short_lang(payload.get("language"))
+        # Progressive (intermediate) results never carry cw[].rl regardless of
+        # role separation; enrollment_used is still reported for observability.
         result = {
             "segId": self._seg_id,
             "ls": False,
             "msgtype": "Progressive",
+            "enrollment_used": self._enrollment_used,
             "ws": [
                 {
                     "bg": 0,

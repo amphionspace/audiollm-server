@@ -7,9 +7,8 @@ as the emotion job stores. Differences that are transcription-specific:
   upload) so the pipeline can replay it straight into the VAD stream;
 - a ``progress`` block (segments planned / done) is exposed in the poll
   payload because a long meeting takes minutes, not seconds, to transcribe;
-- total vLLM pressure is two-leveled: ``transcribe_max_concurrent_jobs``
-  running jobs times ``transcribe_segment_concurrency`` in-flight segments
-  per job.
+- vLLM pressure is bounded by ``transcribe_max_concurrent_jobs`` because each
+  job transcribes its own VAD segments serially in file order.
 """
 
 from __future__ import annotations

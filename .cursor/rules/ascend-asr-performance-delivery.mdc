@@ -1,0 +1,26 @@
+---
+description: Preserve Ascend 910B ASR streaming/non-streaming performance targets and validation discipline
+alwaysApply: true
+---
+
+# Ascend ASR Performance Delivery
+
+Treat these as hard delivery goals for the Ascend 910B ASR service:
+
+- Streaming: 10-minute realtime audio, BS52, `ttft_onset` around 800 ms, every VAD segment refreshes partial text every 1-3 s, `final_lag`/`full` under 3 s, complete input consumption, stable final text.
+- Non-streaming: `/api/asr/transcriptions`, 10-minute audio, BS96, average end-to-end RTF < 0.4, complete input consumption, stable final text.
+- Do not optimize non-streaming by changing the streaming path unless the user explicitly accepts the risk; keep streaming gains isolated.
+
+Validation rules:
+
+- A streaming run is not commercial-grade just because `ok=N` or text exists. It must also have `full_ms` for every stream, expected `n_finals`/text length, partial refreshes, and server-side consumed audio close to full duration.
+- Always warm up after container restart before high-concurrency tests; cold high-concurrency handshakes are not representative.
+- BS64 is currently an overload boundary, not a delivery target. Use it to validate cleanup/recovery, not to claim capacity.
+- After overload tests, restart or prove cleanup before running smaller concurrency tests; overload can pollute following runs.
+
+Known failed directions:
+
+- Raising final ASR concurrency from 10/10 to 11/11 or 12/12 worsened TTFT and tail latency.
+- Stop-flush-only concurrency 14/14 improved tail latency; 18/18 and promoting all drain-phase finals worsened TTFT/tail.
+- Lowering `asr_first_partial_priority_ms` from 500 to 200 worsened TTFT p90 and tail latency.
+- ORT inter-op/spinning tuning worsened integrated behavior; keep the TEN VAD stable path unless new evidence says otherwise.

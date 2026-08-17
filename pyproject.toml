@@ -35,6 +35,9 @@ default = true
 Homepage = "https://github.com/open-mmlab/Amphion"
 Repository = "https://github.com/open-mmlab/Amphion"
 
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
 [tool.ruff]
 target-version = "py310"
 line-length = 100

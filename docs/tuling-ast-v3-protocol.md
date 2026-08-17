@@ -44,12 +44,14 @@ Client                                      Server
     "traceId": "traceId123456",
     "appId": "123456",
     "bizId": "39769795890",
-    "status": 0,
-    "resIdList": ["234567", "345678"]
+    "status": 0
   },
   "parameter": {
-    "engine": {
-      "wdec_param_LanguageTypeChoice": "3"
+    "asr_config": {
+      "language": "zh",
+      "enable_role_separation": false,
+      "enrollment_enable": true,
+      "enrollment_id": "234567"
     }
   },
   "payload": {
@@ -67,7 +69,7 @@ Client                                      Server
 | traceId | String | 是 | 日志追踪 id，原样回显到响应 header.traceId |
 | appId | String | 否 | 应用系统 id，仅记录日志 |
 | bizId | String | 是 | 业务 id，仅记录日志 |
-| resIdList | List<String> | 否 | 目标说话人 enrollment id 列表，取 resIdList[0] 作为目标说话人（TS-ASR），需先经 REST 注册获取；仅用第一个，不做多说话人分离（见“目标说话人”章节） |
+| resIdList | List<String> | 否 | 已废弃/忽略；目标说话人必须通过首帧 `parameter.asr_config.enrollment_enable=true` + `enrollment_id` 启用 |
 | status | int | 是 | 请求状态：0 首帧，1 中间帧，2 尾帧 |
 
 ### parameter
@@ -104,7 +106,7 @@ Client                                      Server
 
 可覆写字段与 `/transcribe-streaming` 的 `start.config` 共用同一白名单（`backend/config.py` 的 `CLIENT_OVERRIDABLE_FIELDS`）。下面按类别逐字段说明语义：默认列为服务端 `config.yaml` 当前生效值，本端点列标注该字段在 AST v3 是否产生可观察效果（本端点恒为 primary-only，副模型与融合相关字段即使传入也不生效）。
 
-VAD / 分段（凡按帧计的字段，其帧时长由 VAD 后端 hop 决定：ten-vad 约 16 ms/帧，能量兜底约 10 ms/帧）：
+VAD / 分段（凡按帧计的字段，其帧时长由 TEN VAD 后端 hop 决定，约 16 ms/帧）：
 
 | 字段 | 类型 | 默认 | 含义 | 本端点 |
 |---|---|---|---|---|
@@ -156,7 +158,7 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 | asr_enrollment_max_sec | float（秒） | 8.0 | 注册音频最大时长，超出尾截 | 首帧覆写无可观察效果 |
 | asr_enrollment_ttl_sec | float（秒） | 3600 | 注册缓存 TTL，最近一次使用后重新计时 | 首帧覆写无可观察效果 |
 
-这三项只在注册接口 `POST /api/asr/enrollment`（独立的 REST 调用，按服务端默认执行）生效。AST v3 首帧经 `header.resIdList` 携带的是已注册 id，本端点既不重新注册、也不消费这些值，因此在 `parameter.asr_config` 里覆写它们不会改变本连接的目标说话人行为。
+这三项只在注册接口 `POST /api/asr/enrollment`（独立的 REST 调用，按服务端默认执行）生效。AST v3 首帧只消费已注册的 `parameter.asr_config.enrollment_id`，本端点既不重新注册、也不读取上传时长配置覆写，因此在 `parameter.asr_config` 里覆写这些注册参数不会改变本连接的目标说话人行为。
 
 共享白名单还包含情感类字段（`emotion_*`，如 `emotion_task_mode`、`emotion_request_timeout` 等），仅对情感端点有效，对本 ASR 端点无效。完整白名单与各字段按类别速览见 [API 总览](api-reference.md) 的“临时配置覆写”。
 
@@ -215,27 +217,32 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 支持只转写指定说话人的语音，复用与 `/transcribe-streaming` 相同的注册机制，分两步：
 
 1. 注册：通过 `POST /api/asr/enrollment` 上传 1-8 秒目标说话人音频，拿到 `enrollment_id`（见 [API 总览](api-reference.md) 的注册接口）。
-2. 携带：在首帧（status=0）把该 id 放进 `header.resIdList`，服务端取 `resIdList[0]` 作为目标说话人。
+2. 携带：在首帧（status=0）设置 `parameter.asr_config.enable_role_separation=false`、`enrollment_enable=true`、`enrollment_id=<id>`。`header.resIdList` 已废弃并被忽略。
 
 ```json
 {
   "header": {
     "traceId": "traceId123456",
     "bizId": "39769795890",
-    "status": 0,
-    "resIdList": ["ule8QilVjZql30Q9oy9kiQ"]
+    "status": 0
   },
-  "parameter": { "engine": {} },
+  "parameter": {
+    "asr_config": {
+      "enable_role_separation": false,
+      "enrollment_enable": true,
+      "enrollment_id": "ule8QilVjZql30Q9oy9kiQ"
+    }
+  },
   "payload": { "audio": { "audio": "JiuY3iK9AAB..." } }
 }
 ```
 
 说明：
 
-- enrollment_id 仅在首帧读取，整段会话沿用同一目标说话人。
-- 若 resIdList[0] 未注册或已过期，服务端静默回退为普通 ASR（仅记 WARN，不返回 error），避免长连接因陈旧 id 中断。enrollment_id 有 TTL（默认 3600 秒、每次使用续期）且服务重启即失效，完整生命周期（存储/有效期/容量/删除）见 [API 总览](api-reference.md) 注册接口的“生命周期”。
-- resIdList 含多个 id 时只用第一个，不做多说话人分离。
-- 未携带 resIdList 时为普通 ASR。
+- `enrollment_id` 仅在首帧读取，整段会话沿用同一目标说话人。
+- 若 `enrollment_id` 未注册或已过期，服务端静默回退为普通 ASR（仅记 WARN，不返回 error），避免长连接因陈旧 id 中断。enrollment_id 有 TTL（默认 3600 秒、每次使用续期）且持久化目录可跨服务重启恢复；完整生命周期（存储/有效期/容量/删除）见 [API 总览](api-reference.md) 注册接口的“生命周期”。
+- `enable_role_separation` 省略或为 true 时，角色分离优先，声纹字段被忽略。
+- `header.resIdList` 不再触发声纹；仍发送该字段等同于普通 ASR/角色分离路径。
 
 ## 服务端响应
 
@@ -358,7 +365,7 @@ result 示例（最终结果）：
 
 | 限制 | 说明 |
 |---|---|
-| resIdList 多说话人 | resIdList 仅取首个作目标说话人（TS-ASR），其余忽略；当前单路 ASR 不做多说话人分离 |
+| resIdList | 已废弃并被忽略；多说话人/目标说话人选择必须通过 `parameter.asr_config`，当前单路 ASR 不做多说话人分离 |
 | parameter.engine | 讯飞引擎透传参数（如 wdec_param_LanguageTypeChoice、wrec_param_language_name）在本服务无对应能力，仅记录日志，不影响识别；如需按连接调参请改用 parameter.asr_config（见配置覆写章节） |
 | 词级时间戳 | 见降级说明，非逐词真实值 |
 | 鉴权 | 无内置鉴权，需在网关层实现访问控制 |
@@ -391,7 +398,7 @@ python docs/examples/ws_ast_v3.py sample.wav \
   --hotwords "挚音科技,张硕"
 ```
 
-目标说话人：先注册拿到 id，再用 `--enrollment-id` 传入（脚本会写进首帧 `header.resIdList[0]`）：
+目标说话人：先注册拿到 id，再用 `--enrollment-id` 传入（脚本会写进首帧 `parameter.asr_config.enrollment_id`，并关闭角色分离）：
 
 ```bash
 curl -X POST http://172.16.0.3:8080/api/asr/enrollment -F "audio=@speaker_enroll.wav"

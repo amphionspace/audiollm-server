@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 import numpy as np
 
@@ -27,6 +28,9 @@ class SegmentReady:
     is_stop_flush: bool = False
     start_ms: float | None = None
     end_ms: float | None = None
+    queued_at: float = 0.0
+    queue_depth_at_enqueue: int = 0
+    dequeued_at: float = 0.0
 
 
 @dataclass
@@ -39,6 +43,10 @@ class PartialSnapshot:
     """
 
     pcm: np.ndarray
+    speech_started_at: float | None = None
+    snapshot_at: float = 0.0
+    is_first: bool = False
+    model_started_at: float = 0.0
 
 
 @dataclass
@@ -51,6 +59,12 @@ class SpeechStarted:
     segment to finalize. Engines that don't override the corresponding
     hook simply ignore the event.
     """
+
+    started_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.started_at:
+            self.started_at = time.monotonic()
 
 
 @dataclass

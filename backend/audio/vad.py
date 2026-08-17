@@ -1,54 +1,96 @@
 import logging
 import math
+import os
+import sys
+from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
-
-try:
-    from ten_vad import TenVad
-except Exception:  # pragma: no cover - depends on optional native runtime
-    TenVad = None
 
 from ..config import HOP_SIZE, SAMPLE_RATE, Config, default_config
 
 logger = logging.getLogger(__name__)
 
 
-class _EnergyVad:
-    """Simple RMS-energy fallback VAD returning pseudo-probability [0, 1]."""
+class _TenVadOnnx:
+    """TEN VAD ONNX backend for Linux aarch64 builds.
 
-    def __init__(self, floor: float = 0.008, ceil: float = 0.06):
-        self.floor = max(1e-6, floor)
-        self.ceil = max(self.floor + 1e-6, ceil)
+    The PyPI ten-vad wheel ships x86_64 native binaries. The ONNX example
+    builds a `ten_vad_python` extension that works on aarch64 while preserving
+    the same frame-level VAD strategy in VADProcessor.
+    """
+
+    def __init__(self, hop_size: int, threshold: float):
+        self.hop_size = hop_size
+        self.threshold = threshold
+        self._build_dir = self._resolve_build_dir()
+        lib_dir = self._build_dir / "lib"
+        if not lib_dir.is_dir():
+            raise FileNotFoundError(f"TEN VAD ONNX lib dir not found: {lib_dir}")
+        if not (self._build_dir / "onnx_model" / "ten-vad.onnx").is_file():
+            raise FileNotFoundError(
+                f"TEN VAD ONNX model not found under: {self._build_dir / 'onnx_model'}"
+            )
+
+        sys.path.insert(0, str(lib_dir))
+        try:
+            import ten_vad_python  # type: ignore[import-not-found]
+        finally:
+            try:
+                sys.path.remove(str(lib_dir))
+            except ValueError:
+                pass
+
+        cwd = Path.cwd()
+        try:
+            os.chdir(self._build_dir)
+            self._vad = ten_vad_python.VAD(hop_size=hop_size, threshold=threshold)
+        finally:
+            os.chdir(cwd)
+
+    @staticmethod
+    def _resolve_build_dir() -> Path:
+        candidates = []
+        configured = os.getenv("TEN_VAD_ONNX_BUILD_DIR", "").strip()
+        if configured:
+            candidates.append(Path(configured))
+        candidates.extend(
+            [
+                Path("/opt/ten-vad-onnx"),
+                Path("/home/workspace/ten-vad/examples_onnx/python/build-linux"),
+                Path(__file__).resolve().parents[2] / ".ten-vad-onnx" / "build-linux",
+            ]
+        )
+        for path in candidates:
+            if path.is_dir():
+                return path.resolve()
+        searched = ", ".join(str(p) for p in candidates)
+        raise FileNotFoundError(f"TEN VAD ONNX build dir not found; searched: {searched}")
 
     def process(self, pcm_frame: np.ndarray) -> float:
-        energy = float(np.sqrt(np.mean(np.square(pcm_frame), dtype=np.float32)))
-        normalized = (energy - self.floor) / (self.ceil - self.floor)
-        return float(min(1.0, max(0.0, normalized)))
+        prob, _is_voice = self._vad.process(pcm_frame)
+        return float(prob)
 
+    def process_batch(self, pcm_chunk: np.ndarray) -> list[float]:
+        """Process multiple hops in one GIL-released C++ call.
 
-def _patch_tenvad_destructor():
-    """Guard against noisy AttributeError in ten-vad __del__."""
-    if TenVad is None:
-        return
-
-    original_del = getattr(TenVad, "__del__", None)
-    if not callable(original_del):
-        return
-
-    def _safe_del(self):
-        # ten-vad may create partially initialized objects; skip unsafe cleanup.
-        if not hasattr(self, "vad_library"):
-            return
-        try:
-            original_del(self)
-        except AttributeError:
-            pass
-
-    TenVad.__del__ = _safe_del
-
-
-_patch_tenvad_destructor()
+        Accepts float32 or int16. Float32 input is converted to int16
+        inside the GIL-released C++ block for zero Python overhead.
+        """
+        if pcm_chunk.dtype == np.float32 and hasattr(self._vad, "process_batch_f32"):
+            return [min(1.0, max(0.0, float(p))) for p in self._vad.process_batch_f32(pcm_chunk)]
+        if pcm_chunk.dtype != np.int16:
+            clipped = np.clip(pcm_chunk, -1.0, 1.0)
+            pcm_chunk = (clipped * 32767.0).astype(np.int16)
+        if hasattr(self._vad, "process_batch"):
+            results = self._vad.process_batch(pcm_chunk)
+            return [min(1.0, max(0.0, float(r[0]))) for r in results]
+        hop = self.hop_size
+        probs = []
+        for i in range(len(pcm_chunk) // hop):
+            prob, _ = self._vad.process(pcm_chunk[i * hop:(i + 1) * hop])
+            probs.append(float(prob))
+        return probs
 
 
 class VADProcessor:
@@ -63,6 +105,8 @@ class VADProcessor:
         pre_speech_ms: int = default_config.vad_pre_speech_ms,
         keep_tail_ms: int = default_config.vad_keep_tail_ms,
     ):
+        self._init_hop_size = hop_size
+        self._init_threshold = threshold
         self.vad = self._create_vad_backend()
         backend_hop = getattr(self.vad, "hop_size", None)
         if isinstance(backend_hop, int) and backend_hop > 0:
@@ -105,14 +149,6 @@ class VADProcessor:
         pre_speech_ms: int,
         keep_tail_ms: int,
     ) -> None:
-        """Set the threshold-style segmentation knobs in one place.
-
-        ``__init__`` and :meth:`apply_config` both route through here so the
-        ms->frame conversion and clamping live once. ``frame_ms`` (derived
-        from the backend hop at construction) must already be set. The VAD
-        backend and any in-flight buffers/counters are deliberately left
-        untouched, so this is safe to call mid-session.
-        """
         self.threshold = threshold
         self.smoothing_alpha = min(1.0, max(0.0, smoothing_alpha))
         self.start_frames = max(1, start_frames)
@@ -121,13 +157,7 @@ class VADProcessor:
         self.keep_tail_frames = max(0, math.ceil(keep_tail_ms / self.frame_ms))
 
     def apply_config(self, cfg: Config) -> None:
-        """Apply per-connection VAD tunables from a :class:`Config`.
-
-        Called by the streaming layer's ``configure(cfg)`` after a client's
-        ``start.config`` / ``parameter.asr_config`` override is merged, so
-        these knobs actually take effect per connection instead of being
-        frozen at construction to the process-wide defaults.
-        """
+        """Apply per-connection VAD tunables without resetting audio buffers."""
         self._set_tunables(
             threshold=cfg.vad_threshold,
             silence_duration_ms=cfg.silence_duration_ms,
@@ -139,35 +169,28 @@ class VADProcessor:
 
     def _prepare_vad_input(self, pcm_frame: np.ndarray) -> np.ndarray:
         """Adapt frame dtype for backend-specific requirements."""
-        if TenVad is not None and isinstance(self.vad, TenVad):
-            # ten-vad requires int16 PCM.
+        if isinstance(self.vad, _TenVadOnnx):
+            # TEN VAD ONNX backend requires int16 PCM.
             if pcm_frame.dtype == np.int16:
                 return pcm_frame
             clipped = np.clip(pcm_frame, -1.0, 1.0)
             return (clipped * 32767.0).astype(np.int16, copy=False)
-        # Energy fallback expects float-like input.
+        # Generic fallback for non-batched TEN VAD variants.
         if pcm_frame.dtype == np.float32:
             return pcm_frame
         return pcm_frame.astype(np.float32, copy=False)
 
     def _create_vad_backend(self):
-        if TenVad is None:
-            logger.warning(
-                "ten-vad is unavailable; using fallback energy VAD. "
-                "Install ten-vad and system libc++ (e.g. apt install libc++1)."
-            )
-            return _EnergyVad()
-
         try:
-            return TenVad()
-        except OSError as exc:
-            logger.warning(
-                "TEN VAD native library failed to load (%s). "
-                "Using fallback energy VAD. "
-                "Install system libc++ (e.g. apt install libc++1).",
-                exc,
+            return _TenVadOnnx(
+                hop_size=self._init_hop_size,
+                threshold=self._init_threshold,
             )
-            return _EnergyVad()
+        except Exception as exc:
+            raise RuntimeError(
+                "TEN VAD ONNX backend is required for the delivery runtime; "
+                "no RMS energy VAD fallback is available"
+            ) from exc
 
     def _extract_prob(self, value) -> float:
         """Normalize backend outputs to a single probability float in [0, 1]."""
@@ -185,6 +208,203 @@ class VADProcessor:
         except (TypeError, ValueError):
             return 0.0
         return min(1.0, max(0.0, prob))
+
+    def process_chunk(self, pcm_chunk: np.ndarray, *, detection_only: bool = False):
+        """Process multiple hops with batched ONNX + C++ state machine.
+
+        Returns list of (segment_or_None, was_speaking, now_speaking) tuples.
+        The entire ONNX inference + smoothing + speech detection runs in a
+        single GIL-released C++ block for maximum thread parallelism.
+
+        ``detection_only`` (design F12): callers that use this processor purely
+        as a voice gate (e.g. ``AscendK2Stream``, which maintains its own speech
+        buffer and ignores the returned segments) skip the per-hop Python audio
+        buffer maintenance (``frame.copy()`` per 10 ms hop, ``audio_buffer``
+        appends, per-segment ``np.concatenate``). Under BS52 that per-hop work
+        runs on the single-process GIL for ~5200 hops/s and was a measurable
+        share of the ~1.2%/s server real-time deficit that accumulates vad_lag.
+        In this mode the segment element is always ``None`` and only the
+        ``(was_speaking, now_speaking)`` transitions are meaningful.
+        """
+        hop = self.hop_size
+        n_hops = len(pcm_chunk) // hop
+        if n_hops == 0:
+            return []
+
+        chunk_aligned = pcm_chunk[:n_hops * hop]
+
+        # Try C++ fast path: ONNX probabilities plus VAD state transitions run
+        # in one GIL-released native call. Python only mirrors audio buffers so
+        # finalized segments and partial snapshots keep the same semantics as
+        # the frame-by-frame state machine.
+        if (
+            isinstance(self.vad, _TenVadOnnx)
+            and hasattr(self.vad._vad, "process_chunk_f32")
+        ):
+            f32 = chunk_aligned if chunk_aligned.dtype == np.float32 else chunk_aligned.astype(np.float32)
+            init_prob = self.smoothed_prob if self.smoothed_prob is not None else -1.0
+            try:
+                raw = self.vad._vad.process_chunk_f32(
+                    f32, self.threshold, self.smoothing_alpha,
+                    self.start_frames, self.silence_frames,
+                    self.pre_speech_frames, self.keep_tail_frames,
+                    self.is_speaking, init_prob,
+                    self.silent_count, self.speech_count,
+                )
+            except TypeError:
+                raw = None
+            if raw is not None:
+                # Last element is final state:
+                # (smoothed, is_speaking, silent_count, speech_count)
+                final_state = raw[-1]
+                hop_results = raw[:-1]
+
+                if detection_only:
+                    # No Python-side buffer maintenance. hop_results tuples are
+                    # (prob, was, now); the caller unpacks (_, was, now), so the
+                    # prob slot doubles as the ignored segment slot. Update only
+                    # the transition state the C++ machine advanced.
+                    self.is_speaking = bool(final_state[1])
+                    self.smoothed_prob = float(final_state[0])
+                    self.silent_count = int(final_state[2])
+                    self.speech_count = int(final_state[3])
+                    return hop_results
+
+                results = []
+                for idx in range(n_hops):
+                    prob, was, now = hop_results[idx]
+                    frame = pcm_chunk[idx * hop:(idx + 1) * hop]
+                    seg = self._update_state_from_cpp(frame, float(prob), bool(was), bool(now))
+                    results.append((seg, bool(was), bool(now)))
+
+                self.smoothed_prob = float(final_state[0])
+                self.is_speaking = bool(final_state[1])
+                self.silent_count = int(final_state[2])
+                self.speech_count = int(final_state[3])
+                return results
+
+        # Fallback: Python state machine with batched ONNX probs
+        if hasattr(self.vad, "process_batch"):
+            raw_probs = self.vad.process_batch(chunk_aligned)
+        else:
+            vad_input = self._prepare_vad_input(chunk_aligned)
+            raw_probs = [
+                self._extract_prob(self.vad.process(vad_input[i*hop:(i+1)*hop]))
+                for i in range(n_hops)
+            ]
+
+        results = []
+        for idx in range(n_hops):
+            was = self.is_speaking
+            if detection_only:
+                # Advance smoothing + speech-count state without buffer work.
+                raw_prob = float(raw_probs[idx])
+                if self.smoothed_prob is None:
+                    self.smoothed_prob = raw_prob
+                else:
+                    a = self.smoothing_alpha
+                    self.smoothed_prob = (a * self.smoothed_prob) + ((1.0 - a) * raw_prob)
+                is_speech = self.smoothed_prob > self.threshold
+                if not self.is_speaking:
+                    self.speech_count = self.speech_count + 1 if is_speech else 0
+                    if self.speech_count >= self.start_frames:
+                        self.is_speaking = True
+                        self.silent_count = 0
+                else:
+                    if is_speech:
+                        self.silent_count = 0
+                    else:
+                        self.silent_count += 1
+                        if self.silent_count >= self.silence_frames:
+                            self.is_speaking = False
+                            self.silent_count = 0
+                            self.speech_count = 0
+                results.append((None, was, self.is_speaking))
+                continue
+            frame = pcm_chunk[idx * hop:(idx + 1) * hop]
+            seg = self._process_with_prob(frame, float(raw_probs[idx]))
+            now = self.is_speaking
+            results.append((seg, was, now))
+        return results
+
+    def _update_state_from_cpp(
+        self,
+        pcm_frame: np.ndarray,
+        smoothed_prob: float,
+        was_speaking: bool,
+        now_speaking: bool,
+    ) -> np.ndarray | None:
+        """Mirror native VAD transitions into Python-owned audio buffers."""
+        self.smoothed_prob = smoothed_prob
+        frame_copy = pcm_frame.copy()
+
+        if not was_speaking:
+            self.pre_speech_buffer.append(frame_copy)
+            if len(self.pre_speech_buffer) > self.pre_speech_frames:
+                del self.pre_speech_buffer[0]
+
+            if now_speaking:
+                self.is_speaking = True
+                self.audio_buffer.extend(self.pre_speech_buffer)
+                self.pre_speech_buffer.clear()
+            else:
+                self.is_speaking = False
+            return None
+
+        self.audio_buffer.append(frame_copy)
+        self.is_speaking = now_speaking
+        if now_speaking:
+            return None
+
+        keep_tail = min(self.keep_tail_frames, self.silence_frames)
+        trim = self.silence_frames - keep_tail
+        if trim > 0:
+            del self.audio_buffer[-trim:]
+        segment = np.concatenate(self.audio_buffer)
+        self.audio_buffer.clear()
+        self.pre_speech_buffer.clear()
+        return segment
+
+    def _process_with_prob(self, pcm_frame: np.ndarray, raw_prob: float) -> np.ndarray | None:
+        """State machine step using a pre-computed probability."""
+        if self.smoothed_prob is None:
+            self.smoothed_prob = raw_prob
+        else:
+            a = self.smoothing_alpha
+            self.smoothed_prob = (a * self.smoothed_prob) + ((1.0 - a) * raw_prob)
+
+        is_speech = self.smoothed_prob > self.threshold
+        frame_copy = pcm_frame.copy()
+
+        if not self.is_speaking:
+            self.pre_speech_buffer.append(frame_copy)
+            if len(self.pre_speech_buffer) > self.pre_speech_frames:
+                del self.pre_speech_buffer[0]
+            if is_speech:
+                self.speech_count += 1
+            else:
+                self.speech_count = 0
+            if self.speech_count >= self.start_frames:
+                self.is_speaking = True
+                self.silent_count = 0
+                self.audio_buffer.extend(self.pre_speech_buffer)
+                self.pre_speech_buffer.clear()
+            return None
+
+        self.audio_buffer.append(frame_copy)
+        if is_speech:
+            self.silent_count = 0
+        else:
+            self.silent_count += 1
+            if self.silent_count >= self.silence_frames:
+                keep_tail = min(self.keep_tail_frames, self.silence_frames)
+                trim = self.silence_frames - keep_tail
+                if trim > 0:
+                    del self.audio_buffer[-trim:]
+                segment = np.concatenate(self.audio_buffer)
+                self._reset()
+                return segment
+        return None
 
     def process(self, pcm_frame: np.ndarray) -> np.ndarray | None:
         """Feed one frame (hop_size samples, float32).
@@ -236,6 +456,18 @@ class VADProcessor:
                 return segment
 
         return None
+
+    def buffered_speech_samples(self) -> int:
+        """Number of PCM samples buffered while speaking, without copying.
+
+        Cheap O(nframes) length sum used to gate partial emission so the
+        expensive ``np.concatenate`` in ``snapshot_incomplete_speech`` only
+        runs when a partial is actually going to be emitted (avoids an
+        O(n^2) per-feed copy of the whole growing speech buffer).
+        """
+        if not self.is_speaking or not self.audio_buffer:
+            return 0
+        return sum(len(f) for f in self.audio_buffer)
 
     def snapshot_incomplete_speech(self) -> np.ndarray | None:
         """Return a copy of the PCM accumulated so far while speaking.

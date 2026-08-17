@@ -86,14 +86,18 @@ def _frame(status: int, *, trace_id: str, app_id: str, biz_id: str,
         header["appId"] = app_id
     if biz_id:
         header["bizId"] = biz_id
-    # resIdList[0] carries the target-speaker enrollment id (register first via
-    # POST /api/asr/enrollment to obtain it).
-    if enrollment_id:
-        header["resIdList"] = [enrollment_id]
     # engine stays log-only; asr_config carries per-connection config overrides.
     parameter: dict = {"engine": {}}
-    if asr_config:
-        parameter["asr_config"] = asr_config
+    cfg = dict(asr_config or {})
+    # Enrollment is routed through parameter.asr_config (contract V0.4-review);
+    # header.resIdList is deprecated. Enrollment only applies when role
+    # separation is off, so disable it when an enrollment id is supplied.
+    if enrollment_id:
+        cfg.setdefault("enable_role_separation", False)
+        cfg["enrollment_enable"] = True
+        cfg["enrollment_id"] = enrollment_id
+    if cfg:
+        parameter["asr_config"] = cfg
     payload: dict = {}
     if audio_b64 is not None:
         payload["audio"] = {"audio": audio_b64}
@@ -250,7 +254,8 @@ def main():
     parser.add_argument("--hotwords", default="",
                         help='Comma-separated hotwords (e.g. "挚音科技,张硕")')
     parser.add_argument("--enrollment-id", default="",
-                        help="Target-speaker id from POST /api/asr/enrollment (-> resIdList[0])")
+                        help="Target-speaker id from POST /api/asr/enrollment "
+                             "(-> asr_config.enrollment_enable + enrollment_id)")
     parser.add_argument("--language", default="",
                         help="会话语言代码，写入 parameter.asr_config.language")
     parser.add_argument("--vad-threshold", type=float, default=None,
