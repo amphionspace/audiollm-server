@@ -357,20 +357,33 @@ SERVICE=my-demo scripts/restart_service.sh   # 指定其他 systemd 服务名
 
 k2 模式下，切段权威是 k2 的 endpoint；本服务只用 `k2_idle_keep_ms` 限制起音前旧静音、用 `k2_max_segment_sec` 防止无 endpoint 时缓冲无限增长，并用 `k2_voice_gate_*` 在 partial/final 进入下游前确认有人声证据。voice gate 只决定放行或丢弃，不再用本地 VAD 裁剪段首/段尾。`silence_duration_ms` / `vad_start_frames` / `pseudo_stream_interval_ms` / `pseudo_stream_first_partial_ms` 不再决定这两个端点的切点或首字时机；`enable_pseudo_stream=false` 仍会抑制 partial 下发。
 
-#### LLM ASR 前整段人声门控
+#### AudioLLM 前人声过滤
 
-实时 final 送入 LLM ASR 前会再做一次整段人声证据判断，覆盖本地 VAD 切段和 k2 endpoint 切段后的 final。该门控只决定是否调用 LLM ASR，不裁剪音频，也不影响 k2 已经下发的 partial。
+每次把音频送入 AudioLLM 前，服务都会重新计算整段人声证据，覆盖本地 VAD、k2 endpoint、REST 上传和离线任务路径。gate 开启时，人声帧占比、累计时长或 RMS 不达标的音频直接丢弃；filter 开启时，已放行音频只保留 VAD 支持的人声区间以及 `asr_segment_voice_filter_pre_ms` / `asr_segment_voice_filter_tail_ms` 上下文。该处理不改变 k2 已经下发的 partial，也不改变 AST v3 的原始 `bg` / `ed` 时间线。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `asr_segment_voice_gate_enabled` | bool | `true` | 是否启用 final LLM ASR 前的整段人声门控 |
-| `asr_segment_voice_gate_threshold` | float | `0.65` | 复用本地 VAD 的人声概率阈值 |
+| `asr_segment_voice_gate_enabled` | bool | `true` | 是否丢弃低人声证据音频 |
+| `asr_segment_voice_gate_threshold` | float | `0.65` | gate 计算人声证据的概率阈值 |
 | `asr_segment_voice_gate_min_ratio` | float | `0.05` | 整段中超过阈值的人声帧占比下限 |
 | `asr_segment_voice_gate_min_ms` | int | `120` | 整段累计人声证据时长下限（毫秒） |
 | `asr_segment_voice_gate_min_rms` | float | `0.001` | 低于该 RMS 的近数字静音直接丢弃 |
+| `asr_segment_voice_filter_enabled` | bool | `true` | 是否裁剪已放行音频中 VAD 不支持的区间 |
+| `asr_segment_voice_filter_threshold` | float | `0.65` | filter 判定需要保留的人声帧概率阈值 |
+| `asr_segment_voice_filter_pre_ms` | int | `160` | 每个人声区间向前保留的上下文（毫秒），默认约 10 个 TEN VAD 帧 |
+| `asr_segment_voice_filter_tail_ms` | int | `160` | 每个人声区间向后保留的上下文（毫秒），默认约 10 个 TEN VAD 帧 |
 | `asr_silence_removal_threshold_sec` | float | `0.0` | final LLM ASR 前删除连续时长大于等于该值的内部静音；`0` 表示关闭 |
 
-`asr_silence_removal_threshold_sec` 解决一句话中间夹入长时间无声的问题，例如"打开遮【停顿若干秒】光板"。启用后只删除前后都有人声的内部长静音；首尾静音和整段疑似静音会保留，避免 VAD 漏检时把整条音频删空。短于阈值的自然停顿保留。该处理只作用于 final ASR 前的音频，不改变 partial 节奏。
+门控与裁剪是两个独立可观察行为，完整组合如下：
+
+| `gate_enabled` | `filter_enabled` | 低证据音频 | 已放行音频 |
+|---|---|---|---|
+| `true` | `true` | 丢弃 | 只保留人声区间与上下文 |
+| `true` | `false` | 丢弃 | 保留原音频 |
+| `false` | `true` | 不丢弃 | 有人声证据时裁剪；无证据时 fail-open 保留原音频 |
+| `false` | `false` | 不丢弃 | 保留原音频 |
+
+上述 `asr_segment_voice_gate_*` 与 `asr_segment_voice_filter_*` 字段是服务端强制保护项，不接受客户端临时覆写。`asr_silence_removal_threshold_sec` 解决一句话中间夹入长时间无声的问题，例如"打开遮【停顿若干秒】光板"；它先删除满足阈值的内部长静音，随后仍执行人声过滤。
 
 #### 调试落盘 (debug dump)
 

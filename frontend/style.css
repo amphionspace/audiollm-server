@@ -1070,6 +1070,55 @@ button {
   white-space: nowrap;
 }
 
+.asr-pipeline-debug-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+
+.asr-pipeline-debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.asr-pipeline-debug-result {
+  min-width: 0;
+  min-height: 72px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--paper-sunk);
+}
+
+.asr-pipeline-debug-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--ink-mute);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.asr-pipeline-debug-text {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.asr-pipeline-debug-text.is-empty {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
 .hotword-manager {
   display: flex;
   flex: 1 1 auto;

@@ -48,6 +48,9 @@
     let isRecording = false;
     let isStarting = false;
     let startFrameSent = false;     // gate audio frames until status=0 is sent
+    let capturedAudioChunks = [];
+    let capturedSampleCount = 0;
+    let activeReplayAudio = null;
     let sessionSeq = 0;             // bumped per recording; namespaces bubble ids
     let currentSessionSeq = 0;      // the seq the open ws belongs to
     let traceId = '';
@@ -57,7 +60,10 @@
     let sessionEnrollmentId = null;
     let currentSpeakerIndex = null;
     let enrollmentCtrl = null;
+    let latestPartialDebugText = '';
+    let latestAudioLlmDebugText = '';
     const doneSegs = new Set();     // segment ids already finalized
+    const segmentAudio = new Map(); // finalized segment id -> replayable WAV blob URL
 
     // --- Hotword state ---
     let hotwords = [];
@@ -66,6 +72,7 @@
     const SYNC_PILL_BASE = 'status-pill';
     const HOTWORD_POOL_LIMIT = 1000;
     const WS_OPEN_TIMEOUT_MS = 5000;
+    const AST_SAMPLE_RATE = 16000;
     const HOTWORD_USER_STORAGE_KEY = 'asr_hotword_pool_id';
     const RECOGNITION_MODE_STORAGE_KEY = 'astv3_recognition_mode';
     const LEGACY_ROLE_SEPARATION_STORAGE_KEY = 'astv3_role_separation_enabled';
@@ -106,6 +113,8 @@
       document.querySelectorAll('input[name="recognition-mode"]')
     );
     const recognitionModeHint = document.getElementById('recognition-mode-hint');
+    const asrDebugPartial = document.getElementById('asr-debug-partial');
+    const asrDebugAudioLlm = document.getElementById('asr-debug-audiollm');
     const enrollmentCard = document.getElementById('enrollment-card');
     const enrollUploadBtn = document.getElementById('enroll-upload-btn');
     const enrollFileInput = document.getElementById('enroll-file-input');
@@ -141,6 +150,26 @@
         el.textContent = t(key, vars || undefined);
       });
     }
+
+    function renderPipelineDebug() {
+      const waiting = t('asrtest.debug.waiting');
+      if (asrDebugPartial) {
+        asrDebugPartial.textContent = latestPartialDebugText || waiting;
+        asrDebugPartial.classList.toggle('is-empty', !latestPartialDebugText);
+      }
+      if (asrDebugAudioLlm) {
+        asrDebugAudioLlm.textContent = latestAudioLlmDebugText || waiting;
+        asrDebugAudioLlm.classList.toggle('is-empty', !latestAudioLlmDebugText);
+      }
+    }
+
+    function resetPipelineDebug() {
+      latestPartialDebugText = '';
+      latestAudioLlmDebugText = '';
+      renderPipelineDebug();
+    }
+
+    renderPipelineDebug();
 
     function currentRecognitionMode() {
       const selected = recognitionModeInputs.find((input) => input.checked);
@@ -463,6 +492,65 @@
       return upload ? upload.bytesToBase64(new Uint8Array(buf)) : '';
     }
 
+    function resetCapturedAudio() {
+      capturedAudioChunks = [];
+      capturedSampleCount = 0;
+    }
+
+    function captureAudioChunk(samples) {
+      if (!samples || !samples.length) return;
+      const ownedSamples = new Float32Array(samples);
+      capturedAudioChunks.push(ownedSamples);
+      capturedSampleCount += ownedSamples.length;
+    }
+
+    function capturedAudioSlice(beginMs, endMs) {
+      const begin = Number(beginMs);
+      const end = Number(endMs);
+      if (!Number.isFinite(begin) || !Number.isFinite(end) || end <= begin) return null;
+
+      const firstSample = Math.max(0, Math.floor((begin * AST_SAMPLE_RATE) / 1000));
+      const lastSample = Math.min(
+        capturedSampleCount,
+        Math.ceil((end * AST_SAMPLE_RATE) / 1000),
+      );
+      if (lastSample <= firstSample) return null;
+
+      const segment = new Float32Array(lastSample - firstSample);
+      let chunkStart = 0;
+      let writeOffset = 0;
+      for (const chunk of capturedAudioChunks) {
+        const chunkEnd = chunkStart + chunk.length;
+        const overlapStart = Math.max(firstSample, chunkStart);
+        const overlapEnd = Math.min(lastSample, chunkEnd);
+        if (overlapEnd > overlapStart) {
+          segment.set(
+            chunk.subarray(overlapStart - chunkStart, overlapEnd - chunkStart),
+            writeOffset,
+          );
+          writeOffset += overlapEnd - overlapStart;
+        }
+        if (chunkEnd >= lastSample) break;
+        chunkStart = chunkEnd;
+      }
+      return writeOffset === segment.length ? segment : segment.subarray(0, writeOffset);
+    }
+
+    function stashSegmentAudio(segId, beginMs, endMs) {
+      const upload = window.AmphionAudioUpload;
+      if (!upload || !upload.encodeWavBytes) return;
+      const pcm = capturedAudioSlice(beginMs, endMs);
+      if (!pcm || !pcm.length) return;
+
+      const previousUrl = segmentAudio.get(segId);
+      if (previousUrl) URL.revokeObjectURL(previousUrl);
+      const wavBytes = upload.encodeWavBytes(pcm, AST_SAMPLE_RATE);
+      segmentAudio.set(
+        segId,
+        URL.createObjectURL(new Blob([wavBytes], { type: 'audio/wav' })),
+      );
+    }
+
     function sendStartFrame() {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const targetSpeakerMode = sessionRecognitionMode === 'target';
@@ -586,11 +674,16 @@
       const text = latticeText(result);
 
       if (result.msgtype === 'Progressive') {
+        latestPartialDebugText = text;
+        renderPipelineDebug();
         if (doneSegs.has(segId)) return;
         if (!document.getElementById(`ai-${segId}`)) addAIBubble(segId);
         updateAIBubble(segId, text, 'streaming');
       } else if (result.msgtype === 'sentence' && !result.ls) {
+        latestAudioLlmDebugText = text;
+        renderPipelineDebug();
         if (!document.getElementById(`ai-${segId}`)) addAIBubble(segId);
+        stashSegmentAudio(segId, result.bg, result.ed);
         doneSegs.add(segId);
         updateAIBubble(segId, text, 'done', resolveSentenceRole(result));
       }
@@ -598,10 +691,39 @@
 
     function finishSession() {
       closeWs();
+      resetCapturedAudio();
       if (!isRecording) setConnState('idle');
     }
 
     // --- Chat bubbles ---
+    function replaySegment(segId, btn) {
+      if (activeReplayAudio) {
+        activeReplayAudio.pause();
+        const previousBtn = document.querySelector('.replay-btn.is-playing');
+        if (previousBtn) previousBtn.classList.remove('is-playing');
+        if (activeReplayAudio._segId === segId) {
+          activeReplayAudio = null;
+          return;
+        }
+        activeReplayAudio = null;
+      }
+
+      const url = segmentAudio.get(segId);
+      if (!url) return;
+      const audio = new Audio(url);
+      audio._segId = segId;
+      if (btn) btn.classList.add('is-playing');
+      audio.addEventListener('ended', () => {
+        if (btn) btn.classList.remove('is-playing');
+        if (activeReplayAudio === audio) activeReplayAudio = null;
+      });
+      audio.play().catch(() => {
+        if (btn) btn.classList.remove('is-playing');
+        if (activeReplayAudio === audio) activeReplayAudio = null;
+      });
+      activeReplayAudio = audio;
+    }
+
     function addAIBubble(segId) {
       const wrapper = document.createElement('div');
       wrapper.className = 'chat-row chat-row-ai chat-bubble-float';
@@ -667,6 +789,28 @@
       slot.appendChild(badge);
     }
 
+    function applyReplayButton(content, segId) {
+      const slot = content.querySelector('.bubble-replay-slot');
+      if (!slot) return;
+      if (!segId || !segmentAudio.has(segId)) {
+        slot.outerHTML = '<span class="bubble-replay-slot"></span>';
+        return;
+      }
+      const replayTitle = escapeHtml(t('asrtest.replay.approxTitle'));
+      slot.outerHTML = `<button class="replay-btn bubble-replay-slot" type="button" title="${replayTitle}">
+          <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+            <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z"/>
+          </svg>
+        </button>`;
+      const btn = content.querySelector('button.bubble-replay-slot');
+      if (btn) {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          replaySegment(segId, event.currentTarget);
+        });
+      }
+    }
+
     function applyHotwordHighlights(textEl, text, words) {
       if (!textEl || !words || !words.length) return 0;
       const ranges = collectHotwordRanges(text, words);
@@ -714,6 +858,7 @@
         textEl.style.color = '';
         setBubbleText(textEl, finalText);
         applyRoleMeta(content, roleInfo);
+        applyReplayButton(content, segId);
       } else if (status === 'error') {
         showShimmer(content, false);
         const body = content.querySelector('.bubble-content');
@@ -764,6 +909,8 @@
       // recording maps to exactly one AST v3 session (status 0 -> 2).
       closeWs();
       doneSegs.clear();
+      resetCapturedAudio();
+      resetPipelineDebug();
       isStarting = true;
       setRecognitionModeLocked(true);
       if (enrollmentCtrl) enrollmentCtrl.refresh();
@@ -772,7 +919,7 @@
         mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             channelCount: 1,
-            sampleRate: { ideal: 16000 },
+            sampleRate: { ideal: AST_SAMPLE_RATE },
             echoCancellation: true,
             noiseSuppression: true,
           },
@@ -849,6 +996,7 @@
         startFrameSent = false;
         if (isRecording || isStarting) {
           stopRecording();
+          resetCapturedAudio();
           setConnState('error');
           alert(t('asrtest.ws.connectionLost'));
         } else if (!isDisposed) {
@@ -861,7 +1009,7 @@
       // 16 kHz capture: the AudioContext resamples the mic input, so the
       // worklet emits 16 kHz frames directly (no server-side resample needed).
       try {
-        audioCtx = new AudioContext({ sampleRate: 16000 });
+        audioCtx = new AudioContext({ sampleRate: AST_SAMPLE_RATE });
         await audioCtx.audioWorklet.addModule('audio-processor.js?v=' + Date.now());
         if (
           isDisposed
@@ -878,6 +1026,7 @@
         workletNode.port.onmessage = (evt) => {
           if (evt.data.type !== 'audio') return;
           if (!ws || ws.readyState !== WebSocket.OPEN || !startFrameSent) return;
+          captureAudioChunk(evt.data.samples);
           sendAudioFrame(floatToPcmB64(evt.data.samples));
         };
         source.connect(workletNode);
@@ -931,7 +1080,11 @@
 
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         if (closeTimer) clearTimeout(closeTimer);
-        closeTimer = setTimeout(() => { closeWs(); setConnState('idle'); }, 3000);
+        closeTimer = setTimeout(() => {
+          closeWs();
+          resetCapturedAudio();
+          setConnState('idle');
+        }, 3000);
       } else {
         setConnState('idle');
       }
@@ -995,6 +1148,7 @@
       if (enrollmentCtrl && enrollmentCtrl.refreshLabels) enrollmentCtrl.refreshLabels();
       setDynText(micStatus, isRecording ? 'asr.mic.listening' : 'asr.mic.start');
       applyDyn(document);
+      renderPipelineDebug();
     });
 
     // --- Dispose ---
@@ -1021,6 +1175,13 @@
       isRecording = false;
       closeWs();
       doneSegs.clear();
+      resetCapturedAudio();
+      if (activeReplayAudio) {
+        try { activeReplayAudio.pause(); } catch (_) { /* ignore */ }
+        activeReplayAudio = null;
+      }
+      segmentAudio.forEach((url) => URL.revokeObjectURL(url));
+      segmentAudio.clear();
       if (typeof i18nUnsub === 'function') {
         try { i18nUnsub(); } catch (_) { /* ignore */ }
         i18nUnsub = null;

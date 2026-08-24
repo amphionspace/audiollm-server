@@ -70,6 +70,8 @@ async def test_audio_analyze_returns_asr_cleanup_and_emotion(monkeypatch):
     cfg = Config(
         enable_primary_asr=True,
         enable_secondary_asr=False,
+        asr_segment_voice_gate_enabled=False,
+        asr_segment_voice_filter_enabled=False,
         text_cleanup_api_key="test-key",
     )
     monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
@@ -142,7 +144,12 @@ async def test_audio_analyze_returns_asr_cleanup_and_emotion(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_asr_upload_passes_hotword_pool_id(monkeypatch):
-    cfg = Config(enable_primary_asr=True, enable_secondary_asr=False)
+    cfg = Config(
+        enable_primary_asr=True,
+        enable_secondary_asr=False,
+        asr_segment_voice_gate_enabled=False,
+        asr_segment_voice_filter_enabled=False,
+    )
     monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
 
     async def fake_asr(*args, **kwargs):
@@ -172,7 +179,12 @@ async def test_asr_upload_passes_hotword_pool_id(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_asr_upload_accepts_mp3(monkeypatch):
-    cfg = Config(enable_primary_asr=True, enable_secondary_asr=False)
+    cfg = Config(
+        enable_primary_asr=True,
+        enable_secondary_asr=False,
+        asr_segment_voice_gate_enabled=False,
+        asr_segment_voice_filter_enabled=False,
+    )
     monkeypatch.setattr(main_mod, "load_config", lambda: cfg)
 
     async def fake_asr(*args, **kwargs):

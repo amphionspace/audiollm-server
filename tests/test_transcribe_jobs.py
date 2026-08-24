@@ -103,9 +103,7 @@ def _cfg(**overrides):
 
 
 def test_segment_offline_cuts_on_silence_with_timing(fake_vad):
-    pcm = _pcm_i16(
-        _silence(0.5), _tone(2.0), _silence(1.0), _tone(3.0), _silence(0.5)
-    )
+    pcm = _pcm_i16(_silence(0.5), _tone(2.0), _silence(1.0), _tone(3.0), _silence(0.5))
     segs = segment_pcm_offline(pcm, _cfg(), max_segment_sec=30.0)
 
     assert len(segs) == 2
@@ -142,18 +140,14 @@ def test_segment_offline_force_cuts_continuous_speech(fake_vad):
 
 
 def test_segment_offline_silence_only_yields_nothing(fake_vad):
-    segs = segment_pcm_offline(
-        _pcm_i16(_silence(3.0)), _cfg(), max_segment_sec=30.0
-    )
+    segs = segment_pcm_offline(_pcm_i16(_silence(3.0)), _cfg(), max_segment_sec=30.0)
     assert segs == []
 
 
 def test_transcribe_silence_override_merges_segments(fake_vad):
     # A 0.5 s pause splits speech under the global 350 ms cut pause but is
     # bridged by the offline-only 800 ms override; live endpoints keep 350 ms.
-    pcm = _pcm_i16(
-        _silence(0.5), _tone(2.0), _silence(0.5), _tone(2.0), _silence(1.5)
-    )
+    pcm = _pcm_i16(_silence(0.5), _tone(2.0), _silence(0.5), _tone(2.0), _silence(1.5))
 
     follow_global = segment_pcm_offline(pcm, _cfg(), max_segment_sec=30.0)
     assert len(follow_global) == 2
@@ -197,9 +191,7 @@ async def test_transcribe_partial_failure_keeps_job_alive(fake_vad, monkeypatch)
 
     monkeypatch.setattr(transcribe_mod, "run_oneshot_asr", fake_asr)
 
-    pcm = _pcm_i16(
-        _silence(0.5), _tone(1.5), _silence(1.0), _tone(4.0), _silence(0.5)
-    )
+    pcm = _pcm_i16(_silence(0.5), _tone(1.5), _silence(1.0), _tone(4.0), _silence(0.5))
     planned: list[int] = []
     done: list[int] = []
     result = await transcribe_pcm_i16(
@@ -254,9 +246,7 @@ async def test_transcribe_empty_text_segments_dropped(fake_vad, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_transcribe_no_speech_returns_empty_result(fake_vad):
-    result = await transcribe_pcm_i16(
-        _pcm_i16(_silence(2.0)), cfg=_cfg()
-    )
+    result = await transcribe_pcm_i16(_pcm_i16(_silence(2.0)), cfg=_cfg())
     assert result["segments"] == []
     assert result["full_text"] == ""
     assert result["duration_sec"] == pytest.approx(2.0, abs=0.01)
@@ -305,6 +295,75 @@ async def test_oneshot_asr_removes_internal_silence_before_model(
     assert result["text"] == "打开遮光板"
     assert captured["wav_samples"] == int(0.4 * SAMPLE_RATE)
     assert captured["pcm_samples"] == int(0.4 * SAMPLE_RATE)
+
+
+@pytest.mark.asyncio
+async def test_oneshot_asr_filters_non_speech_before_model(fake_vad, monkeypatch):
+    captured: dict[str, int] = {}
+
+    async def fake_query(wav_b64, *, audio_pcm=None, **_kwargs):
+        captured["wav_samples"] = _wav_b64_samples(wav_b64)
+        captured["pcm_samples"] = int(audio_pcm.size)
+        return {"transcription": "有效人声", "detected_language": "zh"}
+
+    monkeypatch.setattr(oneshot_mod, "query_audio_model", fake_query)
+    pcm = np.concatenate([_silence(0.2), _tone(0.2), _silence(0.2)])
+
+    result = await oneshot_mod.run_oneshot_asr(
+        pcm_to_wav_base64(pcm),
+        cfg=_cfg(
+            enable_primary_asr=True,
+            enable_secondary_asr=False,
+            enable_dual_asr_fusion=False,
+            asr_silence_removal_threshold_sec=0.0,
+            asr_segment_voice_gate_enabled=True,
+            asr_segment_voice_gate_threshold=0.5,
+            asr_segment_voice_gate_min_ratio=0.05,
+            asr_segment_voice_gate_min_ms=16,
+            vad_smoothing_alpha=0.0,
+            asr_segment_voice_filter_pre_ms=0,
+            asr_segment_voice_filter_tail_ms=0,
+        ),
+        hotwords=[],
+        language="Chinese",
+        audio_pcm=pcm,
+    )
+
+    assert result["text"] == "有效人声"
+    assert captured["wav_samples"] < pcm.size
+    assert captured["pcm_samples"] == captured["wav_samples"]
+
+
+@pytest.mark.asyncio
+async def test_oneshot_asr_drops_low_voice_ratio_without_model_call(
+    fake_vad,
+    monkeypatch,
+):
+    async def fail_query(*_args, **_kwargs):
+        raise AssertionError("AudioLLM must not receive a rejected clip")
+
+    monkeypatch.setattr(oneshot_mod, "query_audio_model", fail_query)
+    pcm = np.concatenate([_tone(0.1), _silence(1.9)])
+
+    result = await oneshot_mod.run_oneshot_asr(
+        pcm_to_wav_base64(pcm),
+        cfg=_cfg(
+            enable_primary_asr=True,
+            enable_secondary_asr=False,
+            enable_dual_asr_fusion=False,
+            asr_segment_voice_gate_enabled=True,
+            asr_segment_voice_gate_threshold=0.5,
+            asr_segment_voice_gate_min_ratio=0.2,
+            asr_segment_voice_gate_min_ms=16,
+            vad_smoothing_alpha=0.0,
+        ),
+        hotwords=[],
+        language="Chinese",
+        audio_pcm=pcm,
+    )
+
+    assert result["text"] == ""
+    assert result["primary"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -472,8 +531,9 @@ def _raw_cfg(transcribe_route: dict | None = None, **defaults_extra) -> dict:
                 "timeout": 60,
             },
         },
-        "defaults": {"asr": {"enable_secondary_asr": True,
-                             "enable_dual_asr_fusion": False, **defaults_extra}},
+        "defaults": {
+            "asr": {"enable_secondary_asr": True, "enable_dual_asr_fusion": False, **defaults_extra}
+        },
         "rest": {"upstreams": {"primary": "amphion_asr", "secondary": "qwen_asr"}},
     }
     if transcribe_route is not None:
@@ -488,9 +548,7 @@ def test_rest_transcribe_absent_follows_global_bindings():
 
 
 def test_rest_transcribe_overrides_primary_model_only_for_transcription():
-    parsed = config_mod._parse(
-        _raw_cfg({"upstreams": {"primary": "qwen_asr"}})
-    )
+    parsed = config_mod._parse(_raw_cfg({"upstreams": {"primary": "qwen_asr"}}))
     assert parsed.transcribe_config.vllm_base_url == "http://qwen:8001"
     assert parsed.transcribe_config.vllm_model_name == "Qwen3-ASR"
     assert parsed.transcribe_config.asr_request_timeout == 60

@@ -111,6 +111,8 @@ Client                                      Server
 
 当服务端启用 `k2_enabled=true` 时，本端点的 `Progressive` 中间结果来自外部 k2 流式 ASR，`sentence` 终稿仍由本服务 LLM ASR 产生。k2 只做纯识别，不接热词、不接目标说话人、不返回 token timestamps；热词召回、目标说话人过滤、ITN 与车牌规范化只作用于 sentence。此时切段权威是 k2 endpoint，本服务只保留有界缓冲，并在 Progressive/sentence 进入下游前用 `k2_voice_gate_*` 确认有人声证据；voice gate 只做放行/丢弃，不裁剪段首/段尾，`bg` / `ed` 仍反映该 k2 段缓冲边界。VAD 与伪流式间隔类覆写仍会被接受但不再决定切点或首字时机；`enable_pseudo_stream=false` 仍会抑制 Progressive 下发。
 
+sentence 对应音频在送入 AudioLLM 前还会执行服务端人声保护。`asr_segment_voice_gate_*` 决定是否丢弃低证据段；`asr_segment_voice_filter_*` 独立决定是否只保留 VAD 支持的人声区间及首尾上下文。该组字段不可由 `parameter.asr_config` 覆写，过滤也不会改写响应中的原始时间线 `bg` / `ed`。
+
 VAD / 分段（凡按帧计的字段，其帧时长由 VAD 后端 hop 决定：ten-vad 约 16 ms/帧，能量兜底约 10 ms/帧）：
 
 | 字段 | 类型 | 默认 | 含义 | 本端点 |
