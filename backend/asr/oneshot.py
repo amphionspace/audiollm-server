@@ -20,7 +20,7 @@ import logging
 import numpy as np
 
 from ..audio.utils import pcm_to_wav_base64
-from ..audio.vad import trim_long_silence_for_asr
+from ..audio.vad import prepare_audio_for_asr
 from ..config import SAMPLE_RATE, Config
 from .client import query_audio_model, query_audio_model_secondary
 from .fusion import choose_fused_result
@@ -81,7 +81,8 @@ async def run_oneshot_asr(
     """
     if audio_pcm is not None:
         original_duration = len(audio_pcm) / SAMPLE_RATE
-        trim = trim_long_silence_for_asr(audio_pcm, cfg)
+        prepared = prepare_audio_for_asr(audio_pcm, cfg)
+        trim = prepared.silence_removal
         if trim.removed_ranges:
             logger.info(
                 "One-shot ASR silence removal: original=%.2fs removed=%.2fs "
@@ -92,8 +93,39 @@ async def run_oneshot_asr(
                 len(trim.pcm) / SAMPLE_RATE,
                 cfg.asr_silence_removal_threshold_sec,
             )
-            audio_pcm = trim.pcm
-            wav_b64 = pcm_to_wav_base64(audio_pcm)
+        voice_filter = prepared.speech_filter
+        voice = voice_filter.evidence
+        if not voice.accepted:
+            logger.info(
+                "One-shot ASR skipped by speech filter: reason=%s audio=%.2fs "
+                "speech_ms=%.0f ratio=%.3f frames=%d/%d rms=%.5f",
+                voice.reason,
+                len(trim.pcm) / SAMPLE_RATE,
+                voice.speech_ms,
+                voice.speech_ratio,
+                voice.speech_frames,
+                voice.total_frames,
+                voice.rms,
+            )
+            return {
+                "text": "",
+                "language": language or "",
+                "raw_text": "",
+                "effective_hotwords": [],
+                "primary": None,
+                "secondary": None,
+                "fusion": None,
+            }
+        if voice_filter.kept_samples < voice_filter.input_samples:
+            logger.info(
+                "One-shot ASR speech filter: input=%.2fs kept=%.2fs ranges=%d speech_ratio=%.3f",
+                voice_filter.input_samples / SAMPLE_RATE,
+                voice_filter.kept_samples / SAMPLE_RATE,
+                voice_filter.kept_ranges,
+                voice.speech_ratio,
+            )
+        audio_pcm = prepared.pcm
+        wav_b64 = pcm_to_wav_base64(audio_pcm)
 
     primary_task = None
     secondary_task = None

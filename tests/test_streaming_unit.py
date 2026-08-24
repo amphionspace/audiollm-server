@@ -210,9 +210,7 @@ def test_vad_segmented_stream_configure_applies_vad_overrides():
     vad_threshold / silence_duration_ms / vad_start_frames overrides were
     silently dropped (the VAD stayed frozen to process-wide defaults).
     """
-    cfg = load_config().override(
-        vad_threshold=0.22, silence_duration_ms=80, vad_start_frames=3
-    )
+    cfg = load_config().override(vad_threshold=0.22, silence_duration_ms=80, vad_start_frames=3)
     stream = VadSegmentedStream()
     stream.configure(cfg)
     fm = stream.vad.frame_ms
@@ -436,10 +434,12 @@ async def test_k2_partial_is_suppressed_until_voice_gate_passes():
     stream = K2SegmentedStream()
     stream.configure(load_config())
     stream._voice_gate = _FakeK2VoiceGate(has_voice=False)
-    stream._call = _FakeK2Call([
-        _FakeK2Event("partial", text="豪"),
-        _FakeK2Event("session_ended"),
-    ])
+    stream._call = _FakeK2Call(
+        [
+            _FakeK2Event("partial", text="豪"),
+            _FakeK2Event("session_ended"),
+        ]
+    )
 
     await stream._recv_loop()
 
@@ -452,10 +452,12 @@ async def test_k2_partial_passes_after_voice_gate_evidence():
     stream = K2SegmentedStream()
     stream.configure(load_config())
     stream._voice_gate = _FakeK2VoiceGate(has_voice=True)
-    stream._call = _FakeK2Call([
-        _FakeK2Event("partial", text="你好"),
-        _FakeK2Event("session_ended"),
-    ])
+    stream._call = _FakeK2Call(
+        [
+            _FakeK2Event("partial", text="你好"),
+            _FakeK2Event("session_ended"),
+        ]
+    )
 
     await stream._recv_loop()
 
@@ -591,11 +593,15 @@ async def test_session_dispatches_start_pcm_segment_and_stop():
     seg = SegmentReady(pcm=np.ones(800, dtype=np.float32) * 0.1)
     stream = _ScriptedStream(feed_events=[[seg]], flush_events=[])
     engine = _RecorderEngine()
-    ws = FakeWebSocket([
-        {"text": '{"type":"start","format":"pcm_s16le","sample_rate_hz":16000,"channels":1,"language":"zh","hotword_pool_id":"tenant-a","hotwords":["a","b"]}'},
-        {"bytes": _silent_pcm_bytes(160)},
-        {"text": '{"type":"stop"}'},
-    ])
+    ws = FakeWebSocket(
+        [
+            {
+                "text": '{"type":"start","format":"pcm_s16le","sample_rate_hz":16000,"channels":1,"language":"zh","hotword_pool_id":"tenant-a","hotwords":["a","b"]}'
+            },
+            {"bytes": _silent_pcm_bytes(160)},
+            {"text": '{"type":"stop"}'},
+        ]
+    )
 
     session = StreamingSession(ws, stream=stream, engine=engine)
     await session.run()
@@ -617,9 +623,13 @@ async def test_session_dispatches_start_pcm_segment_and_stop():
 async def test_session_rejects_legacy_start_user_id():
     stream = _ScriptedStream(feed_events=[], flush_events=[])
     engine = _RecorderEngine()
-    ws = FakeWebSocket([
-        {"text": '{"type":"start","format":"pcm_s16le","sample_rate_hz":16000,"channels":1,"user_id":"tenant-a"}'},
-    ])
+    ws = FakeWebSocket(
+        [
+            {
+                "text": '{"type":"start","format":"pcm_s16le","sample_rate_hz":16000,"channels":1,"user_id":"tenant-a"}'
+            },
+        ]
+    )
 
     session = StreamingSession(ws, stream=stream, engine=engine)
     await session.run()
@@ -636,11 +646,13 @@ async def test_session_rejects_legacy_start_user_id():
 async def test_session_dispatches_async_partial_text_and_segment():
     stream = _AsyncScriptedStream()
     engine = _RecorderEngine()
-    ws = FakeWebSocket([
-        {"text": '{"type":"start","sample_rate_hz":16000,"channels":1}'},
-        {"bytes": _silent_pcm_bytes(160)},
-        {"text": '{"type":"stop"}'},
-    ])
+    ws = FakeWebSocket(
+        [
+            {"text": '{"type":"start","sample_rate_hz":16000,"channels":1}'},
+            {"bytes": _silent_pcm_bytes(160)},
+            {"text": '{"type":"stop"}'},
+        ]
+    )
 
     session = StreamingSession(ws, stream=stream, engine=engine)
     await session.run()
@@ -669,12 +681,14 @@ async def test_session_partial_dispatch_is_serialized():
             self.partials.append(snap_)
 
     engine = _SlowPartialEngine()
-    ws = FakeWebSocket([
-        {"text": '{"type":"start","format":"pcm_s16le","sample_rate_hz":16000,"channels":1}'},
-        {"bytes": _silent_pcm_bytes(160)},
-        {"bytes": _silent_pcm_bytes(160)},
-        {"text": '{"type":"stop"}'},
-    ])
+    ws = FakeWebSocket(
+        [
+            {"text": '{"type":"start","format":"pcm_s16le","sample_rate_hz":16000,"channels":1}'},
+            {"bytes": _silent_pcm_bytes(160)},
+            {"bytes": _silent_pcm_bytes(160)},
+            {"text": '{"type":"stop"}'},
+        ]
+    )
 
     session = StreamingSession(ws, stream=stream, engine=engine)
     await session.run()
@@ -692,11 +706,15 @@ async def test_session_partial_dispatch_is_serialized():
 async def test_session_update_hotwords_replaces_list():
     stream = _ScriptedStream(feed_events=[], flush_events=[])
     engine = _RecorderEngine()
-    ws = FakeWebSocket([
-        {"text": '{"type":"start","format":"pcm_s16le","sample_rate_hz":16000,"channels":1,"hotwords":["x"]}'},
-        {"text": '{"type":"update_hotwords","hotwords":["y","z"],"src_lang":"en"}'},
-        {"text": '{"type":"stop"}'},
-    ])
+    ws = FakeWebSocket(
+        [
+            {
+                "text": '{"type":"start","format":"pcm_s16le","sample_rate_hz":16000,"channels":1,"hotwords":["x"]}'
+            },
+            {"text": '{"type":"update_hotwords","hotwords":["y","z"],"src_lang":"en"}'},
+            {"text": '{"type":"stop"}'},
+        ]
+    )
 
     session = StreamingSession(ws, stream=stream, engine=engine)
     await session.run()
@@ -719,11 +737,21 @@ async def test_emotion_engine_emits_final_emotion_ser(monkeypatch):
         return True
 
     cfg = load_config()
-    ctx = SessionContext(cfg=cfg, language="zh", src_lang="Chinese", hotwords=[], send_json=_send_json)
+    ctx = SessionContext(
+        cfg=cfg, language="zh", src_lang="Chinese", hotwords=[], send_json=_send_json
+    )
 
     captured: dict = {}
 
-    async def _fake_query(audio_wav_base64, *, mode="ser", base_url=None, model_name=None, timeout=None, max_tokens=None):
+    async def _fake_query(
+        audio_wav_base64,
+        *,
+        mode="ser",
+        base_url=None,
+        model_name=None,
+        timeout=None,
+        max_tokens=None,
+    ):
         captured["mode"] = mode
         return {
             "mode": mode,
@@ -763,7 +791,15 @@ async def test_emotion_engine_emits_final_emotion_sec(monkeypatch):
     captured: dict = {}
     summary = "The speaker sounds excited and cheerful, speaking at a fast pace."
 
-    async def _fake_query(audio_wav_base64, *, mode="ser", base_url=None, model_name=None, timeout=None, max_tokens=None):
+    async def _fake_query(
+        audio_wav_base64,
+        *,
+        mode="ser",
+        base_url=None,
+        model_name=None,
+        timeout=None,
+        max_tokens=None,
+    ):
         captured["mode"] = mode
         return {
             "mode": mode,
@@ -800,7 +836,15 @@ async def test_emotion_engine_falls_back_to_config_mode(monkeypatch):
 
     captured: dict = {}
 
-    async def _fake_query(audio_wav_base64, *, mode="ser", base_url=None, model_name=None, timeout=None, max_tokens=None):
+    async def _fake_query(
+        audio_wav_base64,
+        *,
+        mode="ser",
+        base_url=None,
+        model_name=None,
+        timeout=None,
+        max_tokens=None,
+    ):
         captured["mode"] = mode
         return {"mode": mode, "label": "", "text": "calm", "raw_text": "calm"}
 
@@ -868,7 +912,15 @@ async def test_emotion_engine_streaming_mode_emits_per_segment(monkeypatch):
 
     call_count = {"n": 0}
 
-    async def _fake_query(audio_wav_base64, *, mode="ser", base_url=None, model_name=None, timeout=None, max_tokens=None):
+    async def _fake_query(
+        audio_wav_base64,
+        *,
+        mode="ser",
+        base_url=None,
+        model_name=None,
+        timeout=None,
+        max_tokens=None,
+    ):
         call_count["n"] += 1
         return {
             "mode": mode,
@@ -908,9 +960,7 @@ async def test_asr_engine_on_stop_emits_empty_final_when_nothing_sent():
     ctx = SessionContext(cfg=cfg, language="zh", src_lang="Chinese", send_json=_send_json)
     engine = AsrTaskEngine()
     await engine.on_stop(ctx, sent_any_response=False, stopped=True)
-    assert sent == [
-        {"type": "final", "text": "", "language": "zh", "effective_hotwords": []}
-    ]
+    assert sent == [{"type": "final", "text": "", "language": "zh", "effective_hotwords": []}]
 
 
 @pytest.mark.asyncio
@@ -960,17 +1010,30 @@ async def test_asr_final_segment_voice_gate_skips_llm(monkeypatch):
     monkeypatch.setattr(asr_task_mod, "query_audio_model_secondary", fail_secondary)
     monkeypatch.setattr(
         asr_task_mod,
-        "segment_voice_evidence",
+        "prepare_audio_for_asr",
         lambda *_args, **_kwargs: SimpleNamespace(
-            accepted=False,
-            reason="low_voice_ratio",
-            speech_ms=0.0,
-            speech_ratio=0.0,
-            speech_frames=0,
-            total_frames=100,
-            max_prob=0.1,
-            mean_prob=0.05,
-            rms=0.02,
+            pcm=np.empty(0, dtype=np.float32),
+            silence_removal=SimpleNamespace(
+                pcm=np.zeros(1600, dtype=np.float32),
+                removed_ranges=0,
+            ),
+            speech_filter=SimpleNamespace(
+                pcm=np.empty(0, dtype=np.float32),
+                input_samples=1600,
+                kept_samples=0,
+                kept_ranges=0,
+                evidence=SimpleNamespace(
+                    accepted=False,
+                    reason="low_voice_ratio",
+                    speech_ms=0.0,
+                    speech_ratio=0.0,
+                    speech_frames=0,
+                    total_frames=100,
+                    max_prob=0.1,
+                    mean_prob=0.05,
+                    rms=0.02,
+                ),
+            ),
         ),
     )
 
@@ -1025,6 +1088,7 @@ async def test_asr_final_preserves_segment_id(monkeypatch):
         enable_secondary_asr=False,
         enable_dual_asr_fusion=False,
         asr_segment_voice_gate_enabled=False,
+        asr_segment_voice_filter_enabled=False,
     )
     ctx = SessionContext(cfg=cfg, language="zh", src_lang="Chinese", send_json=_send_json)
     engine = AsrTaskEngine()
@@ -1047,9 +1111,7 @@ async def test_asr_final_preserves_segment_id(monkeypatch):
 
 @pytest.mark.parametrize("segment_id", ["vad-7", "k2-7"])
 @pytest.mark.asyncio
-async def test_asr_diarization_splits_vad_and_k2_segments_in_order(
-    monkeypatch, segment_id
-):
+async def test_asr_diarization_splits_vad_and_k2_segments_in_order(monkeypatch, segment_id):
     from backend.diarization.turns import SpeakerTurn
 
     transcriptions = iter(["甲说", "乙说"])
@@ -1082,6 +1144,7 @@ async def test_asr_diarization_splits_vad_and_k2_segments_in_order(
         enable_secondary_asr=False,
         enable_dual_asr_fusion=False,
         asr_segment_voice_gate_enabled=False,
+        asr_segment_voice_filter_enabled=False,
         min_segment_duration_ms=300,
     )
     ctx = SessionContext(
@@ -1166,6 +1229,7 @@ async def test_asr_final_removes_internal_silence_before_llm(monkeypatch):
         enable_secondary_asr=False,
         enable_dual_asr_fusion=False,
         asr_segment_voice_gate_enabled=False,
+        asr_segment_voice_filter_enabled=False,
         asr_silence_removal_threshold_sec=0.5,
         vad_threshold=0.5,
         vad_smoothing_alpha=0.0,
@@ -1219,6 +1283,8 @@ async def test_asr_partial_uses_pure_vllm_without_recall_or_hotwords(monkeypatch
         enable_secondary_asr=True,
         enable_hotword_recall=True,
         enable_encoder_bypass=True,
+        asr_segment_voice_gate_enabled=False,
+        asr_segment_voice_filter_enabled=False,
     )
     ctx = SessionContext(
         cfg=cfg,
@@ -1238,6 +1304,45 @@ async def test_asr_partial_uses_pure_vllm_without_recall_or_hotwords(monkeypatch
     assert calls[0]["hotwords"] == []
     assert calls[0]["audio_pcm"] is None
     assert sent == [{"type": "partial", "text": "中间结果", "language": "zh"}]
+
+
+@pytest.mark.asyncio
+async def test_asr_partial_speech_filter_skips_llm(monkeypatch):
+    async def fail_primary(*_args, **_kwargs):
+        raise AssertionError("AudioLLM must not receive a rejected partial")
+
+    monkeypatch.setattr(asr_task_mod, "query_audio_model", fail_primary)
+    monkeypatch.setattr(
+        asr_task_mod,
+        "filter_speech_for_asr",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            pcm=np.empty(0, dtype=np.float32),
+            evidence=SimpleNamespace(
+                accepted=False,
+                reason="low_voice_ratio",
+                speech_ratio=0.01,
+            ),
+        ),
+    )
+
+    sent: list[dict] = []
+
+    async def _send_json(payload):
+        sent.append(payload)
+        return True
+
+    cfg = load_config().override(
+        enable_primary_asr=True,
+        asr_segment_voice_gate_enabled=True,
+    )
+    ctx = SessionContext(cfg=cfg, send_json=_send_json)
+
+    await AsrTaskEngine().handle_partial(
+        PartialSnapshot(pcm=np.zeros(1600, dtype=np.float32), id="partial-noise"),
+        ctx,
+    )
+
+    assert sent == []
 
 
 # ---------------------------------------------------------------------------
@@ -1323,8 +1428,14 @@ def test_emotion_prompt_constants_match_amphion():
     assert SER_PROMPT == "Classify the emotion of the following audio:"
     assert SEC_PROMPT == "Describe the emotion of the following audio:"
     assert SER_TAXONOMY == (
-        "Neutral", "Happy", "Sad", "Angry",
-        "Fear", "Disgust", "Surprise", "Other/Complex",
+        "Neutral",
+        "Happy",
+        "Sad",
+        "Angry",
+        "Fear",
+        "Disgust",
+        "Surprise",
+        "Other/Complex",
     )
     assert normalize_mode("SER") == "ser"
     assert normalize_mode("sec") == "sec"
@@ -1713,9 +1824,7 @@ def test_ast_v3_suppresses_empty_final_ready_and_extract():
     assert p.encode_outbound({"type": "final", "text": "", "language": "zh"}) is None
     assert p.encode_outbound({"type": "ready"}) is None
     assert (
-        p.encode_outbound(
-            {"type": "extract_hotwords_result", "request_id": "x", "hotwords": []}
-        )
+        p.encode_outbound({"type": "extract_hotwords_result", "request_id": "x", "hotwords": []})
         is None
     )
 
@@ -1757,9 +1866,7 @@ class _AstFinalEngine(BaseTaskEngine):
 
 @pytest.mark.asyncio
 async def test_session_with_ast_v3_protocol_end_to_end():
-    seg = SegmentReady(
-        pcm=np.ones(800, dtype=np.float32) * 0.1, start_ms=100.0, end_ms=600.0
-    )
+    seg = SegmentReady(pcm=np.ones(800, dtype=np.float32) * 0.1, start_ms=100.0, end_ms=600.0)
     stream = _ScriptedStream(feed_events=[[seg]], flush_events=[])
     engine = _AstFinalEngine()
     ws = FakeWebSocket(
@@ -1775,9 +1882,7 @@ async def test_session_with_ast_v3_protocol_end_to_end():
         ]
     )
 
-    session = StreamingSession(
-        ws, stream=stream, engine=engine, protocol=AstV3Protocol()
-    )
+    session = StreamingSession(ws, stream=stream, engine=engine, protocol=AstV3Protocol())
     await session.run()
     await session.cleanup()
 
@@ -1821,9 +1926,7 @@ async def test_session_ast_v3_asr_config_overrides_and_whitelist():
             _ast_frame(header={"status": 2}),
         ]
     )
-    session = StreamingSession(
-        ws, stream=stream, engine=engine, protocol=AstV3Protocol()
-    )
+    session = StreamingSession(ws, stream=stream, engine=engine, protocol=AstV3Protocol())
     base_url_before = session.cfg.vllm_base_url
     await session.run()
     await session.cleanup()
@@ -1852,16 +1955,12 @@ async def test_session_ast_v3_invalid_enrollment_sends_error_and_stops():
             )
         ]
     )
-    session = StreamingSession(
-        ws, stream=stream, engine=engine, protocol=AstV3Protocol()
-    )
+    session = StreamingSession(ws, stream=stream, engine=engine, protocol=AstV3Protocol())
     await session.run()
     await session.cleanup()
 
     error = next(msg for msg in ws.sent if msg["header"]["code"] != 0)
-    assert error["header"]["message"].startswith(
-        "parameter.asr_config.enrollment_id is required"
-    )
+    assert error["header"]["message"].startswith("parameter.asr_config.enrollment_id is required")
     assert [msg["header"]["status"] for msg in ws.sent] == [1]
     assert not engine.starts
     assert stream.feed_calls == []

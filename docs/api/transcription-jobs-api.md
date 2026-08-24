@@ -155,7 +155,8 @@ curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
 1. 解码并重采样到 16 kHz mono。
 2. 用与流式端点同一套 TEN VAD 状态机及参数离线切分，因此同一段录音走 WS 或走本接口得到一致的段边界；连续无停顿语音超过 `transcribe_max_segment_sec`（默认 30 秒）时强制切段兜底。
 3. 每段并行（`transcribe_segment_concurrency`）执行与 `/api/asr/upload` 相同的一次性双模型推理（融合开关同全局 `enable_dual_asr_fusion`），失败重试一次。
-4. 按时间序组装 `segments` 与 `full_text`。
+4. 每段送模前还会执行 `asr_segment_voice_gate_*` / `asr_segment_voice_filter_*` 服务端人声保护：低证据段可能不调用模型，已放行段可能裁去非人声区间。门控返回空文本的段不进入最终 `segments`。
+5. 按时间序组装 `segments` 与 `full_text`。
 
 ## 服务端配置
 

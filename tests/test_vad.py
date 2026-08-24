@@ -25,7 +25,11 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.audio.vad import VADProcessor, trim_long_silence_for_asr  # noqa: E402
+from backend.audio.vad import (  # noqa: E402
+    VADProcessor,
+    filter_speech_for_asr,
+    trim_long_silence_for_asr,
+)
 from backend.config import SAMPLE_RATE, load_config  # noqa: E402
 
 
@@ -119,6 +123,132 @@ def test_end_frames_param_is_rejected() -> None:
 def test_no_end_frames_attribute() -> None:
     v = VADProcessor()
     assert not hasattr(v, "end_frames")
+
+
+def test_speech_filter_rejects_low_voice_ratio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_amplitude_vad(monkeypatch)
+    pcm = np.concatenate([_tone(0.1), _silence(1.9)])
+    cfg = load_config().override(
+        asr_segment_voice_gate_enabled=True,
+        asr_segment_voice_gate_threshold=0.5,
+        asr_segment_voice_gate_min_ratio=0.2,
+        asr_segment_voice_gate_min_ms=16,
+        vad_smoothing_alpha=0.0,
+    )
+
+    res = filter_speech_for_asr(pcm, cfg)
+
+    assert res.evidence.accepted is False
+    assert res.evidence.reason == "low_voice_ratio"
+    assert res.pcm.size == 0
+
+
+def test_speech_filter_sends_only_supported_voice_regions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_amplitude_vad(monkeypatch)
+    pcm = np.concatenate([_silence(0.2), _tone(0.2), _silence(0.2)])
+    cfg = load_config().override(
+        asr_segment_voice_gate_enabled=True,
+        asr_segment_voice_gate_threshold=0.5,
+        asr_segment_voice_gate_min_ratio=0.05,
+        asr_segment_voice_gate_min_ms=16,
+        vad_smoothing_alpha=0.0,
+        asr_segment_voice_filter_pre_ms=0,
+        asr_segment_voice_filter_tail_ms=0,
+    )
+
+    res = filter_speech_for_asr(pcm, cfg)
+
+    assert res.evidence.accepted is True
+    assert res.kept_ranges == 1
+    assert 0 < res.kept_samples < res.input_samples
+    assert res.kept_samples == pytest.approx(int(0.2 * SAMPLE_RATE), abs=256)
+
+
+@pytest.mark.parametrize(
+    ("gate_enabled", "filter_enabled", "accepted", "preserves_original"),
+    [
+        (True, True, False, False),
+        (True, False, False, False),
+        (False, True, True, False),
+        (False, False, True, True),
+    ],
+)
+def test_speech_gate_filter_behavior_matrix(
+    monkeypatch: pytest.MonkeyPatch,
+    gate_enabled: bool,
+    filter_enabled: bool,
+    accepted: bool,
+    preserves_original: bool,
+) -> None:
+    _patch_amplitude_vad(monkeypatch)
+    pcm = np.concatenate([_tone(0.1), _silence(1.9)])
+    cfg = load_config().override(
+        asr_segment_voice_gate_enabled=gate_enabled,
+        asr_segment_voice_filter_enabled=filter_enabled,
+        asr_segment_voice_gate_threshold=0.5,
+        asr_segment_voice_filter_threshold=0.5,
+        asr_segment_voice_gate_min_ratio=0.2,
+        asr_segment_voice_gate_min_ms=16,
+        asr_segment_voice_filter_pre_ms=0,
+        asr_segment_voice_filter_tail_ms=0,
+        vad_smoothing_alpha=0.0,
+    )
+
+    res = filter_speech_for_asr(pcm, cfg)
+
+    assert res.evidence.accepted is accepted
+    if preserves_original:
+        np.testing.assert_array_equal(res.pcm, pcm)
+    elif accepted:
+        assert 0 < res.pcm.size < pcm.size
+    else:
+        assert res.pcm.size == 0
+
+
+def test_speech_filter_disabled_preserves_accepted_pcm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_amplitude_vad(monkeypatch)
+    pcm = np.concatenate([_silence(0.2), _tone(0.2), _silence(0.2)])
+    cfg = load_config().override(
+        asr_segment_voice_gate_enabled=True,
+        asr_segment_voice_filter_enabled=False,
+        asr_segment_voice_gate_threshold=0.5,
+        asr_segment_voice_filter_threshold=0.5,
+        asr_segment_voice_gate_min_ratio=0.05,
+        asr_segment_voice_gate_min_ms=16,
+        vad_smoothing_alpha=0.0,
+    )
+
+    res = filter_speech_for_asr(pcm, cfg)
+
+    assert res.evidence.accepted is True
+    np.testing.assert_array_equal(res.pcm, pcm)
+
+
+def test_speech_filter_uses_its_own_threshold_when_gate_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_amplitude_vad(monkeypatch)
+    pcm = np.concatenate([_tone(0.2), _silence(0.4)])
+    cfg = load_config().override(
+        asr_segment_voice_gate_enabled=False,
+        asr_segment_voice_filter_enabled=True,
+        asr_segment_voice_gate_threshold=1.0,
+        asr_segment_voice_filter_threshold=0.5,
+        asr_segment_voice_filter_pre_ms=0,
+        asr_segment_voice_filter_tail_ms=0,
+        vad_smoothing_alpha=0.0,
+    )
+
+    res = filter_speech_for_asr(pcm, cfg)
+
+    assert res.evidence.accepted is True
+    assert 0 < res.pcm.size < pcm.size
 
 
 def test_silence_removal_disabled_keeps_audio(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -286,26 +286,80 @@ class SilenceRemovalResult(NamedTuple):
     removed_ranges: int
 
 
-def segment_voice_evidence(pcm: np.ndarray, cfg: Config) -> SegmentVoiceEvidence:
-    """Summarize whole-segment speech evidence before final ASR inference.
+class SpeechFilterResult(NamedTuple):
+    """Admission evidence plus the speech-only PCM sent to AudioLLM."""
 
-    This is an admission gate, not endpointing. Local VAD and k2 decide where a
-    segment starts/ends; this pass decides whether the completed segment has
-    enough speech-like frames to justify an LLM ASR call.
+    pcm: np.ndarray
+    evidence: SegmentVoiceEvidence
+    input_samples: int
+    kept_samples: int
+    kept_ranges: int
+
+
+class AsrAudioPreparationResult(NamedTuple):
+    """Final-ASR preprocessing results from the shared boundary pipeline."""
+
+    pcm: np.ndarray
+    silence_removal: SilenceRemovalResult
+    speech_filter: SpeechFilterResult
+
+
+def filter_speech_for_asr(pcm: np.ndarray, cfg: Config) -> SpeechFilterResult:
+    """Gate a segment and retain only VAD-supported speech regions.
+
+    Local VAD and k2 remain endpoint authorities. This pass has a narrower
+    responsibility at the AudioLLM boundary: reject clips with too little
+    speech evidence, then remove unsupported non-speech regions from accepted
+    clips. Each speech frame keeps the configured pre-speech/tail context so
+    quiet onsets and word endings are not cut at the probability threshold.
     """
-    if not cfg.asr_segment_voice_gate_enabled:
-        return SegmentVoiceEvidence(True, "disabled", 0, 0, 1.0, 0.0, 1.0, 1.0, 0.0)
-
     pcm = np.asarray(pcm, dtype=np.float32).reshape(-1)
+    input_samples = int(pcm.size)
+    gate_enabled = cfg.asr_segment_voice_gate_enabled
+    filter_enabled = cfg.asr_segment_voice_filter_enabled
+    if not gate_enabled and not filter_enabled:
+        evidence = SegmentVoiceEvidence(True, "disabled", 0, 0, 1.0, 0.0, 1.0, 1.0, 0.0)
+        return SpeechFilterResult(
+            pcm, evidence, input_samples, input_samples, int(input_samples > 0)
+        )
+
     if pcm.size == 0:
-        return SegmentVoiceEvidence(False, "empty", 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        evidence = SegmentVoiceEvidence(
+            not gate_enabled,
+            "empty" if gate_enabled else "gate_disabled",
+            0,
+            0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        )
+        return SpeechFilterResult(pcm, evidence, input_samples, 0, 0)
 
     rms = float(np.sqrt(np.mean(np.square(pcm), dtype=np.float32)))
     if rms < cfg.asr_segment_voice_gate_min_rms:
-        return SegmentVoiceEvidence(False, "low_rms", 0, 0, 0.0, 0.0, 0.0, 0.0, rms)
+        evidence = SegmentVoiceEvidence(
+            not gate_enabled,
+            "low_rms" if gate_enabled else "gate_disabled",
+            0,
+            0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            rms,
+        )
+        if not gate_enabled:
+            return SpeechFilterResult(pcm, evidence, input_samples, input_samples, 1)
+        return SpeechFilterResult(np.empty(0, dtype=np.float32), evidence, input_samples, 0, 0)
 
     processor = VADProcessor(
-        threshold=cfg.asr_segment_voice_gate_threshold,
+        threshold=(
+            cfg.asr_segment_voice_gate_threshold
+            if gate_enabled
+            else cfg.asr_segment_voice_filter_threshold
+        ),
         silence_duration_ms=cfg.silence_duration_ms,
         sample_rate=SAMPLE_RATE,
         smoothing_alpha=cfg.vad_smoothing_alpha,
@@ -316,23 +370,36 @@ def segment_voice_evidence(pcm: np.ndarray, cfg: Config) -> SegmentVoiceEvidence
     hop = processor.hop_size
     used = (pcm.size // hop) * hop
     if used <= 0:
-        return SegmentVoiceEvidence(False, "too_short", 0, 0, 0.0, 0.0, 0.0, 0.0, rms)
+        evidence = SegmentVoiceEvidence(
+            not gate_enabled,
+            "too_short" if gate_enabled else "gate_disabled",
+            0,
+            0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            rms,
+        )
+        if not gate_enabled:
+            return SpeechFilterResult(pcm, evidence, input_samples, input_samples, 1)
+        return SpeechFilterResult(np.empty(0, dtype=np.float32), evidence, input_samples, 0, 0)
 
-    threshold = cfg.asr_segment_voice_gate_threshold
     alpha = processor.smoothing_alpha
     smoothed: float | None = None
     probs: list[float] = []
-    speech_frames = 0
     for i in range(0, used, hop):
         frame = pcm[i : i + hop]
         vad_input = processor._prepare_vad_input(frame)
         raw_prob = processor._extract_prob(processor.vad.process(vad_input))
         smoothed = raw_prob if smoothed is None else (alpha * smoothed) + ((1.0 - alpha) * raw_prob)
         probs.append(smoothed)
-        if smoothed > threshold:
-            speech_frames += 1
 
     total_frames = len(probs)
+    gate_speech_flags = [prob > cfg.asr_segment_voice_gate_threshold for prob in probs]
+    filter_speech_flags = [prob > cfg.asr_segment_voice_filter_threshold for prob in probs]
+    evidence_flags = gate_speech_flags if gate_enabled else filter_speech_flags
+    speech_frames = sum(evidence_flags)
     frame_ms = processor.frame_ms
     speech_ms = speech_frames * frame_ms
     speech_ratio = speech_frames / total_frames if total_frames else 0.0
@@ -340,7 +407,10 @@ def segment_voice_evidence(pcm: np.ndarray, cfg: Config) -> SegmentVoiceEvidence
     mean_prob = float(sum(probs) / total_frames) if total_frames else 0.0
     min_frames = max(1, math.ceil(cfg.asr_segment_voice_gate_min_ms / frame_ms))
 
-    if speech_frames < min_frames:
+    if not gate_enabled:
+        reason = "gate_disabled"
+        accepted = True
+    elif speech_frames < min_frames:
         reason = "too_few_voice_frames"
         accepted = False
     elif speech_ratio < cfg.asr_segment_voice_gate_min_ratio:
@@ -350,7 +420,7 @@ def segment_voice_evidence(pcm: np.ndarray, cfg: Config) -> SegmentVoiceEvidence
         reason = "accepted"
         accepted = True
 
-    return SegmentVoiceEvidence(
+    evidence = SegmentVoiceEvidence(
         accepted,
         reason,
         speech_frames,
@@ -360,6 +430,49 @@ def segment_voice_evidence(pcm: np.ndarray, cfg: Config) -> SegmentVoiceEvidence
         max_prob,
         mean_prob,
         rms,
+    )
+    if not accepted:
+        return SpeechFilterResult(np.empty(0, dtype=np.float32), evidence, input_samples, 0, 0)
+    if not filter_enabled or not any(filter_speech_flags):
+        return SpeechFilterResult(pcm, evidence, input_samples, input_samples, 1)
+
+    pre_frames = max(0, math.ceil(cfg.asr_segment_voice_filter_pre_ms / frame_ms))
+    tail_frames = max(0, math.ceil(cfg.asr_segment_voice_filter_tail_ms / frame_ms))
+    keep_flags = [False] * total_frames
+    for idx, is_speech in enumerate(filter_speech_flags):
+        if not is_speech:
+            continue
+        start = max(0, idx - pre_frames)
+        end = min(total_frames, idx + tail_frames + 1)
+        keep_flags[start:end] = [True] * (end - start)
+
+    keep_slices: list[np.ndarray] = []
+    kept_ranges = 0
+    idx = 0
+    while idx < total_frames:
+        if not keep_flags[idx]:
+            idx += 1
+            continue
+        range_start = idx
+        while idx < total_frames and keep_flags[idx]:
+            idx += 1
+        range_end = idx
+        sample_start = range_start * hop
+        sample_end = pcm.size if range_end == total_frames else range_end * hop
+        keep_slices.append(pcm[sample_start:sample_end])
+        kept_ranges += 1
+
+    filtered = (
+        np.concatenate(keep_slices).astype(np.float32, copy=False)
+        if keep_slices
+        else np.empty(0, dtype=np.float32)
+    )
+    return SpeechFilterResult(
+        filtered,
+        evidence,
+        input_samples,
+        int(filtered.size),
+        kept_ranges,
     )
 
 
@@ -445,10 +558,7 @@ def trim_long_silence_for_asr(
         frames = run_end_frame - run_start_frame
         if frames < min_silence_frames:
             continue
-        if not (
-            has_speech_before[run_start_frame]
-            and has_speech_after[run_end_frame - 1]
-        ):
+        if not (has_speech_before[run_start_frame] and has_speech_after[run_end_frame - 1]):
             continue
         run_start = run_start_frame * hop
         run_end = run_end_frame * hop
@@ -468,6 +578,21 @@ def trim_long_silence_for_asr(
         out,
         removed_samples / max(1, sample_rate),
         removed_ranges,
+    )
+
+
+def prepare_audio_for_asr(
+    pcm: np.ndarray,
+    cfg: Config,
+) -> AsrAudioPreparationResult:
+    """Apply the shared final-ASR silence removal and speech policy."""
+
+    silence_removal = trim_long_silence_for_asr(pcm, cfg)
+    speech_filter = filter_speech_for_asr(silence_removal.pcm, cfg)
+    return AsrAudioPreparationResult(
+        speech_filter.pcm,
+        silence_removal,
+        speech_filter,
     )
 
 
@@ -582,9 +707,7 @@ def analyze_speech_presence(
     probs = np.empty(n_frames, dtype=np.float32)
     for idx, i in enumerate(range(0, n_full, hop)):
         vad.process(pcm[i : i + hop])
-        probs[idx] = (
-            vad.smoothed_prob if vad.smoothed_prob is not None else 0.0
-        )
+        probs[idx] = vad.smoothed_prob if vad.smoothed_prob is not None else 0.0
 
     frame_sec = hop / max(1, sample_rate)
     total_sec = n_frames * frame_sec

@@ -143,6 +143,26 @@
                 <p id="recognition-mode-hint" class="recognition-mode-hint text-muted" aria-live="polite"></p>
               </div>
 
+              <div id="asr-pipeline-debug" class="settings-section asr-pipeline-debug">
+                <div class="asr-pipeline-debug-heading">
+                  <div>
+                    <span class="text-[13px] font-semibold" data-i18n="asrtest.debug.title">Debug · ASR pipeline</span>
+                    <p class="text-xs text-muted mt-1" data-i18n="asrtest.debug.tip">Compare the streaming partial with the AudioLLM final.</p>
+                  </div>
+                  <span class="status-pill" data-state="ready" data-i18n="asrtest.debug.on">ON</span>
+                </div>
+                <div class="asr-pipeline-debug-grid" aria-live="polite">
+                  <div class="asr-pipeline-debug-result">
+                    <span class="asr-pipeline-debug-label" data-i18n="asrtest.debug.partial">Streaming partial</span>
+                    <p id="asr-debug-partial" class="asr-pipeline-debug-text"></p>
+                  </div>
+                  <div class="asr-pipeline-debug-result">
+                    <span class="asr-pipeline-debug-label" data-i18n="asrtest.debug.audiollm">AudioLLM final</span>
+                    <p id="asr-debug-audiollm" class="asr-pipeline-debug-text"></p>
+                  </div>
+                </div>
+              </div>
+
               <div id="enrollment-card" class="settings-section enrollment-mode-section">
                 <div class="flex items-start justify-between gap-3 mb-2">
                   <div class="min-w-0">

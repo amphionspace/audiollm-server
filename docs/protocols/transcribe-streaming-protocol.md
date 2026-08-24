@@ -180,7 +180,7 @@ Client                                      Server
 | `language` | string | 检测或传入的语言 |
 | `effective_hotwords` | string[] | 本段音频经 RAG-ASR/Triton 热词召回得到的热词列表；不包含 `start.hotwords` / `update_hotwords` 里的临时请求热词。召回关闭、失败或无召回结果时为空数组 |
 | `duration_sec` | number | 本次推理使用的音频时长；部分流式消息可能不带 |
-| `audio_b64` | string | 当前分段音频的 WAV base64，用于前端回放；为空 final 不带。k2 模式下它与送入 LLM ASR 的音频同源，来自 k2 endpoint 对应的本地缓冲，不再经过本地 VAD 段首/段尾二次裁剪 |
+| `audio_b64` | string | 实际送入 LLM ASR 的 WAV base64，用于前端回放；为空 final 不带。k2 模式下原始段来自 endpoint 对应的本地缓冲，不由本地 VAD 重新决定端点；但送模前仍可按 `asr_segment_voice_filter_*` 裁去非人声区间，此字段反映裁剪后的实际音频 |
 | `dump_id` | string | 仅 `debug_dump_enabled=true` 且本段有 final 文本时出现；值为 `<session_id>/<seg_id>`，同时是落盘文件相对路径 stem（`<dump_dir>/../<dump_id>.wav` 与 `.json`） |
 
 文本规范化（仅 final）：服务端默认对 final 文本做两类本地后处理，partial 不变：
@@ -220,6 +220,8 @@ Client                                      Server
 ## 可覆写配置
 
 `start.config` 仅对当前连接生效、不落盘，只接受扁平字段名。覆写字段受服务端白名单（`backend/config.py` 的 `CLIENT_OVERRIDABLE_FIELDS`）约束：白名单外字段（如模型地址 `*_vllm_base_url`、密钥、连接池/队列等基础设施项）、未知字段与非法值都会被忽略并保持服务端默认，不会中断连接。完整白名单与 `/tuling/ast/v3` 的 `parameter.asr_config` 共用，按类别速览见 [API 总览](../api-reference.md) 的“临时配置覆写”。
+
+`asr_segment_voice_gate_*` 与 `asr_segment_voice_filter_*` 是服务端强制保护项，不在上述白名单内。gate 独立决定低证据音频是否调用模型，filter 独立决定是否只保留 VAD 支持的人声区间及服务端配置的首尾上下文。
 
 当服务端启用 `k2_enabled=true` 时，本端点的 partial 来自外部 k2 流式 ASR，final 仍由本服务 LLM ASR 产生。k2 只做纯识别，不接热词、不接目标说话人、不返回 token timestamps；热词召回、目标说话人过滤与文本规范化只作用于 final。此时切段权威是 k2 endpoint，本服务只保留有界缓冲，并在 partial/final 进入下游前用 `k2_voice_gate_*` 确认有人声证据；voice gate 只做放行/丢弃，不裁剪段首/段尾。VAD 与伪流式间隔类覆写仍会被接受但不再决定切点或首字时机；`enable_pseudo_stream=false` 仍会抑制 partial 下发。
 

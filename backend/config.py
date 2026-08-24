@@ -19,9 +19,7 @@ _DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config.yaml"
 
 HOP_SIZE = 160  # 10ms at 16kHz, TEN VAD recommended
 SAMPLE_RATE = 16000
-VALID_PRIMARY_PROMPT_TEMPLATES: frozenset[str] = frozenset(
-    {"amphion_asr", "amphion_asr_1.7b"}
-)
+VALID_PRIMARY_PROMPT_TEMPLATES: frozenset[str] = frozenset({"amphion_asr", "amphion_asr_1.7b"})
 
 # ${VAR} 环境变量插值; 未设置 -> 空串(import 期不因缺密钥而崩, 调用时才暴露)。
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -45,9 +43,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
     if not isinstance(raw, dict):
-        raise ValueError(
-            f"Config root must be a mapping, got {type(raw).__name__}: {path}"
-        )
+        raise ValueError(f"Config root must be a mapping, got {type(raw).__name__}: {path}")
     return _interpolate_env(raw)
 
 
@@ -208,16 +204,23 @@ class Config:
     k2_voice_gate_start_frames: int = 10
 
     # ---- ASR: final-segment voice gate ------------------------------------
-    # A second, segment-level admission check before LLM ASR final inference.
+    # A second, segment-level speech filter before LLM ASR inference.
     # Endpointing gates (local VAD / k2 voice gate) answer "should a segment
     # exist?". This gate answers "does the completed segment contain enough
-    # speech evidence to spend an LLM ASR request on it?". It is intentionally
-    # statistical over the whole segment, not a boundary trimmer.
+    # speech evidence to spend an LLM ASR request on it?". The independent
+    # filter below controls whether accepted clips retain only VAD-supported
+    # speech plus configured onset/tail context.
     asr_segment_voice_gate_enabled: bool = True
     asr_segment_voice_gate_threshold: float = 0.65
     asr_segment_voice_gate_min_ratio: float = 0.05
     asr_segment_voice_gate_min_ms: int = 120
     asr_segment_voice_gate_min_rms: float = 0.001
+    asr_segment_voice_filter_enabled: bool = True
+    asr_segment_voice_filter_threshold: float = 0.65
+    # Server-owned context around every retained speech run. 160 ms matches
+    # the default 10-frame TEN VAD speech-confirmation window (16 ms/frame).
+    asr_segment_voice_filter_pre_ms: int = 160
+    asr_segment_voice_filter_tail_ms: int = 160
     # Before final LLM ASR, remove internal continuous silence runs whose
     # duration is >= this threshold. 0 disables the pass. Leading/trailing
     # silence is kept so this knob cannot delete an entire utterance.
@@ -412,9 +415,7 @@ class Config:
         # "中间结果"意义;夹到 <= min_segment_duration_ms。和 fusion 不变量一样下沉
         # 到 dataclass,确保 load/override/直接构造(测试)各路径都一致。
         if self.pseudo_stream_first_partial_ms > self.min_segment_duration_ms:
-            object.__setattr__(
-                self, "pseudo_stream_first_partial_ms", self.min_segment_duration_ms
-            )
+            object.__setattr__(self, "pseudo_stream_first_partial_ms", self.min_segment_duration_ms)
         if self.k2_enabled and not self.k2_target.strip():
             object.__setattr__(self, "k2_enabled", False)
         if self.k2_sample_rate <= 0:
@@ -447,6 +448,14 @@ class Config:
             object.__setattr__(self, "asr_segment_voice_gate_min_ms", 0)
         if self.asr_segment_voice_gate_min_rms < 0:
             object.__setattr__(self, "asr_segment_voice_gate_min_rms", 0.0)
+        if self.asr_segment_voice_filter_threshold < 0:
+            object.__setattr__(self, "asr_segment_voice_filter_threshold", 0.0)
+        elif self.asr_segment_voice_filter_threshold > 1:
+            object.__setattr__(self, "asr_segment_voice_filter_threshold", 1.0)
+        if self.asr_segment_voice_filter_pre_ms < 0:
+            object.__setattr__(self, "asr_segment_voice_filter_pre_ms", 0)
+        if self.asr_segment_voice_filter_tail_ms < 0:
+            object.__setattr__(self, "asr_segment_voice_filter_tail_ms", 0)
         if self.asr_silence_removal_threshold_sec < 0:
             object.__setattr__(self, "asr_silence_removal_threshold_sec", 0.0)
         # An empty dump dir would write into the project root; fall back to the
@@ -496,9 +505,7 @@ class Config:
             if k in CLIENT_OVERRIDABLE_FIELDS:
                 allowed[k] = v
             else:
-                logger.warning(
-                    "Ignoring non-overridable config field from client: %s", k
-                )
+                logger.warning("Ignoring non-overridable config field from client: %s", k)
         return self.override(**allowed)
 
 
@@ -508,78 +515,74 @@ class Config:
 # routing (``*_vllm_base_url`` -> SSRF, ``*_model_name``) and secrets
 # (``text_cleanup_api_key*``) are intentionally excluded so an untrusted client
 # cannot reach them via ``start.config`` / ``parameter.asr_config``.
-CLIENT_OVERRIDABLE_FIELDS: frozenset[str] = frozenset({
-    # VAD / segmentation
-    "vad_threshold",
-    "silence_duration_ms",
-    "vad_smoothing_alpha",
-    "vad_start_frames",
-    "vad_pre_speech_ms",
-    "vad_keep_tail_ms",
-    "min_segment_duration_ms",
-    # Pseudo-streaming partials
-    "enable_pseudo_stream",
-    "pseudo_stream_interval_ms",
-    "pseudo_stream_first_partial_ms",
-    # ASR model combination / timeouts
-    "enable_primary_asr",
-    "enable_secondary_asr",
-    "enable_dual_asr_fusion",
-    "enable_role_separation",
-    "primary_asr_timeout",
-    "asr_request_timeout",
-    "debug_show_dual_asr",
-    "asr_segment_voice_gate_enabled",
-    "asr_segment_voice_gate_threshold",
-    "asr_segment_voice_gate_min_ratio",
-    "asr_segment_voice_gate_min_ms",
-    "asr_segment_voice_gate_min_rms",
-    "asr_silence_removal_threshold_sec",
-    # Dual-model fusion thresholds
-    "fusion_similarity_threshold",
-    "fusion_min_primary_score",
-    "fusion_max_repetition_ratio",
-    "fusion_disagreement_threshold",
-    "fusion_hotword_boost",
-    "fusion_primary_score_margin",
-    # Hotword recall behavior
-    "enable_hotword_recall",
-    "recall_top_k",
-    # TS-ASR enrollment bounds
-    "asr_enrollment_min_sec",
-    "asr_enrollment_max_sec",
-    "asr_enrollment_ttl_sec",
-    # Emotion (baseline + paralinguistic spec) per-request tuning
-    "emotion_task_mode",
-    "emotion_request_timeout",
-    "emotion_max_audio_seconds",
-    "emotion_spec_task_mode",
-    "emotion_spec_request_timeout",
-    "emotion_spec_max_audio_seconds",
-})
+CLIENT_OVERRIDABLE_FIELDS: frozenset[str] = frozenset(
+    {
+        # VAD / segmentation
+        "vad_threshold",
+        "silence_duration_ms",
+        "vad_smoothing_alpha",
+        "vad_start_frames",
+        "vad_pre_speech_ms",
+        "vad_keep_tail_ms",
+        "min_segment_duration_ms",
+        # Pseudo-streaming partials
+        "enable_pseudo_stream",
+        "pseudo_stream_interval_ms",
+        "pseudo_stream_first_partial_ms",
+        # ASR model combination / timeouts
+        "enable_primary_asr",
+        "enable_secondary_asr",
+        "enable_dual_asr_fusion",
+        "enable_role_separation",
+        "primary_asr_timeout",
+        "asr_request_timeout",
+        "debug_show_dual_asr",
+        "asr_silence_removal_threshold_sec",
+        # Dual-model fusion thresholds
+        "fusion_similarity_threshold",
+        "fusion_min_primary_score",
+        "fusion_max_repetition_ratio",
+        "fusion_disagreement_threshold",
+        "fusion_hotword_boost",
+        "fusion_primary_score_margin",
+        # Hotword recall behavior
+        "enable_hotword_recall",
+        "recall_top_k",
+        # TS-ASR enrollment bounds
+        "asr_enrollment_min_sec",
+        "asr_enrollment_max_sec",
+        "asr_enrollment_ttl_sec",
+        # Emotion (baseline + paralinguistic spec) per-request tuning
+        "emotion_task_mode",
+        "emotion_request_timeout",
+        "emotion_max_audio_seconds",
+        "emotion_spec_task_mode",
+        "emotion_spec_request_timeout",
+        "emotion_spec_max_audio_seconds",
+    }
+)
 
 # Fail-fast: a whitelisted name that is not a real Config field is a typo that
 # would silently make a knob un-overridable forever, so reject it at import.
 _unknown_overridable = CLIENT_OVERRIDABLE_FIELDS - {f.name for f in fields(Config)}
 if _unknown_overridable:
     raise ValueError(
-        "CLIENT_OVERRIDABLE_FIELDS has unknown Config fields: "
-        f"{sorted(_unknown_overridable)}"
+        f"CLIENT_OVERRIDABLE_FIELDS has unknown Config fields: {sorted(_unknown_overridable)}"
     )
 
 
 # 合法的 (protocol, task) 组合白名单。其余组合在解析期 fail-fast,
 # 避免注册出无意义的端点。
-VALID_ENDPOINT_COMBINATIONS: frozenset[tuple[str, str]] = frozenset({
-    ("native", "asr"),
-    ("astv3", "asr"),
-    ("native", "emotion"),
-})
+VALID_ENDPOINT_COMBINATIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("native", "asr"),
+        ("astv3", "asr"),
+        ("native", "emotion"),
+    }
+)
 
 # upstream 角色: 决定一个 upstream 投影到哪些扁平 Config 字段。
-_UPSTREAM_ROLES: frozenset[str] = frozenset(
-    {"primary", "secondary", "emotion", "emotion_spec"}
-)
+_UPSTREAM_ROLES: frozenset[str] = frozenset({"primary", "secondary", "emotion", "emotion_spec"})
 
 
 @dataclass(frozen=True)
@@ -592,7 +595,7 @@ class EndpointSpec:
     # role -> upstream name (primary / secondary / emotion / emotion_spec)
     upstream_roles: dict[str, str] = field(default_factory=dict)
     policy: dict[str, Any] = field(default_factory=dict)  # 软默认(客户端白名单可覆盖)
-    lock: dict[str, Any] = field(default_factory=dict)    # 硬锁定(客户端覆盖后重施)
+    lock: dict[str, Any] = field(default_factory=dict)  # 硬锁定(客户端覆盖后重施)
     client_overridable: bool = False
     input_sample_rate: int = SAMPLE_RATE
 
@@ -602,9 +605,9 @@ class ParsedConfig:
     """Fully parsed config.yaml: registries + the global (REST-bound) Config."""
 
     upstreams: dict[str, Upstream]
-    defaults: dict[str, Any]          # flattened tuning leaves
-    services: dict[str, str]          # service role -> upstream name
-    rest_roles: dict[str, str]        # REST role -> upstream name
+    defaults: dict[str, Any]  # flattened tuning leaves
+    services: dict[str, str]  # service role -> upstream name
+    rest_roles: dict[str, str]  # REST role -> upstream name
     endpoints: tuple[EndpointSpec, ...]
     http_pool: dict[str, int]
     default_config: Config
@@ -700,9 +703,7 @@ def _project_base(
     """
     values: dict[str, Any] = dict(defaults)
     values["http_max_connections"] = int(http_pool.get("max_connections", 32))
-    values["http_max_keepalive_connections"] = int(
-        http_pool.get("max_keepalive_connections", 16)
-    )
+    values["http_max_keepalive_connections"] = int(http_pool.get("max_keepalive_connections", 16))
     cleanup_name = services.get("text_cleanup")
     if cleanup_name and cleanup_name in upstreams:
         values.update(_text_cleanup_fields(upstreams[cleanup_name]))
@@ -733,9 +734,7 @@ def _parse_endpoint(raw: dict[str, Any], upstreams: dict[str, Upstream]) -> Endp
         if role not in _UPSTREAM_ROLES:
             raise ValueError(f"endpoint {path}: unknown upstream role {role!r}")
         if up_name not in upstreams:
-            raise ValueError(
-                f"endpoint {path}: unknown upstream {up_name!r} for role {role!r}"
-            )
+            raise ValueError(f"endpoint {path}: unknown upstream {up_name!r} for role {role!r}")
     return EndpointSpec(
         path=path,
         protocol=protocol,
@@ -771,8 +770,7 @@ def _project_transcribe(
     unknown = set(raw_transcribe) - allowed
     if unknown:
         raise ValueError(
-            f"rest.routes.transcribe: unknown keys {sorted(unknown)}; "
-            f"allowed: {sorted(allowed)}"
+            f"rest.routes.transcribe: unknown keys {sorted(unknown)}; allowed: {sorted(allowed)}"
         )
 
     overrides: dict[str, Any] = {}
@@ -803,8 +801,7 @@ def _project_transcribe(
 
 def _parse(raw: dict[str, Any]) -> ParsedConfig:
     upstreams = {
-        name: _parse_upstream(name, spec)
-        for name, spec in (raw.get("upstreams", {}) or {}).items()
+        name: _parse_upstream(name, spec) for name, spec in (raw.get("upstreams", {}) or {}).items()
     }
     defaults = _flatten_leaves(raw.get("defaults", {}) or {})
 
@@ -828,34 +825,29 @@ def _parse(raw: dict[str, Any]) -> ParsedConfig:
             raise ValueError(f"rest.upstreams.{role}: unknown upstream {up_name!r}")
 
     http_pool = dict(raw.get("http_pool", {}) or {})
-    endpoints = tuple(
-        _parse_endpoint(ep, upstreams) for ep in (raw.get("endpoints", []) or [])
-    )
+    endpoints = tuple(_parse_endpoint(ep, upstreams) for ep in (raw.get("endpoints", []) or []))
     rest_routes = dict(rest_raw.get("routes", {}) or {})
     unknown_routes = set(rest_routes) - {"transcribe"}
     if unknown_routes:
         raise ValueError(
-            f"rest.routes: unknown routes {sorted(unknown_routes)}; "
-            "known: ['transcribe']"
+            f"rest.routes: unknown routes {sorted(unknown_routes)}; known: ['transcribe']"
         )
 
     # Loud WARN on an impossible global combo (silent downgrade still happens in
     # __post_init__; this is just the operator-facing log line).
-    if defaults.get("enable_dual_asr_fusion") and not defaults.get(
-        "enable_secondary_asr", True
-    ):
+    if defaults.get("enable_dual_asr_fusion") and not defaults.get("enable_secondary_asr", True):
         logger.warning(
             "enable_dual_asr_fusion=true requires enable_secondary_asr=true; "
             "downgrading fusion to false"
         )
     if defaults.get("k2_enabled") and not str(defaults.get("k2_target", "")).strip():
         logger.warning("k2_enabled=true requires k2_target; downgrading k2 to false")
-    if defaults.get("diarization_enabled") and not str(
-        defaults.get("diarization_target", "")
-    ).strip():
+    if (
+        defaults.get("diarization_enabled")
+        and not str(defaults.get("diarization_target", "")).strip()
+    ):
         logger.warning(
-            "diarization_enabled=true requires diarization_target; "
-            "downgrading diarization to false"
+            "diarization_enabled=true requires diarization_target; downgrading diarization to false"
         )
 
     base = _project_base(
@@ -909,9 +901,7 @@ def load_transcribe_config(path: Path | None = None) -> Config:
     return load_parsed(path).transcribe_config
 
 
-def resolve_endpoint(
-    spec: EndpointSpec, parsed: ParsedConfig | None = None
-) -> Config:
+def resolve_endpoint(spec: EndpointSpec, parsed: ParsedConfig | None = None) -> Config:
     """Project an endpoint's runtime Config.
 
     global default (REST-bound) + this endpoint's explicit upstream bindings +
@@ -932,9 +922,7 @@ def resolve_endpoint(
     return parsed.default_config.override(**overrides)
 
 
-def get_service_upstream(
-    service: str, parsed: ParsedConfig | None = None
-) -> Upstream | None:
+def get_service_upstream(service: str, parsed: ParsedConfig | None = None) -> Upstream | None:
     """Resolve a global auxiliary service (hotword / text_cleanup) to its Upstream."""
     parsed = parsed or _PARSED
     name = parsed.services.get(service)

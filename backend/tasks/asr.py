@@ -15,7 +15,7 @@ from ..asr.client import (
 from ..asr.fusion import choose_fused_result
 from ..asr.itn import normalize_final_text
 from ..audio.utils import pcm_to_wav_base64
-from ..audio.vad import segment_voice_evidence, trim_long_silence_for_asr
+from ..audio.vad import filter_speech_for_asr, prepare_audio_for_asr
 from ..config import SAMPLE_RATE
 from ..diarization.turns import split_segment_by_speaker
 from ..streaming.events import PartialSnapshot, SegmentReady
@@ -43,9 +43,7 @@ class AsrTaskEngine(BaseTaskEngine):
     # Final segment -> final_asr / final
     # ------------------------------------------------------------------
 
-    async def handle_segment(
-        self, seg: SegmentReady, ctx: SessionContext
-    ) -> bool:
+    async def handle_segment(self, seg: SegmentReady, ctx: SessionContext) -> bool:
         segments = [seg]
         if (
             ctx.cfg.enable_role_separation
@@ -73,13 +71,12 @@ class AsrTaskEngine(BaseTaskEngine):
             sent_any = await self._handle_single_segment(attributed, ctx) or sent_any
         return sent_any
 
-    async def _handle_single_segment(
-        self, seg: SegmentReady, ctx: SessionContext
-    ) -> bool:
+    async def _handle_single_segment(self, seg: SegmentReady, ctx: SessionContext) -> bool:
         cfg = ctx.cfg
         segment = seg.pcm
         original_duration = len(segment) / SAMPLE_RATE
-        trim = trim_long_silence_for_asr(segment, cfg)
+        prepared = prepare_audio_for_asr(segment, cfg)
+        trim = prepared.silence_removal
         if trim.removed_ranges:
             logger.info(
                 "Final ASR silence removal: segment_id=%s original=%.2fs "
@@ -91,9 +88,8 @@ class AsrTaskEngine(BaseTaskEngine):
                 len(trim.pcm) / SAMPLE_RATE,
                 cfg.asr_silence_removal_threshold_sec,
             )
-            segment = trim.pcm
-        audio_duration = len(segment) / SAMPLE_RATE
-        voice = segment_voice_evidence(segment, cfg)
+        voice_filter = prepared.speech_filter
+        voice = voice_filter.evidence
         if not voice.accepted:
             logger.info(
                 "Final ASR skipped by segment voice gate: reason=%s "
@@ -101,7 +97,7 @@ class AsrTaskEngine(BaseTaskEngine):
                 "frames=%d/%d max_prob=%.3f mean_prob=%.3f rms=%.5f",
                 voice.reason,
                 seg.id or "n/a",
-                audio_duration,
+                len(trim.pcm) / SAMPLE_RATE,
                 voice.speech_ms,
                 voice.speech_ratio,
                 voice.speech_frames,
@@ -111,6 +107,18 @@ class AsrTaskEngine(BaseTaskEngine):
                 voice.rms,
             )
             return False
+        if voice_filter.kept_samples < voice_filter.input_samples:
+            logger.info(
+                "Final ASR speech filter: segment_id=%s input=%.2fs kept=%.2fs "
+                "ranges=%d speech_ratio=%.3f",
+                seg.id or "n/a",
+                voice_filter.input_samples / SAMPLE_RATE,
+                voice_filter.kept_samples / SAMPLE_RATE,
+                voice_filter.kept_ranges,
+                voice.speech_ratio,
+            )
+        segment = prepared.pcm
+        audio_duration = len(segment) / SAMPLE_RATE
         t0 = time.monotonic()
         wav_b64 = pcm_to_wav_base64(segment)
         hw_snapshot = ctx.hotwords
@@ -150,12 +158,8 @@ class AsrTaskEngine(BaseTaskEngine):
                 timeout=cfg.primary_asr_timeout,
             )
 
-        primary_result = (
-            None if isinstance(primary_res, Exception) else primary_res
-        )
-        secondary_result = (
-            None if isinstance(secondary_res, Exception) else secondary_res
-        )
+        primary_result = None if isinstance(primary_res, Exception) else primary_res
+        secondary_result = None if isinstance(secondary_res, Exception) else secondary_res
 
         if isinstance(primary_res, Exception):
             logger.warning("Primary ASR failed: %s", primary_res)
@@ -164,9 +168,7 @@ class AsrTaskEngine(BaseTaskEngine):
         if primary_result is None and secondary_result is None:
             raise RuntimeError("Both ASR models failed for this segment.")
 
-        text, detected_lang = self._select_text(
-            primary_result, secondary_result, hw_snapshot, ctx
-        )
+        text, detected_lang = self._select_text(primary_result, secondary_result, hw_snapshot, ctx)
         # ITN + plate normalization is a final-only display transform; partials
         # stay spoken-form (see handle_partial).
         if text:
@@ -175,16 +177,17 @@ class AsrTaskEngine(BaseTaskEngine):
             primary_result,
             hw_snapshot,
         )
-        returned_effective_hotwords = self._rag_recalled_hotwords_for_final(
-            primary_result
-        )
+        returned_effective_hotwords = self._rag_recalled_hotwords_for_final(primary_result)
         hotword_hits = hotword_hits_in_text(effective_hotwords, text)
 
         elapsed = time.monotonic() - t0
         rtf = elapsed / audio_duration if audio_duration > 0 else 0.0
         logger.info(
             "Final ASR: audio=%.2fs infer=%.3fs RTF=%.3f text=%r",
-            audio_duration, elapsed, rtf, text[:80],
+            audio_duration,
+            elapsed,
+            rtf,
+            text[:80],
         )
         logger.info(
             "Final ASR diagnostic: session_id=%s gateway_trace_id=%s "
@@ -269,16 +272,23 @@ class AsrTaskEngine(BaseTaskEngine):
     # Pseudo-streaming partial
     # ------------------------------------------------------------------
 
-    async def handle_partial(
-        self, snap: PartialSnapshot, ctx: SessionContext
-    ) -> None:
+    async def handle_partial(self, snap: PartialSnapshot, ctx: SessionContext) -> None:
         cfg = ctx.cfg
         if not cfg.enable_pseudo_stream:
             return
         if not (cfg.enable_primary_asr or cfg.enable_secondary_asr):
             return
 
-        snapshot = snap.pcm
+        voice_filter = filter_speech_for_asr(snap.pcm, cfg)
+        if not voice_filter.evidence.accepted:
+            logger.debug(
+                "Partial ASR skipped by speech filter: id=%s reason=%s ratio=%.3f",
+                snap.id or "n/a",
+                voice_filter.evidence.reason,
+                voice_filter.evidence.speech_ratio,
+            )
+            return
+        snapshot = voice_filter.pcm
         audio_duration = len(snapshot) / SAMPLE_RATE
         t0 = time.monotonic()
         wav_b64 = pcm_to_wav_base64(snapshot)
@@ -319,34 +329,29 @@ class AsrTaskEngine(BaseTaskEngine):
                 timeout=cfg.asr_request_timeout,
             )
 
-        primary_result = (
-            None if isinstance(primary_res, Exception) else primary_res
-        )
-        secondary_result = (
-            None if isinstance(secondary_res, Exception) else secondary_res
-        )
+        primary_result = None if isinstance(primary_res, Exception) else primary_res
+        secondary_result = None if isinstance(secondary_res, Exception) else secondary_res
 
         if primary_result is None and secondary_result is None:
             return
 
         # Noise gate only applies when secondary is the actual partial source.
         if secondary_result is not None and primary_result is None:
-            sec_text = str(
-                (secondary_result or {}).get("transcription") or ""
-            ).strip()
+            sec_text = str((secondary_result or {}).get("transcription") or "").strip()
             if not sec_text:
                 logger.debug("Partial suppressed: secondary empty (noise gate)")
                 return
 
-        text, _ = self._select_text(
-            primary_result, secondary_result, [], ctx
-        )
+        text, _ = self._select_text(primary_result, secondary_result, [], ctx)
 
         elapsed = time.monotonic() - t0
         rtf = elapsed / audio_duration if audio_duration > 0 else 0.0
         logger.info(
             "Partial ASR: audio=%.2fs infer=%.3fs RTF=%.3f text=%r",
-            audio_duration, elapsed, rtf, text[:80],
+            audio_duration,
+            elapsed,
+            rtf,
+            text[:80],
         )
 
         if not text:
@@ -534,9 +539,7 @@ class AsrTaskEngine(BaseTaskEngine):
                 raise RuntimeError("Both ASR models failed for this segment.")
             return secondary_res, primary_res
 
-        secondary_text = str(
-            (secondary_res or {}).get("transcription") or ""
-        ).strip()
+        secondary_text = str((secondary_res or {}).get("transcription") or "").strip()
         if not secondary_text:
             if primary_task is not None:
                 primary_task.cancel()
@@ -562,9 +565,7 @@ class AsrTaskEngine(BaseTaskEngine):
 
         if primary_result and not secondary_result:
             text = str(primary_result.get("transcription") or "").strip()
-            detected_lang = (
-                primary_result.get("detected_language") or ctx.language
-            )
+            detected_lang = primary_result.get("detected_language") or ctx.language
         elif secondary_result and not primary_result:
             text = str(secondary_result.get("transcription") or "").strip()
         else:

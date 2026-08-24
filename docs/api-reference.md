@@ -57,7 +57,7 @@ curl -fsS http://172.16.0.3:8082/readyz
 | `/tuling/ast/v3` | 通用流式 ASR（讯飞图灵 AST v3 协议） | 对接讯飞 tuling-ast-sdk 或按 AST v3 信封集成 | `payload.result` 词图（msgtype sentence / Progressive） |
 | `/astv3-test-proxy` | AST v3 旧测试代理 | 兼容旧测试客户端，透明转发到写死的远程 AST v3 后端；当前测试页不再使用 | 同 `/tuling/ast/v3`（透明转发） |
 
-`/transcribe-streaming` 的 `final` / `final_asr` 消息除文本外会带当前语音分段的 `audio_b64`（WAV base64）、`duration_sec` 和 `effective_hotwords`（本段音频经 RAG-ASR/Triton 实际召回的热词列表，不含临时请求热词），主前端用音频字段做分段回放、可用 `effective_hotwords` 展示本段召回命中。k2 模式下该音频是同一段送入 LLM ASR 的 k2 段缓冲，不再经过本地 VAD 段首/段尾二次裁剪；完整字段见 [实时转写 WebSocket 协议](protocols/transcribe-streaming-protocol.md)。服务端开启 `debug_dump_enabled`（`defaults.debug`，运维级、不在客户端覆写白名单）后，`ready` 带 `session_id`/`dump_dir`、`final` 带 `dump_id`，并把每段音频+元信息落盘到 `<dump_dir>/<session_id>/<seg_id>.{wav,json}`，前端在气泡上显示可复制的 `dump_id`，用于回放/最终结果对账，详见协议文档“调试落盘”小节。
+`/transcribe-streaming` 的 `final` / `final_asr` 消息除文本外会带实际送入 LLM ASR 的 `audio_b64`（WAV base64）、`duration_sec` 和 `effective_hotwords`（本段音频经 RAG-ASR/Triton 实际召回的热词列表，不含临时请求热词），主前端用音频字段做分段回放、可用 `effective_hotwords` 展示本段召回命中。k2 模式下原始段仍来自 endpoint 对应的本地缓冲，不由本地 VAD 重新决定端点；但 `audio_b64` 会反映送模前 `asr_segment_voice_filter_*` 的裁剪结果。完整字段见 [实时转写 WebSocket 协议](protocols/transcribe-streaming-protocol.md)。服务端开启 `debug_dump_enabled`（`defaults.debug`，运维级、不在客户端覆写白名单）后，`ready` 带 `session_id`/`dump_dir`、`final` 带 `dump_id`，并把每段音频+元信息落盘到 `<dump_dir>/<session_id>/<seg_id>.{wav,json}`，前端在气泡上显示可复制的 `dump_id`，用于回放/最终结果对账，详见协议文档“调试落盘”小节。
 
 `/tuling/ast/v3` 与上面两个任务接口的线上协议不同：音频以 base64 放在 JSON 帧，`header.status`（0/1/2）驱动状态机，无 `ready`/`start`/`stop`，结果为词图结构。模型组合上也不同：本端点恒为 primary-only（强制关闭副模型/本地 Qwen/融合，客户端无法经 `parameter.asr_config` 重开），主模型由 `astv3_vllm_*` 指定（当前留空，回退全局 primary `vllm_base_url`），而 `/transcribe-streaming` 仍按 `config.yaml` 走双模型。角色分离默认开启：PCM 并行送入独立 Streaming Sortformer sidecar 与 VAD/k2，原始段按 speaker turn 重切后串行识别，最多 4 位会话内匿名角色；sidecar 故障时本会话 fail-open 为普通 ASR。临时热词放 `payload.text.text`；热词池隔离只用首帧 `parameter.asr_config.hotword_pool_id`；目标说话人先经 `POST /api/asr/enrollment` 注册，再在首帧设置 `enable_role_separation=false`、`enrollment_enable=true` 和 `enrollment_id`。`header.resIdList` 仅记录并忽略。它不遵循下文“WebSocket 调用流程”，详见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。
 
@@ -74,6 +74,8 @@ AST v3 角色/声纹路由速览：
 `Progressive` 始终不返回 `cw[].rl`。完整的字段存在性、声纹状态和 sidecar 故障矩阵见 [AST v3 协议“角色分离与声纹行为矩阵”](protocols/tuling-ast-v3-protocol.md#角色分离与声纹行为矩阵)。
 
 「实时语音识别（测试用）」页面直接连接同源 `/tuling/ast/v3`：HTTPS 页面使用 `wss://`，HTTP/localhost 使用 `ws://`，不再经过第二层远程代理。页面将容易冲突的角色/声纹开关收敛为三个互斥模式，并在下一次会话首帧显式映射为：角色分离（`enable_role_separation=true`、忽略 enrollment）、目标说话人（`enable_role_separation=false`、`enrollment_enable=true`、携带已注册的 `enrollment_id`）、普通识别（两个能力均关闭）。目标说话人模式没有可用 ID 时，前端阻止开始录音并引导先完成注册；声纹注册入口始终可用，不因当前模式隐藏。`/astv3-test-proxy` 仅保留给旧测试客户端，仍透明转发到历史远端；新客户端和外部集成都应直接使用 `/tuling/ast/v3`。
+
+该测试页默认开启 ASR pipeline debug 卡片，同时保留最新一条 `Progressive` 流式中间结果和 AudioLLM `sentence` 终稿，避免终稿覆盖中间结果后无法对照。k2 关闭或 fallback 时，`Progressive` 可来自本地伪流式 AudioLLM，因此页面不标注具体来源。气泡的客户端分段回放按 AST `bg` / `ed` 从录音中截取，受协议段级时间误差影响，仅供近似对照而非精确词级音频。debug 展示只消费现有协议消息，不新增线上字段。
 
 ### REST 上传接口
 
@@ -151,6 +153,20 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 当前本地 VAD 默认使用 `vad_start_frames=10`（TEN VAD 下约 160 ms），以降低首字延迟并保留短首词；客户端仍可按连接覆写该字段。
 
 服务端可启用 `k2_enabled=true` 让 `/transcribe-streaming` 与 `/tuling/ast/v3` 的 partial 改由外部 k2 gRPC 流式 ASR 产生；final 仍走本服务 LLM ASR。k2 只做纯识别，不接热词、不接目标说话人、不返回 token timestamps。`k2_target`、`k2_max_segment_sec`、`k2_idle_keep_ms`、`k2_voice_gate_*` 等均为服务端配置，不在临时覆写白名单内。k2 模式下，切段权威是 k2 endpoint，本服务只用 `k2_idle_keep_ms` 限制起音前旧静音、用 `k2_max_segment_sec` 防止无 endpoint 时缓冲无限增长，并用 `k2_voice_gate_*` 在 partial/final 进入下游前确认有人声证据；voice gate 只决定放行或丢弃，不再用本地 VAD 裁剪段首/段尾。上表 VAD / 伪流式间隔字段仍会被接受，但不再决定这两个端点的切点或首字时机；`enable_pseudo_stream=false` 仍会抑制 partial 下发。
+
+所有 AudioLLM 推理路径还会在送模前执行服务端人声保护：`asr_segment_voice_gate_*` 按整段人声占比、累计人声时长和 RMS 决定 accept/drop；`asr_segment_voice_filter_*` 独立决定是否只把 VAD 支持的人声区间及上下文编码给模型。该组字段不在客户端临时覆写白名单内；AST v3 的 `bg` / `ed` 仍表示原始会话时间线。
+
+| 服务端字段 | 类型 | 默认 | 作用 |
+|---|---|---|---|
+| `asr_segment_voice_gate_enabled` | bool | `true` | 是否丢弃低人声证据音频 |
+| `asr_segment_voice_gate_threshold` | float | `0.65` | gate 计算人声证据的概率阈值 |
+| `asr_segment_voice_gate_min_ratio` | float | `0.05` | 人声帧占比下限 |
+| `asr_segment_voice_gate_min_ms` | int | `120` | 累计人声证据下限（毫秒） |
+| `asr_segment_voice_gate_min_rms` | float | `0.001` | 整段 RMS 下限 |
+| `asr_segment_voice_filter_enabled` | bool | `true` | 是否裁剪已放行音频中的非人声区间 |
+| `asr_segment_voice_filter_threshold` | float | `0.65` | filter 保留人声帧的概率阈值 |
+| `asr_segment_voice_filter_pre_ms` | int | `160` | 人声区间向前保留上下文（毫秒） |
+| `asr_segment_voice_filter_tail_ms` | int | `160` | 人声区间向后保留上下文（毫秒） |
 
 final 文本规范化开关（enable_asr_itn、asr_itn_enable_0_to_9、enable_asr_plate_normalize）与解码退化重复折叠开关（enable_asr_repetition_fix）为服务端配置，不在上表白名单内，客户端无法临时覆写。语义与示例见各协议文档的“文本规范化”小节与 [README 文本规范化](../README.md)。
 

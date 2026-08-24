@@ -94,11 +94,15 @@ defaults:
     enable_role_separation: true          # AST v3 客户端省略时默认开启；受下方 sidecar 资源门控制
     primary_asr_timeout: 4.0              # primary 软降级上限(非 HTTP 超时)
     debug_show_dual_asr: false            # 出站附带双 ASR 调试字段(当前主前端不展示)
-    asr_segment_voice_gate_enabled: true   # LLM ASR final 前整段人声证据门控，抑制非人声噪音幻觉
-    asr_segment_voice_gate_threshold: 0.65 # 复用 TEN VAD 概率语义；只做整段 accept/drop
+    asr_segment_voice_gate_enabled: true   # AudioLLM 前人声门控；只决定是否丢弃低证据音频
+    asr_segment_voice_gate_threshold: 0.65 # gate 计算人声证据的 TEN VAD 概率阈值
     asr_segment_voice_gate_min_ratio: 0.05 # 整段中至少 5% 帧有人声证据，避免长噪音夹少量误触发
     asr_segment_voice_gate_min_ms: 120     # 至少约 120ms 累计人声证据，保留短词/轻声
     asr_segment_voice_gate_min_rms: 0.001  # 近数字静音直接丢弃
+    asr_segment_voice_filter_enabled: true # 是否裁剪已放行音频中 VAD 不支持的非人声区间
+    asr_segment_voice_filter_threshold: 0.65 # filter 保留人声帧的 TEN VAD 概率阈值
+    asr_segment_voice_filter_pre_ms: 160   # 每个人声区间向前保留约 10 个 TEN VAD 帧，保护轻声起音
+    asr_segment_voice_filter_tail_ms: 160  # 每个人声区间向后保留约 10 个 TEN VAD 帧，保护词尾
     asr_silence_removal_threshold_sec: 0.0 # final LLM ASR 前删除 >= 该秒数的内部连续静音；0 表示关闭
   diarization:
     diarization_enabled: true             # 生产启用；sidecar 故障时 AST v3 会话 fail-open 为普通 ASR

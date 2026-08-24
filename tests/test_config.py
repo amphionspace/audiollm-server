@@ -102,9 +102,7 @@ def test_env_interpolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     assert parsed.upstreams["clean"].api_key == "secret"
 
 
-def test_env_unset_interpolates_empty(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_env_unset_interpolates_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("T_MISSING", raising=False)
     data = _minimal()
     data["upstreams"]["clean"]["api_key"] = "${T_MISSING}"
@@ -112,9 +110,7 @@ def test_env_unset_interpolates_empty(
     assert parsed.upstreams["clean"].api_key == ""
 
 
-def test_config_path_env_overrides_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_config_path_env_overrides_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = _write_yaml(tmp_path, _minimal())
     monkeypatch.setenv("CONFIG_PATH", str(path))
     cfg = load_config()  # no explicit path -> reads CONFIG_PATH
@@ -218,12 +214,13 @@ def test_shipped_config_projects_rest_bindings() -> None:
     assert cfg.asr_segment_voice_gate_min_ratio == 0.05
     assert cfg.asr_segment_voice_gate_min_ms == 120
     assert cfg.asr_segment_voice_gate_min_rms == 0.001
+    assert cfg.asr_segment_voice_filter_enabled is True
+    assert cfg.asr_segment_voice_filter_threshold == 0.65
+    assert cfg.asr_segment_voice_filter_pre_ms == 160
+    assert cfg.asr_segment_voice_filter_tail_ms == 160
     assert cfg.debug_dump_enabled is False
     assert cfg.debug_dump_dir == "debug_dumps"
-    assert (
-        cfg.text_cleanup_base_url
-        == "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    )
+    assert cfg.text_cleanup_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert cfg.http_max_connections == 32
 
 
@@ -449,9 +446,7 @@ def test_debug_dump_empty_dir_falls_back_to_default() -> None:
 def test_debug_dump_not_client_overridable() -> None:
     # A client must not be able to turn on disk writes; override_client drops it.
     cfg = Config(debug_dump_enabled=False)
-    overridden = cfg.override_client(
-        debug_dump_enabled=True, debug_dump_dir="/tmp/evil"
-    )
+    overridden = cfg.override_client(debug_dump_enabled=True, debug_dump_dir="/tmp/evil")
     assert overridden.debug_dump_enabled is False
     assert overridden.debug_dump_dir == "debug_dumps"
 
@@ -478,19 +473,27 @@ def test_asr_segment_voice_gate_clamps_bounds() -> None:
     high = Config(
         asr_segment_voice_gate_threshold=2.0,
         asr_segment_voice_gate_min_ratio=2.0,
+        asr_segment_voice_filter_threshold=2.0,
     )
     low = Config(
         asr_segment_voice_gate_threshold=-1.0,
         asr_segment_voice_gate_min_ratio=-1.0,
         asr_segment_voice_gate_min_ms=-1,
         asr_segment_voice_gate_min_rms=-1.0,
+        asr_segment_voice_filter_threshold=-1.0,
+        asr_segment_voice_filter_pre_ms=-1,
+        asr_segment_voice_filter_tail_ms=-1,
     )
     assert high.asr_segment_voice_gate_threshold == 1.0
     assert high.asr_segment_voice_gate_min_ratio == 1.0
+    assert high.asr_segment_voice_filter_threshold == 1.0
     assert low.asr_segment_voice_gate_threshold == 0.0
     assert low.asr_segment_voice_gate_min_ratio == 0.0
     assert low.asr_segment_voice_gate_min_ms == 0
     assert low.asr_segment_voice_gate_min_rms == 0.0
+    assert low.asr_segment_voice_filter_threshold == 0.0
+    assert low.asr_segment_voice_filter_pre_ms == 0
+    assert low.asr_segment_voice_filter_tail_ms == 0
 
 
 def test_asr_silence_removal_threshold_clamps_negative() -> None:
@@ -583,27 +586,40 @@ def test_diarization_infrastructure_is_not_client_overridable() -> None:
     assert out.diarization_result_timeout_sec == cfg.diarization_result_timeout_sec
 
 
-def test_asr_segment_voice_gate_client_overridable() -> None:
+def test_asr_segment_voice_gate_is_server_enforced() -> None:
     fields = {
         "asr_segment_voice_gate_enabled",
         "asr_segment_voice_gate_threshold",
         "asr_segment_voice_gate_min_ratio",
         "asr_segment_voice_gate_min_ms",
         "asr_segment_voice_gate_min_rms",
+        "asr_segment_voice_filter_enabled",
+        "asr_segment_voice_filter_threshold",
+        "asr_segment_voice_filter_pre_ms",
+        "asr_segment_voice_filter_tail_ms",
     }
-    assert fields <= CLIENT_OVERRIDABLE_FIELDS
-    out = load_config().override_client(
+    assert not fields & CLIENT_OVERRIDABLE_FIELDS
+    cfg = load_config()
+    out = cfg.override_client(
         asr_segment_voice_gate_enabled=False,
         asr_segment_voice_gate_threshold=0.7,
         asr_segment_voice_gate_min_ratio=0.1,
         asr_segment_voice_gate_min_ms=200,
         asr_segment_voice_gate_min_rms=0.002,
+        asr_segment_voice_filter_enabled=False,
+        asr_segment_voice_filter_threshold=0.7,
+        asr_segment_voice_filter_pre_ms=5000,
+        asr_segment_voice_filter_tail_ms=5000,
     )
-    assert out.asr_segment_voice_gate_enabled is False
-    assert out.asr_segment_voice_gate_threshold == 0.7
-    assert out.asr_segment_voice_gate_min_ratio == 0.1
-    assert out.asr_segment_voice_gate_min_ms == 200
-    assert out.asr_segment_voice_gate_min_rms == 0.002
+    assert out.asr_segment_voice_gate_enabled == cfg.asr_segment_voice_gate_enabled
+    assert out.asr_segment_voice_gate_threshold == cfg.asr_segment_voice_gate_threshold
+    assert out.asr_segment_voice_gate_min_ratio == cfg.asr_segment_voice_gate_min_ratio
+    assert out.asr_segment_voice_gate_min_ms == cfg.asr_segment_voice_gate_min_ms
+    assert out.asr_segment_voice_gate_min_rms == cfg.asr_segment_voice_gate_min_rms
+    assert out.asr_segment_voice_filter_enabled == cfg.asr_segment_voice_filter_enabled
+    assert out.asr_segment_voice_filter_threshold == cfg.asr_segment_voice_filter_threshold
+    assert out.asr_segment_voice_filter_pre_ms == cfg.asr_segment_voice_filter_pre_ms
+    assert out.asr_segment_voice_filter_tail_ms == cfg.asr_segment_voice_filter_tail_ms
 
 
 def test_asr_silence_removal_threshold_client_overridable() -> None:
