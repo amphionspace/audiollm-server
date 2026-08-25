@@ -84,7 +84,7 @@ AST v3 角色/声纹路由速览：
 | POST | `/api/asr/upload` | 上传整段音频做 ASR（短音频，尾截 60 秒） | `audio`、`language`、`hotwords`、`hotword_pool_id`、`enrollment_id` |
 | POST | `/api/asr/transcriptions` | 异步长音频离线转写（202 + 轮询，会议纪要场景） | `audio`、`language`、`hotwords`、`hotword_pool_id` |
 | GET | `/api/asr/transcriptions/{job_id}` | 查询转写任务状态、进度与分段结果 | — |
-| POST | `/api/asr/enrollment` | 上传目标说话人音频（1-8 秒）注册 | `audio` |
+| POST | `/api/asr/enrollment` | 上传目标说话人音频（5-10 秒）注册 | `audio` |
 | GET | `/api/asr/enrollment/{enrollment_id}` | 查询声纹 ID 是否可用于后续 ASR | — |
 | DELETE | `/api/asr/enrollment/{enrollment_id}` | 删除注册音频 | — |
 | GET | `/api/asr/hotword-pool` | 查询热词池 | `hotword_pool_id`、`query`、`limit`、`offset` |
@@ -287,7 +287,7 @@ python docs/examples/rest_upload.py asr sample.wav \
 
 `effective_hotwords` 是该音频经 RAG-ASR/Triton 实际召回的热词列表，不包含本次请求临时传入的 `hotwords` 追加部分；召回关闭、失败或无结果时为空数组。`text`（流式 `final` 与上传响应一致）默认已做逆文本规范化（ITN，仅中文）与车牌规范化：`六五四三八`→`65438`、`辽b二四五零七`→`辽B24507`；`partial`/中间结果保持口语形式。省份简称被声学误识别成字母（`冀`→`J`）属识别错误，后处理只修数字/字母、不还原省份字。开关 `enable_asr_itn`、`asr_itn_enable_0_to_9`、`enable_asr_plate_normalize` 为服务端 `config.yaml` 配置（`defaults.itn` 分组），不在客户端覆写白名单内；详见各协议文档的“文本规范化”小节。
 
-如需让模型只转写指定说话人的话，先用 `POST /api/asr/enrollment` 上传 1-8 秒目标人语音、拿到 `enrollment_id`，再把它作为表单字段附加到 `/api/asr/upload`，响应里的 `enrollment_used` 会变为 `true`。注册字段、错误码与生命周期见下文“目标说话人注册”。
+如需让模型只转写指定说话人的话，先用 `POST /api/asr/enrollment` 上传 5-10 秒目标人语音、拿到 `enrollment_id`，再把它作为表单字段附加到 `/api/asr/upload`，响应里的 `enrollment_used` 会变为 `true`。注册字段、错误码与生命周期见下文“目标说话人注册”。
 
 ### 长音频离线转写（会议纪要）
 
@@ -337,13 +337,13 @@ curl -X POST http://172.16.0.3:8082/api/asr/enrollment \
 ```json
 {
   "enrollment_id": "ule8QilVjZql30Q9oy9kiQ",
-  "duration_sec": 3.0
+  "duration_sec": 6.0
 }
 ```
 
 #### 请求约束
 
-音频支持 WAV、MP3 和 raw PCM。WAV/MP3 会解码并规范化为 16 kHz mono，其中 MP3 解码依赖服务运行环境可执行 `ffmpeg`；raw PCM 必须是 16 kHz mono s16le，服务端按文件后缀 `.pcm`/`.raw` 或 `audio/pcm` 等 content type 识别，不从裸字节猜测。短于 `asr_enrollment_min_sec`（默认 1.0 秒）返回 400 且 `detail.code=too_short`；长于 `asr_enrollment_max_sec`（默认 8.0 秒）不拒绝，服务端尾截到上限。上传体为空或解码后无音频返回 `detail.code=empty`，格式不在支持范围返回 `detail.code=unsupported_format`，容器损坏或解码失败返回 `detail.code=decode_failed`。
+音频支持 WAV、MP3 和 raw PCM。WAV/MP3 会解码并规范化为 16 kHz mono，其中 MP3 解码依赖服务运行环境可执行 `ffmpeg`；raw PCM 必须是 16 kHz mono s16le，服务端按文件后缀 `.pcm`/`.raw` 或 `audio/pcm` 等 content type 识别，不从裸字节猜测。短于 `asr_enrollment_min_sec`（默认 5.0 秒）返回 400 且 `detail.code=too_short`；长于 `asr_enrollment_max_sec`（默认 10.0 秒）不拒绝，服务端尾截到上限。上传体为空或解码后无音频返回 `detail.code=empty`，格式不在支持范围返回 `detail.code=unsupported_format`，容器损坏或解码失败返回 `detail.code=decode_failed`。
 
 #### 生命周期
 
@@ -507,7 +507,7 @@ REST 接口使用标准 HTTP 状态码：
 {
   "detail": {
     "code": "too_short",
-    "message": "enrollment audio is 0.30s, need at least 1.00s"
+    "message": "enrollment audio is 4.00s, need at least 5.00s"
   }
 }
 ```

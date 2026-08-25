@@ -43,7 +43,7 @@ CAgent 收到小乔端的 ASR 请求后作为代理层调用本文档接口；�
 
 | 方法   | 路径                               | 作用                                         | 请求体 / 参数                                   |
 | ------ | ---------------------------------- | -------------------------------------------- | ----------------------------------------------- |
-| POST   | `/api/asr/enrollment`              | 注册目标说话人声纹，返回 `enrollment_id`     | `multipart/form-data`：`audio`（WAV/MP3/PCM，1~8 秒） |
+| POST   | `/api/asr/enrollment`              | 注册目标说话人声纹，返回 `enrollment_id`     | `multipart/form-data`：`audio`（WAV/MP3/PCM，5~10 秒） |
 | DELETE | `/api/asr/enrollment/{enrollment_id}` | 删除指定声纹注册；未知 id 也返回 204 且无响应体 | 路径参数 `enrollment_id`                        |
 
 **声纹生命周期关键约束**：
@@ -245,14 +245,14 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 
 | 字段 | 类型 | 必填 | 说明 |
 | ---- | ---- | :--: | ---- |
-| audio | File | 是 | WAV 、MP3、PCM文件；服务端解码为 16 kHz mono。短于 1.0 秒返回 400；长于 8.0 秒尾截不拒绝 |
+| audio | File | 是 | WAV 、MP3、PCM文件；服务端解码为 16 kHz mono。短于 5.0 秒返回 400；长于 10.0 秒尾截不拒绝 |
 
 **响应示例**
 
 ```json
 {
   "enrollment_id": "ule8QilVjZql30Q9oy9kiQ",
-  "duration_sec": 3.0
+  "duration_sec": 6.0
 }
 ```
 
@@ -269,14 +269,14 @@ WebSocket  ws(wss)://<host>:<port>/tuling/ast/v3
 {
   "detail": {
     "code": "too_short",
-    "message": "enrollment audio is 0.30s, need at least 1.00s"
+    "message": "enrollment audio is 4.00s, need at least 5.00s"
   }
 }
 ```
 
 | HTTP 状态码 | detail.code | 说明 |
 | ----------- | ----------- | ---- |
-| 400 | `too_short` | 音频短于 1.0 秒 |
+| 400 | `too_short` | 音频短于 5.0 秒 |
 | 400 | `empty` | 上传体为空或解码后无音频 |
 | 400 | `decode_failed` | 音频损坏或解码失败 |
 

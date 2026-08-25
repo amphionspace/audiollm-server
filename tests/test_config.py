@@ -404,6 +404,8 @@ def test_encoder_bypass_requires_recall_invariant() -> None:
 
 def test_triton_enrollment_store_defaults_off_and_server_side() -> None:
     cfg = Config()
+    assert cfg.asr_enrollment_min_sec == 5.0
+    assert cfg.asr_enrollment_max_sec == 10.0
     assert cfg.enable_triton_enrollment_store is False
     assert cfg.enable_enrollment_embedding_bypass is True
     assert "enable_triton_enrollment_store" not in CLIENT_OVERRIDABLE_FIELDS

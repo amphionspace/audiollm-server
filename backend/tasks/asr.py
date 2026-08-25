@@ -25,6 +25,14 @@ from .base import BaseTaskEngine
 logger = logging.getLogger(__name__)
 
 
+def _public_language(value: object) -> str:
+    """Return an outbound language value without placeholder labels."""
+    language = str(value or "").strip()
+    if language.lower() in {"n/a", "na", "unknown", "und", "none", "null", "-"}:
+        return ""
+    return language
+
+
 class AsrTaskEngine(BaseTaskEngine):
     """Drives the existing dual-ASR pipeline against the streaming session."""
 
@@ -240,7 +248,7 @@ class AsrTaskEngine(BaseTaskEngine):
         payload: dict = {
             "type": "final",
             "text": text,
-            "language": detected_lang,
+            "language": _public_language(detected_lang),
             "audio_b64": wav_b64,
             "duration_sec": audio_duration,
             "effective_hotwords": returned_effective_hotwords,
@@ -366,7 +374,7 @@ class AsrTaskEngine(BaseTaskEngine):
         payload = {
             "type": "partial",
             "text": text,
-            "language": ctx.language,
+            "language": _public_language(ctx.language),
             **({"id": snap.id} if snap.id else {}),
         }
         if ctx.enrollment_b64 or ctx.enrollment_id or ctx.enrollment_fallback_reason:
@@ -393,7 +401,7 @@ class AsrTaskEngine(BaseTaskEngine):
                 {
                     "type": "final",
                     "text": "",
-                    "language": ctx.language,
+                    "language": _public_language(ctx.language),
                     "effective_hotwords": [],
                 }
             )

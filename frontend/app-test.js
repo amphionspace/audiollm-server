@@ -85,7 +85,7 @@
     };
 
     function apiLangFromUi(langForUi) {
-      return UI_TO_API_LANG[langForUi] || 'N/A';
+      return UI_TO_API_LANG[langForUi] || '';
     }
 
     let srcLangUi = localStorage.getItem('asr_src_lang') || 'chinese';

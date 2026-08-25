@@ -67,7 +67,7 @@
   };
 
   function apiLangFromUi(langForUi) {
-    return UI_TO_API_LANG[langForUi] || 'N/A';
+    return UI_TO_API_LANG[langForUi] || '';
   }
 
   let srcLangUi = localStorage.getItem('asr_src_lang') || 'chinese';
@@ -898,7 +898,7 @@
   function langDisplayName(value) {
     if (!value) return '';
     const v = String(value).trim();
-    if (!v) return '';
+    if (!v || /^(?:n\/?a|unknown|und|null|none|-)$/i.test(v)) return '';
     return t(`lang.name.${v}`, { defaultValue: v });
   }
 

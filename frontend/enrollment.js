@@ -3,7 +3,7 @@
  *
  * Responsibilities
  * ----------------
- * - Capture an enrollment clip (1–8 s) either by file upload or by
+ * - Capture an enrollment clip (5–10 s) either by file upload or by
  *   microphone recording, decode/resample to 16 kHz mono WAV in the
  *   browser, and ``POST /api/asr/enrollment`` to obtain an opaque
  *   ``enrollment_id``. The caller (app.js) then forwards the id on
@@ -29,13 +29,13 @@
   'use strict';
 
   const TARGET_SR = 16000;
-  // Backend caps at 8 s; we mirror the lower bound at 1 s so users see
+  // Mirror the backend's 5–10 s window so users see
   // a friendly error before the request even leaves the browser.
-  const MIN_DURATION_SEC = 1.0;
-  const MAX_DURATION_SEC = 8.0;
-  // 3 s record default is a comfortable utterance length and well
-  // within the target-speaker enrollment distribution.
-  const DEFAULT_RECORD_SEC = 3.0;
+  const MIN_DURATION_SEC = 5.0;
+  const MAX_DURATION_SEC = 10.0;
+  // Let users stop manually once they have recorded enough speech, and
+  // hard-stop at the upper bound so every automatic recording is valid.
+  const DEFAULT_RECORD_SEC = MAX_DURATION_SEC;
 
   /**
    * Pick a MediaRecorder mime type the browser can actually encode. The
@@ -299,7 +299,7 @@
         setHint('asr.enroll.error.tooShort', { sec: sec.toFixed(2), min: MIN_DURATION_SEC });
         return;
       }
-      // No early reject on overflow — the backend tail-trims to 8 s
+      // No early reject on overflow — the backend tail-trims to 10 s
       // and reports the canonical duration in its response. Surface
       // the trim via a hint after upload succeeds.
       await uploadWavBytes(decoded.wav, decoded.pcm);
@@ -396,7 +396,7 @@
       mediaRecorder.start(250);
 
       // Hard stop after DEFAULT_RECORD_SEC so the user doesn't accidentally
-      // overflow the 8 s cap. The user can also stop early via the
+      // overflow the 10 s cap. The user can also stop early via the
       // toggle button (handled in the click handler below).
       recordTimer = setTimeout(() => {
         if (mediaRecorder && mediaRecorder.state === 'recording') {

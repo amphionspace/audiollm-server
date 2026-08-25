@@ -2,7 +2,7 @@
 
 `/transcribe-streaming` 用于实时语音转写。客户端通过 WebSocket 发送 16 kHz mono s16le PCM 音频流，服务端按 VAD 语音段返回中间结果和最终结果。
 
-可选支持目标说话人识别（TS-ASR）：客户端先通过 `POST /api/asr/enrollment` 上传一段 1-8 秒的目标说话人音频，拿到 `enrollment_id`；后续的 WebSocket `start` / `update_hotwords` 或 REST `/api/asr/upload` 携带该 id 即可进入双音频 prompt（先 enrollment 后 target）的 TS-ASR 模式。不传 `enrollment_id` 时与普通 ASR 完全一致。
+可选支持目标说话人识别（TS-ASR）：客户端先通过 `POST /api/asr/enrollment` 上传一段 5-10 秒的目标说话人音频，拿到 `enrollment_id`；后续的 WebSocket `start` / `update_hotwords` 或 REST `/api/asr/upload` 携带该 id 即可进入双音频 prompt（先 enrollment 后 target）的 TS-ASR 模式。不传 `enrollment_id` 时与普通 ASR 完全一致。
 
 REST 上传版本见本文末尾的 `/api/asr/upload`，注册音频接口见 `/api/asr/enrollment`。
 
@@ -155,7 +155,7 @@ Client                                      Server
 | `type` | string | `partial` 或 `partial_asr` |
 | `id` | string | 语音段 ID；可能不存在 |
 | `text` | string | 当前语音段的临时转写文本，保持口语形式（不做 ITN/车牌规范化） |
-| `language` | string | 检测或传入的语言 |
+| `language` | string | 检测或传入的语言；未检测到时为空字符串，不返回 `N/A` |
 
 ### final / final_asr
 
@@ -177,7 +177,7 @@ Client                                      Server
 | `type` | string | `final` 或 `final_asr` |
 | `id` | string | 语音段 ID；可能不存在 |
 | `text` | string | 最终转写文本，默认已做逆文本规范化（ITN）与车牌规范化，见下方说明 |
-| `language` | string | 检测或传入的语言 |
+| `language` | string | 检测或传入的语言；未检测到时为空字符串，不返回 `N/A` |
 | `effective_hotwords` | string[] | 本段音频经 RAG-ASR/Triton 热词召回得到的热词列表；不包含 `start.hotwords` / `update_hotwords` 里的临时请求热词。召回关闭、失败或无召回结果时为空数组 |
 | `duration_sec` | number | 本次推理使用的音频时长；部分流式消息可能不带 |
 | `audio_b64` | string | 实际送入 LLM ASR 的 WAV base64，用于前端回放；为空 final 不带。k2 模式下原始段来自 endpoint 对应的本地缓冲，不由本地 VAD 重新决定端点；但送模前仍可按 `asr_segment_voice_filter_*` 裁去非人声区间，此字段反映裁剪后的实际音频 |
@@ -312,13 +312,13 @@ python docs/examples/rest_upload.py asr sample.wav \
 
 ## 目标说话人注册接口
 
-`POST /api/asr/enrollment` 上传一段 1-8 秒的目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le）。默认配置下服务端把音频规范化为 16 kHz mono WAV、写入 demo 进程内缓存，并返回不透明的 `enrollment_id`；当 `enable_triton_enrollment_store=true` 且配置了 RAG-ASR 管理服务时，新注册音频会转发给 RAG-ASR，RAG-ASR 将 projector frames tensor 和元数据落盘到 `enrollment_store_dir/<enrollment_scope_id>/<enrollment_id>.pt/.json`（默认 `var/enrollments`），本服务和 RAG-ASR 都不保存原始注册音频。后续 WebSocket `start` / `update_hotwords` 或 `/api/asr/upload` 携带该 id 时，主模型 prompt 自动切换为 TS-ASR 双音频形态（先 enrollment 后 target），具体文本位置由服务端 `prompt_template` 随模型选择。
+`POST /api/asr/enrollment` 上传一段 5-10 秒的目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le）。默认配置下服务端把音频规范化为 16 kHz mono WAV、写入 demo 进程内缓存，并返回不透明的 `enrollment_id`；当 `enable_triton_enrollment_store=true` 且配置了 RAG-ASR 管理服务时，新注册音频会转发给 RAG-ASR，RAG-ASR 将 projector frames tensor 和元数据落盘到 `enrollment_store_dir/<enrollment_scope_id>/<enrollment_id>.pt/.json`（默认 `var/enrollments`），本服务和 RAG-ASR 都不保存原始注册音频。后续 WebSocket `start` / `update_hotwords` 或 `/api/asr/upload` 携带该 id 时，主模型 prompt 自动切换为 TS-ASR 双音频形态（先 enrollment 后 target），具体文本位置由服务端 `prompt_template` 随模型选择。
 
 ### 请求
 
 | 表单字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `audio` | file | 是 | WAV、MP3 或 raw PCM；raw PCM 必须是 16 kHz mono s16le，建议使用 `.pcm`/`.raw` 后缀或 `audio/pcm` content type；服务端解码为 16 kHz mono 并尾截到 8 秒以内 |
+| `audio` | file | 是 | WAV、MP3 或 raw PCM；raw PCM 必须是 16 kHz mono s16le，建议使用 `.pcm`/`.raw` 后缀或 `audio/pcm` content type；服务端解码为 16 kHz mono 并尾截到 10 秒以内 |
 
 ### 成功响应
 
@@ -327,7 +327,7 @@ HTTP 200。
 ```json
 {
   "enrollment_id": "ule8QilVjZql30Q9oy9kiQ",
-  "duration_sec": 3.0
+  "duration_sec": 6.0
 }
 ```
 
@@ -344,7 +344,7 @@ HTTP 400，`detail` 为结构化对象：
 {
   "detail": {
     "code": "too_short",
-    "message": "enrollment audio is 0.30s, need at least 1.00s"
+    "message": "enrollment audio is 4.00s, need at least 5.00s"
   }
 }
 ```
@@ -352,11 +352,11 @@ HTTP 400，`detail` 为结构化对象：
 | code | 含义 |
 |---|---|
 | empty | 上传体为空或解码后没有音频帧 |
-| too_short | 音频时长不足 `asr_enrollment_min_sec`（默认 1.0 秒） |
+| too_short | 音频时长不足 `asr_enrollment_min_sec`（默认 5.0 秒） |
 | unsupported_format | 不是 WAV/MP3/raw PCM |
 | decode_failed | 容器损坏或解码失败 |
 
-时长超过上限不会拒绝，服务端会自动尾截到 `asr_enrollment_max_sec`（默认 8.0 秒）。
+时长超过上限不会拒绝，服务端会自动尾截到 `asr_enrollment_max_sec`（默认 10.0 秒）。
 
 ### 删除注册音频
 
@@ -366,8 +366,8 @@ HTTP 400，`detail` 为结构化对象：
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
-| asr_enrollment_min_sec | 1.0 | 最小时长，低于此值返回 too_short |
-| asr_enrollment_max_sec | 8.0 | 最大时长，超出尾截 |
+| asr_enrollment_min_sec | 5.0 | 最小时长，低于此值返回 too_short |
+| asr_enrollment_max_sec | 10.0 | 最大时长，超出尾截 |
 | asr_enrollment_ttl_sec | 3600 | demo 本地进程内缓存 TTL；最近一次 get 后重新计时。RAG-ASR 下沉链路不使用该 TTL 自动删除落盘 embedding |
 | asr_enrollment_max_entries | 256 | demo 本地进程内缓存条目上限；RAG-ASR 的 enrollment cache 上限只影响内存热缓存，不删除磁盘文件 |
 

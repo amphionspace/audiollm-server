@@ -238,7 +238,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 ```json
 {
   "enrollment_id": "ule8QilVjZql30Q9oy9kiQ",
-  "duration_sec": 3.0
+  "duration_sec": 6.0
 }
 ```
 
@@ -246,7 +246,7 @@ WebSocket ws(wss)://<host>:<port>/tuling/ast/v3
 
 | HTTP 状态码 | `detail.code` | 说明 |
 | ---- | ---- | ---- |
-| 400 | `too_short` | 音频短于 1.0 秒 |
+| 400 | `too_short` | 音频短于 5.0 秒 |
 | 400 | `empty` | 上传体为空或解码后无音频 |
 | 400 | `unsupported_format` | 上传格式不是 WAV、MP3 或 16 kHz mono s16le PCM |
 | 400 | `decode_failed` | 音频损坏或解码失败 |

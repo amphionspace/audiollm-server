@@ -233,11 +233,11 @@ class Config:
     # text and audio in the user turn; Amphion 1.7B puts the instruction in
     # the system turn and keeps the user turn audio-only. The clip is cached
     # server-side for the duration of a session so the WS stream does not have
-    # to retransmit it on every VAD segment. Trained distributions use 1–8 s
+    # to retransmit it on every VAD segment. Trained distributions use 5–10 s
     # enrollment clips; anything outside that window is silently OOD even when
     # the API accepts it.
-    asr_enrollment_min_sec: float = 1.0
-    asr_enrollment_max_sec: float = 8.0
+    asr_enrollment_min_sec: float = 5.0
+    asr_enrollment_max_sec: float = 10.0
     asr_enrollment_ttl_sec: float = 3600.0
     asr_enrollment_max_entries: int = 256
     # Compatibility-first rollout: when false, target-speaker enrollment keeps
