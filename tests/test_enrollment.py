@@ -321,20 +321,20 @@ def test_audio_only_messages_has_no_text_item():
 
 
 def test_decode_and_validate_happy_path():
-    b64, dur = decode_and_validate(_wav_b64(3.0), min_sec=1.0, max_sec=8.0)
+    b64, dur = decode_and_validate(_wav_b64(6.0), min_sec=5.0, max_sec=10.0)
     assert isinstance(b64, str) and b64
-    assert dur == pytest.approx(3.0, abs=0.05)
+    assert dur == pytest.approx(6.0, abs=0.05)
 
 
 def test_decode_and_validate_audio_bytes_accepts_raw_pcm():
     b64, dur = decode_and_validate_audio_bytes(
-        _pcm_s16le_bytes(2.0),
+        _pcm_s16le_bytes(6.0),
         audio_format="pcm",
-        min_sec=1.0,
-        max_sec=8.0,
+        min_sec=5.0,
+        max_sec=10.0,
     )
     assert isinstance(b64, str) and b64
-    assert dur == pytest.approx(2.0, abs=0.05)
+    assert dur == pytest.approx(6.0, abs=0.05)
 
 
 def test_decode_and_validate_audio_bytes_rejects_unknown_format():
@@ -350,15 +350,15 @@ def test_decode_and_validate_audio_bytes_rejects_unknown_format():
 
 def test_decode_and_validate_too_short_raises():
     with pytest.raises(EnrollmentError) as exc:
-        decode_and_validate(_wav_b64(0.4), min_sec=1.0, max_sec=8.0)
+        decode_and_validate(_wav_b64(4.0), min_sec=5.0, max_sec=10.0)
     assert exc.value.code == "too_short"
 
 
 def test_decode_and_validate_tail_trims_when_too_long():
     """Overflows tail-trim rather than reject — matches the existing
     ASR / emotion upload convention."""
-    b64, dur = decode_and_validate(_wav_b64(12.0), min_sec=1.0, max_sec=8.0)
-    assert dur == pytest.approx(8.0, abs=0.05)
+    b64, dur = decode_and_validate(_wav_b64(12.0), min_sec=5.0, max_sec=10.0)
+    assert dur == pytest.approx(10.0, abs=0.05)
 
 
 def test_decode_and_validate_rejects_empty():

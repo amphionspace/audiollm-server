@@ -1,6 +1,6 @@
 """In-process enrollment cache for target-speaker ASR.
 
-The frontend uploads a 1–8 second enrollment clip (file or mic-recorded)
+The frontend uploads a 5–10 second enrollment clip (file or mic-recorded)
 once via ``POST /api/asr/enrollment`` and gets back an opaque
 ``enrollment_id``. The realtime WS sessions and the REST upload endpoint
 then dereference that id to fetch the base64 WAV that needs to be
@@ -22,7 +22,7 @@ Design notes (first principles):
   reconnects. ``asr_enrollment_ttl_sec`` (default 1h) is generous.
 * **Capacity** — bounded by ``asr_enrollment_max_entries`` (default
   256). When full we evict the LRU entry. The cap is a memory safety
-  rail (each entry is ~256 KB for 8s @ 16 kHz / 16-bit), not a
+  rail (each entry is ~320 KB for 10s @ 16 kHz / 16-bit), not a
   business rule.
 * **Duration validation** — done at upload time, so by the time a WS
   session resolves the id we already know the clip is in [min, max] s.

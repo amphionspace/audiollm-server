@@ -798,7 +798,7 @@ async def _run_dual_asr_upload(
 async def asr_enrollment_create(audio: UploadFile = File(...)):
     """Cache a target-speaker enrollment clip and return its opaque id.
 
-    The frontend uploads a 1–8 s clip once (file or mic recording) and
+    The frontend uploads a 5–10 s clip once (file or mic recording) and
     then passes the returned ``enrollment_id`` on every ``/api/asr/upload``
     call and the WS ``start`` payload. The server validates duration,
     canonicalises to 16 kHz mono WAV, and stores the base64 result so

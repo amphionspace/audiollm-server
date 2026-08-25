@@ -964,6 +964,25 @@ async def test_asr_engine_on_stop_emits_empty_final_when_nothing_sent():
 
 
 @pytest.mark.asyncio
+async def test_asr_engine_hides_unknown_language_placeholder():
+    sent: list[dict] = []
+
+    async def _send_json(payload):
+        sent.append(payload)
+        return True
+
+    ctx = SessionContext(
+        cfg=load_config(),
+        language="N/A",
+        src_lang="N/A",
+        send_json=_send_json,
+    )
+    await AsrTaskEngine().on_stop(ctx, sent_any_response=False, stopped=True)
+
+    assert sent == [{"type": "final", "text": "", "language": "", "effective_hotwords": []}]
+
+
+@pytest.mark.asyncio
 async def test_asr_engine_on_stop_silent_when_response_sent():
     sent: list[dict] = []
 

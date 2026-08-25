@@ -128,8 +128,8 @@ defaults:
     enable_asr_plate_normalize: true
     enable_asr_repetition_fix: true
   enrollment:
-    asr_enrollment_min_sec: 1.0
-    asr_enrollment_max_sec: 8.0
+    asr_enrollment_min_sec: 5.0
+    asr_enrollment_max_sec: 10.0
     asr_enrollment_ttl_sec: 3600
     asr_enrollment_max_entries: 256       # 进程级 store 容量(非 per-endpoint)
     enable_triton_enrollment_store: false # 关闭时保持本地注册音频缓存；灰度打开后转发管理服务保存 embedding tensor

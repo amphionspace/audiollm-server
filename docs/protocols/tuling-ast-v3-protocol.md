@@ -170,8 +170,8 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 
 | 字段 | 类型 | 默认 | 含义 | 本端点 |
 |---|---|---|---|---|
-| asr_enrollment_min_sec | float（秒） | 1.0 | 注册音频最小时长，低于返回 too_short | 首帧覆写无可观察效果，见表后说明 |
-| asr_enrollment_max_sec | float（秒） | 8.0 | 注册音频最大时长，超出尾截 | 首帧覆写无可观察效果 |
+| asr_enrollment_min_sec | float（秒） | 5.0 | 注册音频最小时长，低于返回 too_short | 首帧覆写无可观察效果，见表后说明 |
+| asr_enrollment_max_sec | float（秒） | 10.0 | 注册音频最大时长，超出尾截 | 首帧覆写无可观察效果 |
 | asr_enrollment_ttl_sec | float（秒） | 3600 | 注册缓存 TTL，最近一次使用后重新计时 | 首帧覆写无可观察效果 |
 
 这三项只在注册接口 `POST /api/asr/enrollment`（独立的 REST 调用，按服务端默认执行）生效。AST v3 首帧经 `parameter.asr_config.enrollment_id` 携带的是已注册 id，本端点既不重新注册、也不消费这些值，因此在 `parameter.asr_config` 里覆写这些生命周期参数不会改变本连接的目标说话人行为。
@@ -232,7 +232,7 @@ TS-ASR 注册参数（约束注册接口的时长校验与缓存 TTL）：
 
 支持只转写指定说话人的语音，复用与 `/transcribe-streaming` 相同的注册机制，分两步：
 
-1. 注册：通过 `POST /api/asr/enrollment` 上传 1-8 秒目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le），拿到 `enrollment_id`（见 [API 总览](../api-reference.md) 的注册接口）。默认 demo 本地缓存注册音频；打开 `enable_triton_enrollment_store=true` 且配置 RAG-ASR 管理服务后，新注册音频会转发给 RAG-ASR，并由 RAG-ASR 将 embedding tensor 和元数据落盘到本地 `enrollment_store_dir`（默认 `var/enrollments`）。
+1. 注册：通过 `POST /api/asr/enrollment` 上传 5-10 秒目标说话人音频，支持 WAV、MP3 和 raw PCM（16 kHz mono s16le），拿到 `enrollment_id`（见 [API 总览](../api-reference.md) 的注册接口）。默认 demo 本地缓存注册音频；打开 `enable_triton_enrollment_store=true` 且配置 RAG-ASR 管理服务后，新注册音频会转发给 RAG-ASR，并由 RAG-ASR 将 embedding tensor 和元数据落盘到本地 `enrollment_store_dir`（默认 `var/enrollments`）。
 2. 携带：在首帧（status=0）设置 `parameter.asr_config.enable_role_separation=false`、`enrollment_enable=true`，并把该 id 放进 `parameter.asr_config.enrollment_id`。
 
 ```json
