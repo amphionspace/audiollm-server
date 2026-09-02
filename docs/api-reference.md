@@ -65,6 +65,10 @@ Qwen3-ASR-1.7B，且不使用 k2 或副模型。录音期间每个 VAD final 都
 drain。完整协议见
 [增强语音识别 WebSocket 协议](protocols/clean-stream-protocol.md)。
 
+clean-stream 不设置 60 秒会话硬上限。cleanup 使用保守 prompt，并在下发前检查
+相似度、长度、数字、英文缩写及 glossary 术语；不可信结果回退原始 ASR，最终
+`cleanup_status=degraded_raw_only`。
+
 `/transcribe-streaming` 的 `final` / `final_asr` 消息除文本外会带实际送入 LLM ASR 的 `audio_b64`（WAV base64）、`duration_sec` 和 `effective_hotwords`（本段音频经 RAG-ASR/Triton 实际召回的热词列表，不含临时请求热词），主前端用音频字段做分段回放、可用 `effective_hotwords` 展示本段召回命中。k2 模式下原始段仍来自 endpoint 对应的本地缓冲，不由本地 VAD 重新决定端点；但 `audio_b64` 会反映送模前 `asr_segment_voice_filter_*` 的裁剪结果。完整字段见 [实时转写 WebSocket 协议](protocols/transcribe-streaming-protocol.md)。服务端开启 `debug_dump_enabled`（`defaults.debug`，运维级、不在客户端覆写白名单）后，`ready` 带 `session_id`/`dump_dir`、`final` 带 `dump_id`，并把每段音频+元信息落盘到 `<dump_dir>/<session_id>/<seg_id>.{wav,json}`，前端在气泡上显示可复制的 `dump_id`，用于回放/最终结果对账，详见协议文档“调试落盘”小节。
 
 `/tuling/ast/v3` 与上面两个任务接口的线上协议不同：音频以 base64 放在 JSON 帧，`header.status`（0/1/2）驱动状态机，无 `ready`/`start`/`stop`，结果为词图结构。模型组合上也不同：本端点恒为 primary-only（强制关闭副模型/本地 Qwen/融合，客户端无法经 `parameter.asr_config` 重开），主模型由 `astv3_vllm_*` 指定（当前留空，回退全局 primary `vllm_base_url`），而 `/transcribe-streaming` 仍按 `config.yaml` 走双模型。角色分离默认开启：PCM 并行送入独立 Streaming Sortformer sidecar 与 VAD/k2，原始段按 speaker turn 重切后串行识别，最多 4 位会话内匿名角色；sidecar 故障时本会话 fail-open 为普通 ASR。临时热词放 `payload.text.text`；热词池隔离只用首帧 `parameter.asr_config.hotword_pool_id`；目标说话人先经 `POST /api/asr/enrollment` 注册，再在首帧设置 `enable_role_separation=false`、`enrollment_enable=true` 和 `enrollment_id`。`header.resIdList` 仅记录并忽略。它不遵循下文“WebSocket 调用流程”，详见 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)。

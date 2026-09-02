@@ -10,8 +10,10 @@ import json
 import logging
 import re
 import secrets
+import unicodedata
 import wave
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Any
 
 import numpy as np
@@ -28,8 +30,8 @@ router = APIRouter()
 
 SAMPLE_RATE = 16_000
 BYTES_PER_SECOND = SAMPLE_RATE * 2
-MAX_AUDIO_BYTES = BYTES_PER_SECOND * 60
 _ASR_PREFIX = re.compile(r"^language\s+[^<]+<asr_text>", re.IGNORECASE)
+_ASCII_TOKEN = re.compile(r"\b[A-Z][A-Z0-9-]+\b")
 
 BUILTIN_HOTWORDS: dict[str, list[str]] = {
     "finance": ["AUM", "ETF", "IPO", "净值", "市盈率"],
@@ -121,7 +123,9 @@ async def transcribe_qwen(pcm: bytes, options: SessionOptions) -> str:
     return _ASR_PREFIX.sub("", text).strip()
 
 
-def _refine_prompt(text: str, options: SessionOptions, emotion: dict[str, Any] | None) -> list[dict[str, str]]:
+def _refine_prompt(
+    text: str, options: SessionOptions, emotion: dict[str, Any] | None
+) -> list[dict[str, str]]:
     mode = "translation" if options.translate_mode else "cleanup"
     if mode == "translation":
         instruction = (
@@ -129,8 +133,38 @@ def _refine_prompt(text: str, options: SessionOptions, emotion: dict[str, Any] |
             "Return only the translation. Do not explain or add information."
         )
     else:
-        strictness = "只修正标点、空格、数字格式和术语" if options.cleanup_level == "light" else "可同时删除明显口头语和重复词，但不得改写或增加事实"
-        instruction = f"精修 ASR 文本：{strictness}。只返回最终文本，不要解释。"
+        instructions = [
+            "你是实时语音识别结果的保守清洗器。",
+            "如果原文已经正确，必须原样返回；宁可少改，不要猜测。",
+            "不得增加原文没有的信息，不得改写句意，不得润色或总结。",
+            "不得改变数字的数值、英文缩写以及术语表之外的人名、机构名、品牌名和产品名。",
+            "只返回清洗后的正文，不要解释、标题、引号或 Markdown。",
+        ]
+        if options.cleanup_level == "light":
+            instructions.append(
+                "light 模式只允许调整标点、空格、大小写、数字格式，"
+                "以及有充分依据的术语表纠错；不得替换普通词语。"
+            )
+        else:
+            instructions.append(
+                "standard 模式可额外删除非常明显的语气词和紧邻重复词，但仍不得重写句子。"
+            )
+        if options.glossary:
+            instructions.extend(
+                [
+                    "术语表中的词是用户指定的规范写法。必须逐项检查原文是否存在"
+                    "明显同音、近音、中文音译或英文拼写误识别；确认对应时替换为规范写法。",
+                    "英文术语可能被 ASR 写成发音相近的汉字，这属于应当纠正的术语误识别。",
+                    "无法确认原文指向该术语时保持原文，禁止为了使用术语表而凭空插入词语。",
+                    f"术语表：{', '.join(options.glossary)}",
+                ]
+            )
+        if emotion:
+            instructions.append(
+                "情感描述只可用于选择句号、问号、感叹号或停顿；"
+                "绝对不能据此增删或替换任何字词，也不要添加 emoji。"
+            )
+        instruction = "\n".join(instructions)
     payload = {
         "asr_text": text,
         "language": options.language,
@@ -141,6 +175,84 @@ def _refine_prompt(text: str, options: SessionOptions, emotion: dict[str, Any] |
         {"role": "system", "content": instruction},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
     ]
+
+
+def _normalize_for_compare(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    return "".join(char for char in normalized if char.isalnum())
+
+
+def _is_scoped_glossary_replacement(
+    original_cmp: str, candidate_cmp: str, canonical_terms: list[str]
+) -> bool:
+    """Allow a canonical term to replace a small local ASR error, not be inserted."""
+    remainder = candidate_cmp
+    canonical_size = 0
+    for term in canonical_terms:
+        normalized_term = _normalize_for_compare(term)
+        canonical_size += len(normalized_term)
+        remainder = remainder.replace(normalized_term, "", 1)
+    if not remainder:
+        return False
+    blocks = SequenceMatcher(None, original_cmp, remainder).get_matching_blocks()
+    matched = sum(block.size for block in blocks)
+    unmatched_original = len(original_cmp) - matched
+    candidate_coverage = matched / len(remainder)
+    return candidate_coverage >= 0.90 and 1 <= unmatched_original <= max(4, canonical_size)
+
+
+def evaluate_cleanup_result(
+    original: str,
+    candidate: str,
+    cleanup_level: str,
+    glossary: list[str],
+) -> tuple[bool, str]:
+    """Reject cleanup output that is more likely to be a rewrite than a correction."""
+    original_cmp = _normalize_for_compare(original)
+    candidate_cmp = _normalize_for_compare(candidate)
+    if not candidate_cmp:
+        return False, "empty"
+    if not original_cmp:
+        return False, "empty_original"
+
+    original_digits = "".join(
+        char for char in unicodedata.normalize("NFKC", original) if char.isdigit()
+    )
+    candidate_digits = "".join(
+        char for char in unicodedata.normalize("NFKC", candidate) if char.isdigit()
+    )
+    if original_digits != candidate_digits:
+        return False, "digits_changed"
+
+    for token in _ASCII_TOKEN.findall(original):
+        if token not in candidate:
+            return False, f"ascii_token_dropped:{token}"
+    for term in glossary:
+        if term.casefold() in original.casefold() and term.casefold() not in candidate.casefold():
+            return False, f"glossary_term_dropped:{term}"
+
+    similarity = SequenceMatcher(None, original_cmp, candidate_cmp).ratio()
+    length_ratio = len(candidate_cmp) / len(original_cmp)
+    if cleanup_level == "light":
+        min_similarity, min_length, max_length = (0.94, 0.88, 1.12)
+    else:
+        min_similarity, min_length, max_length = (0.82, 0.75, 1.20)
+    newly_canonical_terms = [
+        term
+        for term in glossary
+        if term.casefold() in candidate.casefold() and term.casefold() not in original.casefold()
+    ]
+    if newly_canonical_terms:
+        if _is_scoped_glossary_replacement(original_cmp, candidate_cmp, newly_canonical_terms):
+            if 0.65 <= length_ratio <= 1.60:
+                return True, "ok"
+            return False, f"length_ratio:{length_ratio:.3f}"
+        min_similarity = min(min_similarity, 0.78)
+    if similarity < min_similarity:
+        return False, f"similarity:{similarity:.3f}"
+    if not min_length <= length_ratio <= max_length:
+        return False, f"length_ratio:{length_ratio:.3f}"
+    return True, "ok"
 
 
 async def refine_text(text: str, options: SessionOptions, emotion: dict[str, Any] | None) -> str:
@@ -179,7 +291,7 @@ async def infer_emotion(pcm: bytes, options: SessionOptions) -> dict[str, Any]:
 def compute_delta(previous_text: str, current_text: str) -> str:
     """Match the referenced clean-stream protocol's cumulative-text delta."""
     if current_text.startswith(previous_text):
-        return current_text[len(previous_text):]
+        return current_text[len(previous_text) :]
     if previous_text.startswith(current_text):
         return ""
     prefix_len = 0
@@ -241,14 +353,31 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                 await send({"type": "emotion.bucket", "segment_index": index, "emotion": emotion})
             if options.translate_mode or options.cleanup_level != "off":
                 processed = await refine_text(text, options, emotion)
+                guardrail_status = "not_applicable"
+                if not options.translate_mode:
+                    accepted, reason = evaluate_cleanup_result(
+                        text, processed, options.cleanup_level, options.glossary
+                    )
+                    if not accepted:
+                        logger.warning(
+                            "clean-stream segment %d cleanup rejected: %s", index, reason
+                        )
+                        postprocess_failed = True
+                        processed = text
+                        guardrail_status = f"rejected:{reason}"
+                    else:
+                        guardrail_status = "accepted"
                 processed_segments[index] = processed
-                await send({
-                    "type": "postprocess.delta",
-                    "postprocess_mode": "translation" if options.translate_mode else "cleanup",
-                    "delta": processed,
-                    "text": processed,
-                    "segment_index": index,
-                })
+                await send(
+                    {
+                        "type": "postprocess.delta",
+                        "postprocess_mode": "translation" if options.translate_mode else "cleanup",
+                        "delta": processed,
+                        "text": processed,
+                        "segment_index": index,
+                        "guardrail_status": guardrail_status,
+                    }
+                )
         except Exception as exc:
             postprocess_failed = True
             processed_segments[index] = text
@@ -273,11 +402,13 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                         continue
                     current = _join_segments([*raw_segments, partial_tail])
                     if current and current != emitted_text:
-                        await send({
-                            "type": "transcription.delta",
-                            "delta": compute_delta(emitted_text, current),
-                            "text": current,
-                        })
+                        await send(
+                            {
+                                "type": "transcription.delta",
+                                "delta": compute_delta(emitted_text, current),
+                                "text": current,
+                            }
+                        )
                         emitted_text = current
                     continue
                 segment_text = await transcribe_qwen(pcm, options)
@@ -286,11 +417,13 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                 raw_segments.append(segment_text)
                 current = _join_segments(raw_segments)
                 if current != emitted_text:
-                    await send({
-                        "type": "transcription.delta",
-                        "delta": compute_delta(emitted_text, current),
-                        "text": current,
-                    })
+                    await send(
+                        {
+                            "type": "transcription.delta",
+                            "delta": compute_delta(emitted_text, current),
+                            "text": current,
+                        }
+                    )
                     emitted_text = current
                 index = len(raw_segments) - 1
                 postprocess_tasks.append(
@@ -325,17 +458,25 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                 stream = VadSegmentedStream(enable_partial=True)
                 stream.configure(load_config())
                 worker = asyncio.create_task(process_events())
-                await websocket.send_json({
-                    "type": "session.updated",
-                    "session": {"id": session_id},
-                    "language": options.language,
-                    "cleanup": {"level": options.cleanup_level, "text_emotion": options.text_emotion},
-                    "translate_mode": options.translate_mode,
-                    "postprocess_mode": "translation" if options.translate_mode else "cleanup",
-                    "target_language": options.target_language,
-                    "hotwords": {"builtin": options.builtin, "custom_count": len(options.custom)},
-                    "fallback_active": False,
-                })
+                await websocket.send_json(
+                    {
+                        "type": "session.updated",
+                        "session": {"id": session_id},
+                        "language": options.language,
+                        "cleanup": {
+                            "level": options.cleanup_level,
+                            "text_emotion": options.text_emotion,
+                        },
+                        "translate_mode": options.translate_mode,
+                        "postprocess_mode": "translation" if options.translate_mode else "cleanup",
+                        "target_language": options.target_language,
+                        "hotwords": {
+                            "builtin": options.builtin,
+                            "custom_count": len(options.custom),
+                        },
+                        "fallback_active": False,
+                    }
+                )
                 continue
             if options is None:
                 await send_error("invalid_state", "Send session.update before streaming audio.")
@@ -349,10 +490,6 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                 if not chunk:
                     await send_error("invalid_audio", "audio field is required.")
                     continue
-                if total_audio_bytes + len(chunk) > MAX_AUDIO_BYTES:
-                    await send_error("audio_too_long", "Audio exceeds 60 seconds.")
-                    await websocket.close(code=1009)
-                    return
                 total_audio_bytes += len(chunk)
                 assert stream is not None
                 await enqueue_events(list(stream.feed(chunk)))
@@ -379,9 +516,13 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                     await asyncio.gather(*postprocess_tasks)
                 final_text = _join_segments(raw_segments)
                 result: dict[str, Any] = {
-                    "type": "transcription.done", "session_id": session_id,
+                    "type": "transcription.done",
+                    "session_id": session_id,
                     "text": final_text,
-                    "usage": {"type": "duration", "seconds": round(total_audio_bytes / BYTES_PER_SECOND, 3)},
+                    "usage": {
+                        "type": "duration",
+                        "seconds": round(total_audio_bytes / BYTES_PER_SECOND, 3),
+                    },
                     "language": options.language,
                     "builtin_hotword_lists": options.builtin,
                     "custom_hotword_count": len(options.custom),
@@ -391,10 +532,15 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                     "asr_fallback_used": False,
                 }
                 if options.translate_mode or options.cleanup_level != "off":
-                    status_key = "translation_status" if options.translate_mode else "cleanup_status"
+                    status_key = (
+                        "translation_status" if options.translate_mode else "cleanup_status"
+                    )
                     text_key = "translated_text" if options.translate_mode else "cleaned_text"
                     result[text_key] = _join_segments(
-                        [processed_segments.get(index, text) for index, text in enumerate(raw_segments)]
+                        [
+                            processed_segments.get(index, text)
+                            for index, text in enumerate(raw_segments)
+                        ]
                     )
                     result[status_key] = "degraded_raw_only" if postprocess_failed else "completed"
                 await websocket.send_json(result)

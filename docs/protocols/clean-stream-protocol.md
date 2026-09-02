@@ -12,7 +12,8 @@ Gateway。识别只使用本机 `Qwen3-ASR-1.7B` HTTP 非流式模型，以累�
 客户端不能传入 URL、模型或密钥。
 
 音频固定为 16 kHz、单声道、PCM signed 16-bit little-endian，在 JSON 中用 base64
-编码。单会话最长 60 秒。
+编码。该持续 WebSocket 不设置 60 秒会话硬上限；服务端通过 VAD 分段处理音频，
+不会为了最终识别缓存整场录音。
 
 ## 消息流程
 
@@ -94,8 +95,14 @@ glossary，用于术语纠错；`off` 不承诺热词生效。
 refine 或翻译结果：
 
 ```json
-{"type":"postprocess.delta","postprocess_mode":"cleanup","segment_index":0,"delta":"今天天气。","text":"今天天气。"}
+{"type":"postprocess.delta","postprocess_mode":"cleanup","segment_index":0,"delta":"今天天气。","text":"今天天气。","guardrail_status":"accepted"}
 ```
+
+cleanup 输出会经过保守 guardrail：检查与原文的相似度、长度、数字、英文缩写及已出现
+的 glossary 术语。输出疑似改写或丢失关键信息时，`text` 回退为原始句段，
+`guardrail_status` 为 `rejected:<reason>`，会话最终 `cleanup_status` 为
+`degraded_raw_only`。翻译模式不使用同语种 cleanup guardrail，状态为
+`not_applicable`。
 
 最终结果：
 
@@ -121,4 +128,4 @@ refine 或翻译结果：
 ```
 
 常见 `code`：`invalid_state`、`invalid_request`、`invalid_audio`、`no_audio`、
-`no_speech_detected`、`audio_too_long`、`server_error`。
+`no_speech_detected`、`server_error`。

@@ -22,6 +22,29 @@ def test_compute_delta_matches_cumulative_protocol() -> None:
     assert clean_stream.compute_delta("今天天气", "今天") == ""
 
 
+def test_cleanup_guardrail_accepts_formatting_and_rejects_rewrites() -> None:
+    assert clean_stream.evaluate_cleanup_result(
+        "欢迎使用 Amphion", "欢迎使用 Amphion。", "light", ["Amphion"]
+    ) == (True, "ok")
+    assert clean_stream.evaluate_cleanup_result(
+        "欢迎使用安费恩", "欢迎使用 Amphion。", "light", ["Amphion"]
+    ) == (True, "ok")
+    inserted, inserted_reason = clean_stream.evaluate_cleanup_result(
+        "欢迎使用这个功能", "欢迎使用这个功能 Amphion", "light", ["Amphion"]
+    )
+    assert inserted is False
+    assert inserted_reason.startswith("similarity:")
+    accepted, reason = clean_stream.evaluate_cleanup_result(
+        "今天开会讨论预算", "我们今天召开了一场重要会议并深入讨论未来战略", "light", []
+    )
+    assert accepted is False
+    assert reason.startswith("similarity:")
+    assert clean_stream.evaluate_cleanup_result("AUM 是 1200", "这是资产管理规模", "light", []) == (
+        False,
+        "digits_changed",
+    )
+
+
 def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
     class FakeSegmentingStream:
         def __init__(self, *, enable_partial):
@@ -58,12 +81,14 @@ def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
     with TestClient(app) as client:
         with client.websocket_connect("/asr/v1/clean-stream") as ws:
             assert ws.receive_json()["type"] == "session.created"
-            ws.send_json({
-                "type": "session.update",
-                "language": "zh",
-                "cleanup": {"level": "light", "text_emotion": True},
-                "hotwords": {"builtin": ["internet"], "custom": ["Amphion"]},
-            })
+            ws.send_json(
+                {
+                    "type": "session.update",
+                    "language": "zh",
+                    "cleanup": {"level": "light", "text_emotion": True},
+                    "hotwords": {"builtin": ["internet"], "custom": ["Amphion"]},
+                }
+            )
             updated = ws.receive_json()
             assert updated["type"] == "session.updated"
             assert updated["hotwords"] == {"builtin": ["internet"], "custom_count": 1}
@@ -96,14 +121,43 @@ def test_clean_stream_is_auth_free_and_rejects_silence() -> None:
             assert error["code"] == "no_speech_detected"
 
 
+def test_clean_stream_has_no_sixty_second_session_limit(monkeypatch) -> None:
+    class FakeSilentStream:
+        def __init__(self, *, enable_partial):
+            pass
+
+        def configure(self, cfg):
+            pass
+
+        def feed(self, pcm):
+            return []
+
+        def flush(self, *, force):
+            return []
+
+    monkeypatch.setattr(clean_stream, "VadSegmentedStream", FakeSilentStream)
+    long_silence = base64.b64encode(bytes(clean_stream.BYTES_PER_SECOND * 61)).decode("ascii")
+    with TestClient(app) as client:
+        with client.websocket_connect("/asr/v1/clean-stream") as ws:
+            ws.receive_json()
+            ws.send_json({"type": "session.update", "cleanup": {"level": "off"}})
+            ws.receive_json()
+            ws.send_json({"type": "input_audio_buffer.append", "audio": long_silence})
+            ws.send_json({"type": "input_audio_buffer.commit", "final": True})
+            error = ws.receive_json()
+            assert error["code"] == "no_speech_detected"
+
+
 def test_clean_stream_rejects_non_boolean_emotion_option() -> None:
     with TestClient(app) as client:
         with client.websocket_connect("/asr/v1/clean-stream") as ws:
             ws.receive_json()
-            ws.send_json({
-                "type": "session.update",
-                "cleanup": {"level": "light", "text_emotion": "false"},
-            })
+            ws.send_json(
+                {
+                    "type": "session.update",
+                    "cleanup": {"level": "light", "text_emotion": "false"},
+                }
+            )
             error = ws.receive_json()
             assert error["type"] == "error"
             assert error["code"] == "invalid_request"
