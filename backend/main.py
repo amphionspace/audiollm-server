@@ -66,6 +66,7 @@ from .audio.utils import (
     wav_bytes_to_pcm_16k_mono,
 )
 from .config import SAMPLE_RATE, Upstream, load_config, load_parsed, load_transcribe_config
+from .clean_stream import router as clean_stream_router
 from .diarization.client import (
     SpeakerEmbeddingUnavailableError,
     close_diarization_channels,
@@ -104,6 +105,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AudioLLM Server", lifespan=lifespan)
+app.include_router(clean_stream_router)
 
 
 def _health_check(

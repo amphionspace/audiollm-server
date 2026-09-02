@@ -28,6 +28,10 @@ upstreams:
     base_url: http://localhost:8001
     model_name: Qwen/Qwen3-ASR-1.7B
     timeout: 120
+  qwen3_clean_asr:
+    base_url: http://localhost:8011
+    model_name: /data/models/Qwen3-ASR-1.7B
+    timeout: 120
   amphion_emotion:
     base_url: http://localhost:8222
     model_name: AmphionSE
@@ -36,6 +40,12 @@ upstreams:
     base_url: http://localhost:9001
     model_name: AmphionSPEC
     timeout: 30
+  volcano_cleanup:
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    model_name: doubao-seed-2-0-lite-260215
+    api_key: ${ARK_APIKEY}
+    timeout: 30
+    max_tokens: 1024
   dashscope_cleanup:
     base_url: https://dashscope.aliyuncs.com/compatible-mode
     model_name: qwen2.5-32b-instruct
@@ -178,6 +188,8 @@ services:
   recall: triton_recall
   recall_management: rag_asr_management
   text_cleanup: dashscope_cleanup
+  clean_stream_refine: volcano_cleanup
+  clean_stream_asr: qwen3_clean_asr
 
 # REST/HTTP 路由的上游绑定: upstreams 是所有 REST 接口的共享默认,
 # routes.<name> 是单接口覆写(省略 = 全部跟随共享默认与 defaults 全局开关)。

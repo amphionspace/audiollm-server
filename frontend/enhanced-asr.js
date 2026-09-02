@@ -2,7 +2,7 @@
   'use strict';
 
   const SAMPLE_RATE = 16000;
-  const CLEAN_STREAM_URL = 'wss://amphion.top/asr/v1/clean-stream';
+  const CLEAN_STREAM_PATH = '/asr/v1/clean-stream';
 
   function initEnhancedAsr() {
     const i18n = window.Amphion && window.Amphion.i18n;
@@ -13,7 +13,6 @@
     const micStatus = document.getElementById('enhanced-mic-status');
     const statusPill = document.getElementById('enhanced-status-pill');
     const pulseRings = document.querySelectorAll('.pulse-ring');
-    const apiKeyInput = document.getElementById('enhanced-api-key');
     const languageSelect = document.getElementById('enhanced-language');
     const cleanupSelect = document.getElementById('enhanced-cleanup-level');
     const emotionInput = document.getElementById('enhanced-emotion');
@@ -24,7 +23,7 @@
     const targetSelect = document.getElementById('enhanced-target-language');
     const builtinSelect = document.getElementById('enhanced-builtin-hotwords');
     const customInput = document.getElementById('enhanced-custom-hotwords');
-    const controls = [apiKeyInput, languageSelect, cleanupSelect, emotionInput, translateInput, targetSelect, builtinSelect, customInput];
+    const controls = [languageSelect, cleanupSelect, emotionInput, translateInput, targetSelect, builtinSelect, customInput];
 
     if (!chatArea || !micBtn) return () => {};
 
@@ -300,12 +299,6 @@
     }
 
     async function startSession() {
-      const apiKey = String(apiKeyInput.value || '').trim();
-      if (!apiKey) {
-        apiKeyInput.focus();
-        setUiState('error', 'enhanced.error.keyRequired');
-        return;
-      }
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         fail(t('asrtest.mic.insecure'));
         return;
@@ -328,8 +321,8 @@
         sourceNode.connect(workletNode);
         workletNode.connect(audioCtx.destination);
 
-        const url = new URL(CLEAN_STREAM_URL);
-        url.searchParams.set('api_key', apiKey);
+        const url = new URL(CLEAN_STREAM_PATH, window.location.href);
+        url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         ws = new WebSocket(url.toString());
         ws.onmessage = (event) => {
           try { handleMessage(JSON.parse(event.data)); } catch (_) { /* ignore non-JSON */ }
@@ -339,7 +332,7 @@
         };
         ws.onclose = (event) => {
           if (!terminalReceived && !disposed && state !== 'idle') {
-            fail(event.code === 4003 ? t('enhanced.error.auth') : t('enhanced.error.closed'));
+            fail(t('enhanced.error.closed'));
           }
         };
         sessionTimer = setTimeout(() => {

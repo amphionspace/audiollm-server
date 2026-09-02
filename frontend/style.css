@@ -772,6 +772,10 @@ button {
   gap: 6px;
 }
 
+.enhanced-field[hidden] {
+  display: none;
+}
+
 .enhanced-field > label {
   color: var(--ink-faint);
   font-size: 10.5px;

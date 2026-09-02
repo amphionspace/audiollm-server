@@ -136,9 +136,10 @@ graph LR
 | 端点 | 任务 | VAD | 输出 | 协议文档 |
 |---|---|---|---|---|
 | `/transcribe-streaming` | 个性化语音识别 | 是 | partial / final（每段语音一条） | [docs/protocols/transcribe-streaming-protocol.md](docs/protocols/transcribe-streaming-protocol.md) |
+| `/asr/v1/clean-stream` | Qwen3-ASR 增强识别 | 累计快照伪流式 | transcription.delta / emotion.bucket / postprocess.delta / transcription.done | [docs/protocols/clean-stream-protocol.md](docs/protocols/clean-stream-protocol.md) |
 | `/emotion-segmented-streaming` | 按段流式情感识别（同模型，逐段返回） | 是 | final_emotion（每个 VAD 段一条） | [docs/protocols/emotion-segmented-streaming-protocol.md](docs/protocols/emotion-segmented-streaming-protocol.md) |
 
-新增任务的命名约定：每个任务一个独立 WebSocket 端点（`/<task>-streaming`），共享同一套 `start` / `stop` / `update_hotwords` 控制消息与 `config` 覆写机制；任务专属字段（如 ASR 的 `language`/`hotwords`、情感的输出标签集）只出现在对应端点的协议文档中。
+原生任务的命名约定：每个任务一个独立 WebSocket 端点（`/<task>-streaming`），共享同一套 `start` / `stop` / `update_hotwords` 控制消息与 `config` 覆写机制；任务专属字段只出现在对应端点的协议文档中。`/asr/v1/clean-stream` 为兼容接入方的独立 JSON/base64 协议，不适用这套约定，详见其协议文档。
 
 ### `/transcribe-streaming` 协议
 

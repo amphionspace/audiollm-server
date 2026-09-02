@@ -144,6 +144,7 @@ class Config:
 | `@app.websocket("/tuling/ast/v3")` | `docs/protocols/tuling-ast-v3-protocol.md` + `docs/api-reference.md` 速览 |
 | `@app.websocket("/astv3-test-proxy")` | `docs/api-reference.md` |
 | `@app.websocket("/emotion-segmented-streaming")` | `docs/protocols/emotion-segmented-streaming-protocol.md` + `docs/api-reference.md` 速览 |
+| `@router.websocket("/asr/v1/clean-stream")` | `docs/protocols/clean-stream-protocol.md` + `docs/api-reference.md` 速览 |
 | `@app.post("/api/asr/upload")` | `docs/api-reference.md` |
 | `@app.post("/api/asr/transcriptions")` + `@app.get("/api/asr/transcriptions/{job_id}")` | `docs/api/transcription-jobs-api.md` + `docs/api-reference.md` 速览 |
 | `@app.post("/api/asr/enrollment")` | `docs/api-reference.md` + `docs/protocols/transcribe-streaming-protocol.md` 注册接口章节 |

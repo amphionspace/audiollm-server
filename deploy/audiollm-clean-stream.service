@@ -1,0 +1,23 @@
+[Unit]
+Description=AudioLLM public clean-stream WebSocket service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/workspace/audiollm-server
+Environment=PYTHONUNBUFFERED=1
+# The wrapper loads only the existing server-side ARK_APIKEY from ~/.bashrc.
+# The key never enters the browser, repository, or WebSocket protocol.
+ExecStart=/home/ubuntu/workspace/audiollm-server/deploy/run-clean-stream.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=30
+KillSignal=SIGINT
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
