@@ -16,16 +16,24 @@ from backend.diarization import diarization_pb2_grpc as pb_grpc
 from .model import (
     MAX_SPEAKERS,
     MODEL_REPO,
+    SPEAKER_EMBEDDING_MODEL_REPO,
+    SPEAKER_EMBEDDING_MODEL_REVISION,
     InsufficientGpuMemoryError,
     SortformerEngine,
+    SpeakerEmbeddingEngine,
 )
 
 logger = logging.getLogger(__name__)
 
 
 class DiarizationService(pb_grpc.DiarizationServiceServicer):
-    def __init__(self, engine: SortformerEngine) -> None:
+    def __init__(
+        self,
+        engine: SortformerEngine,
+        speaker_embedding_engine: SpeakerEmbeddingEngine | None = None,
+    ) -> None:
         self.engine = engine
+        self.speaker_embedding_engine = speaker_embedding_engine
         self.active_sessions = 0
 
     async def Healthz(self, request, context):
@@ -33,6 +41,39 @@ class DiarizationService(pb_grpc.DiarizationServiceServicer):
             status=pb.HealthzResponse.SERVING,
             active_sessions=self.active_sessions,
             model_name=MODEL_REPO,
+        )
+
+    async def ExtractSpeakerEmbedding(self, request, context):
+        if self.speaker_embedding_engine is None:
+            await context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                "speaker embedding model is unavailable",
+            )
+        if request.sample_rate != 16_000:
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "speaker embedding requires 16 kHz PCM_S16LE",
+            )
+        if not request.pcm_s16le or len(request.pcm_s16le) % 2:
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "speaker embedding audio is empty or unaligned",
+            )
+        try:
+            embedding = await asyncio.to_thread(
+                self.speaker_embedding_engine.extract,
+                request.pcm_s16le,
+            )
+        except ValueError as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+        except Exception as exc:
+            logger.exception("Speaker embedding inference failed")
+            await context.abort(grpc.StatusCode.INTERNAL, str(exc))
+        return pb.SpeakerEmbeddingResponse(
+            embedding_f32=embedding.tobytes(),
+            dimension=int(embedding.size),
+            model_name=SPEAKER_EMBEDDING_MODEL_REPO,
+            model_revision=SPEAKER_EMBEDDING_MODEL_REVISION,
         )
 
     async def Diarize(self, request_iterator, context):
@@ -110,13 +151,30 @@ async def serve(host: str, port: int) -> None:
     model_path = os.getenv("DIARIZATION_MODEL_PATH", "").strip()
     device = os.getenv("DIARIZATION_DEVICE", "cuda").strip() or "cuda"
     engine = await asyncio.to_thread(SortformerEngine, model_path, device=device)
+    speaker_embedding_engine = None
+    speaker_embedding_model_path = os.getenv(
+        "SPEAKER_EMBEDDING_MODEL_PATH", ""
+    ).strip()
+    try:
+        speaker_embedding_engine = await asyncio.to_thread(
+            SpeakerEmbeddingEngine,
+            speaker_embedding_model_path,
+            device=device,
+        )
+    except Exception:
+        logger.exception(
+            "Speaker embedding model unavailable; diarization will continue without it"
+        )
     server = grpc.aio.server(
         options=(
             ("grpc.max_send_message_length", 8 * 1024 * 1024),
             ("grpc.max_receive_message_length", 8 * 1024 * 1024),
         )
     )
-    pb_grpc.add_DiarizationServiceServicer_to_server(DiarizationService(engine), server)
+    pb_grpc.add_DiarizationServiceServicer_to_server(
+        DiarizationService(engine, speaker_embedding_engine),
+        server,
+    )
     server.add_insecure_port(f"{host}:{port}")
     await server.start()
     logger.info("Diarization sidecar listening on %s:%d", host, port)

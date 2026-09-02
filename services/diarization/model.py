@@ -18,6 +18,10 @@ MODEL_REPO = "nvidia/diar_streaming_sortformer_4spk-v2.1"
 MODEL_REVISION = "fafaab5faa1617a0ca52d38dd3dc4bd636800d3d"
 MODEL_FILENAME = "diar_streaming_sortformer_4spk-v2.1.nemo"
 
+SPEAKER_EMBEDDING_MODEL_REPO = "nvidia/speakerverification_en_titanet_large"
+SPEAKER_EMBEDDING_MODEL_REVISION = "d6ba06bff20c64d51c946b676f4ec9b21fc45935"
+SPEAKER_EMBEDDING_MODEL_FILENAME = "speakerverification_en_titanet_large.nemo"
+
 SAMPLE_RATE = 16_000
 MAX_SPEAKERS = 4
 FRAME_MS = 80
@@ -59,6 +63,62 @@ logger = logging.getLogger(__name__)
 
 class InsufficientGpuMemoryError(RuntimeError):
     """Permanent startup failure used to stop systemd restart loops."""
+
+
+class SpeakerEmbeddingEngine:
+    """Shared TitaNet speaker encoder for bounded, explicit RPC calls."""
+
+    def __init__(self, model_path: str = "", *, device: str = "cuda") -> None:
+        import torch
+        from huggingface_hub import hf_hub_download
+        from nemo.collections.asr.models import EncDecSpeakerLabelModel
+
+        if not model_path:
+            model_path = hf_hub_download(
+                repo_id=SPEAKER_EMBEDDING_MODEL_REPO,
+                filename=SPEAKER_EMBEDDING_MODEL_FILENAME,
+                revision=SPEAKER_EMBEDDING_MODEL_REVISION,
+                local_files_only=os.getenv("HF_HUB_OFFLINE", "0") == "1",
+            )
+        logger.info("Loading speaker embedding checkpoint %s on %s", model_path, device)
+        self.torch = torch
+        self.device = torch.device(device)
+        self.model = EncDecSpeakerLabelModel.restore_from(
+            restore_path=model_path,
+            map_location=self.device,
+            strict=False,
+        ).eval()
+        self.model.to(self.device)
+        featurizer = getattr(self.model.preprocessor, "featurizer", None)
+        if featurizer is not None and hasattr(featurizer, "dither"):
+            featurizer.dither = 0.0
+        self._model_lock = threading.Lock()
+
+    def extract(self, pcm_s16le: bytes) -> np.ndarray:
+        if not pcm_s16le or len(pcm_s16le) % 2:
+            raise ValueError("speaker embedding requires aligned PCM_S16LE")
+        waveform_np = np.frombuffer(pcm_s16le, dtype="<i2").astype(np.float32) / 32768.0
+        if waveform_np.size == 0:
+            raise ValueError("speaker embedding audio is empty")
+        torch = self.torch
+        waveform = torch.from_numpy(waveform_np).unsqueeze(0).to(self.device)
+        waveform_len = torch.tensor(
+            [waveform_np.size],
+            dtype=torch.long,
+            device=self.device,
+        )
+        with self._model_lock, torch.inference_mode():
+            _, embeddings = self.model(
+                input_signal=waveform,
+                input_signal_length=waveform_len,
+            )
+        if embeddings is None:
+            raise RuntimeError("speaker embedding model returned no embedding")
+        vector = embeddings.detach().float().cpu().numpy().reshape(-1)
+        norm = float(np.linalg.norm(vector))
+        if not np.isfinite(norm) or norm <= 0:
+            raise RuntimeError("speaker embedding model returned an invalid vector")
+        return np.asarray(vector / norm, dtype="<f4")
 
 
 @dataclass(frozen=True)

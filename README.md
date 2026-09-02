@@ -7,6 +7,7 @@
 
 - 实时语音转写（双 ASR 模型 Amphion + Qwen 并行推理 + 归一化质量评估 + 风险感知融合，可选在每条转写旁附上情感/语气）
 - AST v3 实时角色分离（独立 NVIDIA Streaming Sortformer sidecar，最多 4 位会话内匿名说话人，故障时自动回退普通 ASR）
+- AST v3 前端会议模式（最多注册 4 位业务用户，以 TitaNet 声纹将匿名角色绑定为会话内用户 ID）
 - 情感识别（SER 8 分类 / SEC 自由文本描述，整段语音推理）
 
 前端两个 Demo 页面（ASR / 情感）共享同一套侧边栏导航与 EN / 中文 实时语言切换。
@@ -45,6 +46,11 @@
 | `diarization_target` | string | `localhost:50052` | Sortformer gRPC sidecar 地址 |
 | `diarization_connect_timeout_sec` | float | `2.0` | 建立 sidecar 会话的最长等待时间 |
 | `diarization_result_timeout_sec` | float | `2.0` | 每个 ASR 段等待 finalized turns 的最长时间；超时后本会话永久降级 |
+| `speaker_identity_timeout_sec` | float | `2.0` | 单次 TitaNet embedding RPC 超时；失败不影响 ASR |
+| `speaker_identity_min_audio_sec` | float | `3.0` | 会议角色开始声纹匹配前需累计的音频时长 |
+| `speaker_identity_max_audio_sec` | float | `10.0` | 单次声纹匹配最多使用的最近音频时长 |
+| `speaker_identity_match_threshold` | float | `0.70` | 最佳 cosine similarity 最低门槛 |
+| `speaker_identity_match_margin` | float | `0.10` | 多候选时最佳分与第二名的最低差值 |
 
 ## 快速开始
 
@@ -68,7 +74,7 @@ bash start.sh
 | 页面 | 路径 | 说明 |
 |---|---|---|
 | 实时语音转写 | / 或 /index.html | 双 ASR 模型并行 + 融合；右侧面板可开启"情感识别"开关，在每条 final 转写下附上情绪与语气 |
-| AST v3 实时语音识别（测试用） | /asr-test.html | 右侧可选择“角色分离 / 目标说话人 / 普通识别”三种互斥模式，并可注册目标说话人声纹；设置在下一次会话首帧生效 |
+| AST v3 实时语音识别（测试用） | /asr-test.html | 右侧可选择“角色分离 / 会议模式 / 目标说话人 / 普通识别”；会议模式可注册最多 4 个业务用户 ID，并在角色语音足够后更新气泡身份 |
 | 情感识别 | /emotion.html | 整段语音 SER / SEC |
 
 页面右上角的 EN / 中 切换会持久化到浏览器 localStorage，下次访问保持上次的选择。

@@ -7,6 +7,7 @@ import logging
 from collections.abc import AsyncIterator
 
 import grpc
+import numpy as np
 
 from ..config import SAMPLE_RATE, Config
 from . import diarization_pb2 as pb
@@ -21,6 +22,10 @@ _REQUEST_SENTINEL = object()
 
 class DiarizationUnavailableError(RuntimeError):
     """Raised when the optional sidecar cannot start safely."""
+
+
+class SpeakerEmbeddingUnavailableError(RuntimeError):
+    """Raised when the optional speaker encoder cannot serve a request."""
 
 
 def get_diarization_channel(target: str) -> grpc.aio.Channel:
@@ -63,6 +68,32 @@ async def validate_diarization_server(cfg: Config) -> None:
         raise DiarizationUnavailableError(f"diarization Healthz failed: {exc}") from exc
     if response.status != pb.HealthzResponse.SERVING:
         raise DiarizationUnavailableError("diarization sidecar is not serving")
+
+
+async def extract_speaker_embedding(cfg: Config, pcm_s16le: bytes) -> np.ndarray:
+    """Return one normalized speaker vector without exposing it on public APIs."""
+
+    if not cfg.diarization_enabled or not cfg.diarization_target.strip():
+        raise SpeakerEmbeddingUnavailableError("diarization sidecar is disabled")
+    try:
+        response = await get_diarization_stub(cfg.diarization_target).ExtractSpeakerEmbedding(
+            pb.SpeakerEmbeddingRequest(
+                pcm_s16le=pcm_s16le,
+                sample_rate=SAMPLE_RATE,
+            ),
+            timeout=max(0.1, float(cfg.speaker_identity_timeout_sec)),
+        )
+    except grpc.RpcError as exc:
+        raise SpeakerEmbeddingUnavailableError(
+            f"speaker embedding RPC failed: {exc.code().name.lower()}"
+        ) from exc
+    vector = np.frombuffer(response.embedding_f32, dtype="<f4").copy()
+    if response.dimension <= 0 or vector.size != response.dimension:
+        raise SpeakerEmbeddingUnavailableError("speaker embedding response has invalid dimension")
+    norm = float(np.linalg.norm(vector))
+    if not np.isfinite(norm) or norm <= 0:
+        raise SpeakerEmbeddingUnavailableError("speaker embedding response is invalid")
+    return np.asarray(vector / norm, dtype=np.float32)
 
 
 class DiarizationSession:

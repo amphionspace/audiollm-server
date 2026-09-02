@@ -268,3 +268,30 @@ async def test_sidecar_stream_contract_start_audio_finish() -> None:
     assert events[1].turns_finalized.finalized_through_ms == 480
     assert events[2].turns_finalized.turns[0].speaker_index == 1
     assert service.active_sessions == 0
+
+
+@pytest.mark.asyncio
+async def test_sidecar_extracts_normalized_speaker_embedding() -> None:
+    class FakeEngine:
+        pass
+
+    class FakeSpeakerEmbeddingEngine:
+        def extract(self, pcm: bytes) -> np.ndarray:
+            assert pcm == b"\x00\x00" * 160
+            return np.array([0.6, 0.8], dtype="<f4")
+
+    service = DiarizationService(  # type: ignore[arg-type]
+        FakeEngine(),
+        FakeSpeakerEmbeddingEngine(),  # type: ignore[arg-type]
+    )
+    response = await service.ExtractSpeakerEmbedding(
+        client_mod.pb.SpeakerEmbeddingRequest(
+            pcm_s16le=b"\x00\x00" * 160,
+            sample_rate=16_000,
+        ),
+        None,
+    )
+
+    vector = np.frombuffer(response.embedding_f32, dtype="<f4")
+    assert response.dimension == 2
+    assert np.allclose(vector, [0.6, 0.8])

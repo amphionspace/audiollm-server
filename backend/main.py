@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -53,6 +54,10 @@ from .asr.recall import (
 from .asr.recall import (
     upsert_enrollment as upsert_triton_enrollment,
 )
+from .asr.speaker_identity import (
+    get_speaker_identity_store,
+    match_speaker_embedding,
+)
 from .asr.transcribe import float_pcm_to_i16_bytes
 from .audio.utils import (
     mp3_bytes_to_pcm_16k_mono,
@@ -62,7 +67,9 @@ from .audio.utils import (
 )
 from .config import SAMPLE_RATE, Upstream, load_config, load_parsed, load_transcribe_config
 from .diarization.client import (
+    SpeakerEmbeddingUnavailableError,
     close_diarization_channels,
+    extract_speaker_embedding,
     validate_diarization_server,
 )
 from .emotion.client import query_emotion_model
@@ -761,6 +768,30 @@ def _public_enrollment_status(
     }
 
 
+async def _store_speaker_identity_embedding(
+    *,
+    cfg,
+    enrollment_id: str,
+    pcm: np.ndarray,
+) -> tuple[bool, str]:
+    store = get_speaker_identity_store()
+    store.configure(
+        ttl_sec=cfg.asr_enrollment_ttl_sec,
+        max_entries=cfg.asr_enrollment_max_entries,
+    )
+    try:
+        embedding = await extract_speaker_embedding(cfg, float_pcm_to_i16_bytes(pcm))
+    except SpeakerEmbeddingUnavailableError as exc:
+        logger.warning(
+            "Speaker identity embedding unavailable for enrollment %s: %s",
+            enrollment_id,
+            exc,
+        )
+        return False, "upstream_unavailable"
+    store.put(enrollment_id, embedding)
+    return True, "ok"
+
+
 async def _run_dual_asr_upload(
     wav_b64: str,
     *,
@@ -820,9 +851,10 @@ async def asr_enrollment_create(audio: UploadFile = File(...)):
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
 
+    pcm = wav_base64_to_pcm_16k_mono(canonical_b64)
+
     if cfg.enable_triton_enrollment_store:
         enrollment_id = secrets.token_urlsafe(16)
-        pcm = wav_base64_to_pcm_16k_mono(canonical_b64)
         try:
             await upsert_triton_enrollment(
                 pcm,
@@ -839,9 +871,16 @@ async def asr_enrollment_create(audio: UploadFile = File(...)):
                     "message": str(exc),
                 },
             ) from exc
+        identity_available, identity_reason = await _store_speaker_identity_embedding(
+            cfg=cfg,
+            enrollment_id=enrollment_id,
+            pcm=pcm,
+        )
         return {
             "enrollment_id": enrollment_id,
             "duration_sec": round(duration_sec, 3),
+            "speaker_identity_available": identity_available,
+            "speaker_identity_reason": identity_reason,
         }
 
     store = get_enrollment_store()
@@ -850,9 +889,16 @@ async def asr_enrollment_create(audio: UploadFile = File(...)):
         max_entries=cfg.asr_enrollment_max_entries,
     )
     entry = store.put(canonical_b64, duration_sec)
+    identity_available, identity_reason = await _store_speaker_identity_embedding(
+        cfg=cfg,
+        enrollment_id=entry.enrollment_id,
+        pcm=pcm,
+    )
     return {
         "enrollment_id": entry.enrollment_id,
         "duration_sec": round(duration_sec, 3),
+        "speaker_identity_available": identity_available,
+        "speaker_identity_reason": identity_reason,
     }
 
 
@@ -874,6 +920,7 @@ async def asr_enrollment_delete(enrollment_id: str):
             logger.warning("Triton enrollment delete failed", exc_info=True)
     else:
         get_enrollment_store().delete(enrollment_id)
+    get_speaker_identity_store().delete(enrollment_id)
     return Response(status_code=204)
 
 
@@ -898,14 +945,120 @@ async def asr_enrollment_get(enrollment_id: str):
                 "enrollment_id": ident,
                 "available": False,
                 "reason": "upstream_unavailable",
+                "speaker_identity_available": False,
             }
-        return _public_enrollment_status(ident, summary)
+        payload = _public_enrollment_status(ident, summary)
+        payload["speaker_identity_available"] = (
+            get_speaker_identity_store().get(ident) is not None
+        )
+        return payload
 
     entry = get_enrollment_store().get(ident)
     return {
         "enrollment_id": ident,
         "available": entry is not None,
         "reason": "ok" if entry is not None else "not_found",
+        "speaker_identity_available": get_speaker_identity_store().get(ident) is not None,
+    }
+
+
+@app.post("/api/asr/speaker-identify")
+async def asr_speaker_identify(
+    audio: UploadFile = File(...),
+    candidate_enrollment_ids: str = Form(...),
+):
+    """Match one diarized role clip against at most four meeting candidates."""
+
+    try:
+        raw_candidates = json.loads(candidate_enrollment_ids)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_candidates",
+                "message": "candidate_enrollment_ids must be a JSON array",
+            },
+        ) from exc
+    if not isinstance(raw_candidates, list):
+        raw_candidates = []
+    candidates_ids = [str(value or "").strip() for value in raw_candidates]
+    if (
+        not 1 <= len(candidates_ids) <= 4
+        or any(not value for value in candidates_ids)
+        or len(set(candidates_ids)) != len(candidates_ids)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_candidates",
+                "message": "candidate_enrollment_ids must contain 1-4 unique non-empty ids",
+            },
+        )
+
+    cfg = load_config()
+    raw = await _read_audio_bytes(audio)
+    try:
+        query_b64, _ = decode_and_validate_audio_bytes(
+            raw,
+            audio_format=_infer_enrollment_audio_format(audio, raw),
+            min_sec=cfg.speaker_identity_min_audio_sec,
+            max_sec=cfg.speaker_identity_max_audio_sec,
+        )
+    except EnrollmentError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+    identity_store = get_speaker_identity_store()
+    identity_store.configure(
+        ttl_sec=cfg.asr_enrollment_ttl_sec,
+        max_entries=cfg.asr_enrollment_max_entries,
+    )
+    candidates = []
+    missing = []
+    for enrollment_id in candidates_ids:
+        entry = identity_store.get(enrollment_id)
+        if entry is None:
+            missing.append(enrollment_id)
+        else:
+            candidates.append(entry)
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "speaker_embeddings_unavailable",
+                "message": "one or more meeting speaker embeddings are unavailable",
+                "enrollment_ids": missing,
+            },
+        )
+
+    query_pcm = wav_base64_to_pcm_16k_mono(query_b64)
+    try:
+        query_embedding = await extract_speaker_embedding(
+            cfg,
+            float_pcm_to_i16_bytes(query_pcm),
+        )
+    except SpeakerEmbeddingUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "speaker_identity_unavailable",
+                "message": str(exc),
+            },
+        ) from exc
+
+    matched, similarity, reason = match_speaker_embedding(
+        query_embedding,
+        candidates,
+        threshold=cfg.speaker_identity_match_threshold,
+        margin=cfg.speaker_identity_match_margin,
+    )
+    return {
+        "status": "matched" if matched is not None else "unknown",
+        "enrollment_id": matched.enrollment_id if matched is not None else None,
+        "similarity": round(similarity, 6) if similarity is not None else None,
+        "reason": reason,
     }
 
 

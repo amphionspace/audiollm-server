@@ -999,7 +999,7 @@ button {
 
 .recognition-mode-options {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   height: 38px;
   gap: 3px;
   padding: 3px;
@@ -1007,6 +1007,54 @@ button {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--paper-sunk);
+}
+
+.meeting-roster-heading,
+.meeting-roster-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meeting-roster-heading {
+  margin-bottom: 10px;
+}
+
+.meeting-roster-list {
+  display: grid;
+  gap: 8px;
+}
+
+.meeting-roster-row {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--paper-sunk);
+}
+
+.meeting-roster-fields {
+  min-width: 0;
+  flex: 1;
+}
+
+.meeting-speaker-id {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.meeting-roster-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+@media (max-width: 1180px) {
+  .recognition-mode-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    height: auto;
+  }
 }
 
 .recognition-mode-option {

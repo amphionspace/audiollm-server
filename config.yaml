@@ -109,6 +109,11 @@ defaults:
     diarization_target: localhost:50052
     diarization_connect_timeout_sec: 2.0
     diarization_result_timeout_sec: 2.0   # 单段最多等待角色结果，超时后本会话永久降级
+    speaker_identity_timeout_sec: 2.0     # 单次 TitaNet embedding RPC 超时；失败不影响 ASR
+    speaker_identity_min_audio_sec: 3.0   # 会议角色累计到该时长后才尝试身份匹配
+    speaker_identity_max_audio_sec: 10.0  # 单次身份匹配最多使用最近该时长音频
+    speaker_identity_match_threshold: 0.70 # 最佳 cosine similarity 最低门槛
+    speaker_identity_match_margin: 0.10   # 多候选时最佳分相对第二名的最低差值
   fusion:
     fusion_similarity_threshold: 0.85
     fusion_min_primary_score: 0.55

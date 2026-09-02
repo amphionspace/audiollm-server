@@ -60,6 +60,13 @@
     let sessionEnrollmentId = null;
     let currentSpeakerIndex = null;
     let enrollmentCtrl = null;
+    let meetingEnrollmentControllers = [];
+    let meetingRosterRows = [];
+    let sessionMeetingParticipants = [];
+    const meetingRoleAudio = new Map();
+    const meetingRoleSampleTotals = new Map();
+    const meetingRoleIdentity = new Map();
+    let meetingIdentityInFlight = false;
     let latestPartialDebugText = '';
     let latestAudioLlmDebugText = '';
     const doneSegs = new Set();     // segment ids already finalized
@@ -76,7 +83,11 @@
     const HOTWORD_USER_STORAGE_KEY = 'asr_hotword_pool_id';
     const RECOGNITION_MODE_STORAGE_KEY = 'astv3_recognition_mode';
     const LEGACY_ROLE_SEPARATION_STORAGE_KEY = 'astv3_role_separation_enabled';
-    const RECOGNITION_MODES = new Set(['diarization', 'target', 'standard']);
+    const MEETING_ROSTER_STORAGE_KEY = 'astv3_meeting_roster';
+    const RECOGNITION_MODES = new Set(['diarization', 'meeting', 'target', 'standard']);
+    const MEETING_MIN_IDENTITY_SAMPLES = 3 * 16000;
+    const MEETING_RETRY_IDENTITY_SAMPLES = 2 * 16000;
+    const MEETING_MAX_IDENTITY_SAMPLES = 10 * 16000;
     const UI_TO_API_LANG = {
       chinese: 'Chinese',
       english: 'English',
@@ -116,6 +127,10 @@
     const asrDebugPartial = document.getElementById('asr-debug-partial');
     const asrDebugAudioLlm = document.getElementById('asr-debug-audiollm');
     const enrollmentCard = document.getElementById('enrollment-card');
+    const meetingRosterCard = document.getElementById('meeting-roster-card');
+    const meetingRosterList = document.getElementById('meeting-roster-list');
+    const meetingRosterStatus = document.getElementById('meeting-roster-status');
+    const meetingRosterHint = document.getElementById('meeting-roster-hint');
     const enrollUploadBtn = document.getElementById('enroll-upload-btn');
     const enrollFileInput = document.getElementById('enroll-file-input');
     const enrollRecordBtn = document.getElementById('enroll-record-btn');
@@ -187,6 +202,8 @@
         );
         enrollmentCard.classList.toggle('is-required', missingRequiredEnrollment);
       }
+      if (meetingRosterCard) meetingRosterCard.hidden = mode !== 'meeting';
+      refreshMeetingRosterUi();
     }
 
     function setRecognitionModeLocked(locked) {
@@ -195,6 +212,10 @@
         recognitionModeOptions.classList.toggle('is-locked', locked);
         recognitionModeOptions.setAttribute('aria-disabled', locked ? 'true' : 'false');
       }
+      meetingRosterRows.forEach((row) => {
+        if (row.userInput) row.userInput.disabled = locked;
+      });
+      meetingEnrollmentControllers.forEach((ctrl) => ctrl.refresh());
     }
 
     let initialRecognitionMode = localStorage.getItem(RECOGNITION_MODE_STORAGE_KEY);
@@ -467,6 +488,157 @@
       refreshRecognitionModeUi();
     }
 
+    function storedMeetingRoster() {
+      try {
+        const value = JSON.parse(sessionStorage.getItem(MEETING_ROSTER_STORAGE_KEY) || '[]');
+        return Array.isArray(value) ? value.slice(0, 4) : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function persistMeetingRoster() {
+      const value = meetingRosterRows.map((row, index) => {
+        const ctrl = meetingEnrollmentControllers[index];
+        return {
+          userId: String(row.userInput.value || '').trim(),
+          enrollmentId: ctrl ? ctrl.getEnrollmentId() : null,
+          durationSec: ctrl ? ctrl.getDurationSec() : null,
+          speakerIdentityAvailable: ctrl ? ctrl.isSpeakerIdentityAvailable() : false,
+        };
+      });
+      try { sessionStorage.setItem(MEETING_ROSTER_STORAGE_KEY, JSON.stringify(value)); } catch (_) { /* ignore */ }
+    }
+
+    function meetingRosterSnapshot() {
+      return meetingRosterRows.map((row, index) => {
+        const ctrl = meetingEnrollmentControllers[index];
+        return {
+          userId: String(row.userInput.value || '').trim(),
+          enrollmentId: ctrl ? ctrl.getEnrollmentId() : null,
+          speakerIdentityAvailable: ctrl ? ctrl.isSpeakerIdentityAvailable() : false,
+        };
+      }).filter((item) => item.userId || item.enrollmentId);
+    }
+
+    function meetingRosterValidation() {
+      const entries = meetingRosterSnapshot();
+      const userIds = entries.map((item) => item.userId).filter(Boolean);
+      if (new Set(userIds).size !== userIds.length) return { valid: false, key: 'asrtest.meeting.duplicate' };
+      const ready = entries.filter((item) => (
+        item.userId && item.enrollmentId && item.speakerIdentityAvailable
+      ));
+      if (!ready.length || ready.length !== entries.length) {
+        return { valid: false, key: 'asrtest.meeting.required', ready };
+      }
+      return { valid: true, key: '', ready };
+    }
+
+    function refreshMeetingRosterUi() {
+      if (!meetingRosterStatus || !meetingRosterHint) return;
+      const validation = meetingRosterValidation();
+      const readyCount = validation.ready ? validation.ready.length : 0;
+      meetingRosterStatus.dataset.state = validation.valid ? 'ready' : 'waiting';
+      setDynText(meetingRosterStatus, 'asrtest.meeting.count', { n: readyCount });
+      if (currentRecognitionMode() === 'meeting' && !validation.valid) {
+        setDynText(meetingRosterHint, validation.key || 'asrtest.meeting.required');
+      } else {
+        meetingRosterHint.textContent = '';
+        meetingRosterHint.removeAttribute('data-dyn-key');
+        meetingRosterHint.removeAttribute('data-dyn-vars');
+      }
+    }
+
+    function buildMeetingRoster() {
+      if (!meetingRosterList || !window.Amphion || !window.Amphion.Enrollment) return;
+      const restored = storedMeetingRoster();
+      meetingRosterRows = [];
+      meetingEnrollmentControllers = [];
+      for (let index = 0; index < 4; index += 1) {
+        const initial = restored[index] || {};
+        const row = document.createElement('div');
+        row.className = 'meeting-roster-row';
+        row.innerHTML = `
+          <div class="meeting-roster-fields">
+            <input class="hotword-input meeting-speaker-id" type="text" maxlength="64"
+                   data-i18n-attr-placeholder="asrtest.meeting.userPlaceholder" />
+            <div class="meeting-roster-actions">
+              <input class="meeting-enroll-file" type="file" accept="audio/*" hidden />
+              <button class="btn-secondary meeting-enroll-upload" type="button"></button>
+              <button class="btn-secondary meeting-enroll-record" type="button"></button>
+              <button class="btn-ghost meeting-enroll-clear" type="button" hidden></button>
+            </div>
+            <p class="meeting-enroll-hint text-[11px] text-faint mt-2" hidden></p>
+          </div>
+          <span class="status-pill meeting-enroll-status" data-state="waiting"></span>
+        `;
+        const userInput = row.querySelector('.meeting-speaker-id');
+        userInput.value = String(initial.userId || '');
+        const uploadBtn = row.querySelector('.meeting-enroll-upload');
+        const recordBtn = row.querySelector('.meeting-enroll-record');
+        const clearBtn = row.querySelector('.meeting-enroll-clear');
+        setDynText(uploadBtn, 'asr.enroll.upload');
+        setDynText(recordBtn, 'asr.enroll.record');
+        setDynText(clearBtn, 'asr.enroll.clear');
+        meetingRosterList.appendChild(row);
+        const rowState = { row, userInput };
+        meetingRosterRows.push(rowState);
+        const controllerIndex = index;
+        const ctrl = window.Amphion.Enrollment.attach({
+          elements: {
+            card: row,
+            uploadBtn,
+            fileInput: row.querySelector('.meeting-enroll-file'),
+            recordBtn,
+            clearBtn,
+            statusPill: row.querySelector('.meeting-enroll-status'),
+            hint: row.querySelector('.meeting-enroll-hint'),
+          },
+          initialState: {
+            id: initial.enrollmentId || null,
+            durationSec: typeof initial.durationSec === 'number' ? initial.durationSec : null,
+            speakerIdentityAvailable: Boolean(initial.speakerIdentityAvailable),
+          },
+          requireSpeakerIdentity: true,
+          isMicRecording: () => (
+            isRecording || isStarting || meetingEnrollmentControllers.some(
+              (other, otherIndex) => otherIndex !== controllerIndex && other && other.isBusy()
+            )
+          ),
+          t,
+          onChange: () => {
+            persistMeetingRoster();
+            refreshMeetingRosterUi();
+          },
+        });
+        meetingEnrollmentControllers.push(ctrl);
+        userInput.addEventListener('input', () => {
+          persistMeetingRoster();
+          refreshMeetingRosterUi();
+        });
+        if (initial.enrollmentId) {
+          fetch(`/api/asr/enrollment/${encodeURIComponent(initial.enrollmentId)}`)
+            .then((response) => response.ok ? response.json() : null)
+            .then((status) => {
+              if (!status) return;
+              ctrl.restoreEnrollment(
+                initial.enrollmentId,
+                typeof initial.durationSec === 'number' ? initial.durationSec : null,
+                Boolean(status.available && status.speaker_identity_available),
+              );
+              persistMeetingRoster();
+              refreshMeetingRosterUi();
+            })
+            .catch(() => { /* keep the cached row visible; start validation remains conservative */ });
+        }
+      }
+      if (i18n && i18n.applyTranslations) i18n.applyTranslations(meetingRosterList);
+      persistMeetingRoster();
+      refreshMeetingRosterUi();
+    }
+
+    buildMeetingRoster();
+
     // --- Connection status (sidebar dot) ---
     function setConnState(state) {
       if (window.AmphionSidebar && window.AmphionSidebar.setConnectionState) {
@@ -557,7 +729,9 @@
       const asrConfig = {
         language: apiLangFromUi(srcLangUi),
         hotword_pool_id: currentHotwordUserId(),
-        enable_role_separation: sessionRecognitionMode === 'diarization',
+        enable_role_separation: (
+          sessionRecognitionMode === 'diarization' || sessionRecognitionMode === 'meeting'
+        ),
         enrollment_enable: targetSpeakerMode,
         vad_start_frames: 10,
         pseudo_stream_first_partial_ms: 100,
@@ -608,6 +782,162 @@
       startFrameSent = false;
     }
 
+    function meetingRoleInfo(roleIndex) {
+      const state = meetingRoleIdentity.get(roleIndex);
+      if (state && state.status === 'matched') {
+        return {
+          key: 'asrtest.role.identified',
+          vars: { index: roleIndex, userId: state.userId },
+          state: 'ready',
+          roleIndex,
+          sessionSeq: currentSessionSeq,
+        };
+      }
+      if (state && state.status === 'unknown') {
+        return {
+          key: 'asrtest.role.unknown',
+          vars: { index: roleIndex },
+          state: 'waiting',
+          roleIndex,
+          sessionSeq: currentSessionSeq,
+        };
+      }
+      if (state && state.status === 'unavailable') {
+        return {
+          key: 'asrtest.role.identityUnavailable',
+          vars: { index: roleIndex },
+          state: 'offline',
+          roleIndex,
+          sessionSeq: currentSessionSeq,
+        };
+      }
+      return {
+        key: 'asrtest.role.identifying',
+        vars: { index: roleIndex },
+        state: 'waiting',
+        roleIndex,
+        sessionSeq: currentSessionSeq,
+      };
+    }
+
+    function refreshMeetingRoleBadges(roleIndex) {
+      document.querySelectorAll(
+        `.ai-content[data-meeting-role="${roleIndex}"][data-meeting-session="${currentSessionSeq}"]`
+      ).forEach((content) => {
+        applyRoleMeta(content, meetingRoleInfo(roleIndex));
+      });
+    }
+
+    function appendMeetingRoleAudio(roleIndex, pcm) {
+      if (sessionRecognitionMode !== 'meeting' || !pcm || !pcm.length) return;
+      const previous = meetingRoleAudio.get(roleIndex) || new Float32Array(0);
+      const combined = new Float32Array(Math.min(
+        MEETING_MAX_IDENTITY_SAMPLES,
+        previous.length + pcm.length,
+      ));
+      const keepPrevious = Math.min(previous.length, combined.length - Math.min(pcm.length, combined.length));
+      const pcmStart = Math.max(0, pcm.length - combined.length);
+      if (keepPrevious > 0) {
+        combined.set(previous.subarray(previous.length - keepPrevious), 0);
+      }
+      combined.set(pcm.subarray(pcmStart), keepPrevious);
+      meetingRoleAudio.set(roleIndex, combined);
+      meetingRoleSampleTotals.set(
+        roleIndex,
+        (meetingRoleSampleTotals.get(roleIndex) || 0) + pcm.length,
+      );
+      if (!meetingRoleIdentity.has(roleIndex)) {
+        meetingRoleIdentity.set(roleIndex, { status: 'pending', lastAttemptSamples: 0 });
+      }
+      scheduleMeetingIdentity();
+    }
+
+    function scheduleMeetingIdentity() {
+      if (meetingIdentityInFlight || sessionRecognitionMode !== 'meeting') return;
+      const matchedEnrollmentIds = new Set(
+        Array.from(meetingRoleIdentity.values())
+          .filter((state) => state.status === 'matched')
+          .map((state) => state.enrollmentId),
+      );
+      const remainingCandidates = sessionMeetingParticipants.filter(
+        (item) => !matchedEnrollmentIds.has(item.enrollmentId),
+      );
+      for (const [roleIndex, pcm] of meetingRoleAudio.entries()) {
+        const state = meetingRoleIdentity.get(roleIndex) || { status: 'pending', lastAttemptSamples: 0 };
+        if (state.status === 'matched' || state.status === 'unavailable') continue;
+        const total = meetingRoleSampleTotals.get(roleIndex) || 0;
+        const required = state.lastAttemptSamples
+          ? state.lastAttemptSamples + MEETING_RETRY_IDENTITY_SAMPLES
+          : MEETING_MIN_IDENTITY_SAMPLES;
+        if (pcm.length < MEETING_MIN_IDENTITY_SAMPLES || total < required) continue;
+        if (!remainingCandidates.length) {
+          meetingRoleIdentity.set(roleIndex, { ...state, status: 'unknown' });
+          refreshMeetingRoleBadges(roleIndex);
+          continue;
+        }
+        void identifyMeetingRole(roleIndex, pcm, remainingCandidates, total);
+        return;
+      }
+    }
+
+    async function identifyMeetingRole(roleIndex, pcm, candidates, totalSamples) {
+      meetingIdentityInFlight = true;
+      const requestSession = currentSessionSeq;
+      const previous = meetingRoleIdentity.get(roleIndex) || {};
+      meetingRoleIdentity.set(roleIndex, {
+        ...previous,
+        status: 'pending',
+        lastAttemptSamples: totalSamples,
+      });
+      refreshMeetingRoleBadges(roleIndex);
+      try {
+        const upload = window.AmphionAudioUpload;
+        if (!upload || !upload.encodeWavBytes) throw new Error('audio helper unavailable');
+        const wavBytes = upload.encodeWavBytes(pcm, AST_SAMPLE_RATE);
+        const form = new FormData();
+        form.append('audio', new Blob([wavBytes], { type: 'audio/wav' }), 'role.wav');
+        form.append(
+          'candidate_enrollment_ids',
+          JSON.stringify(candidates.map((item) => item.enrollmentId)),
+        );
+        const response = await fetch('/api/asr/speaker-identify', { method: 'POST', body: form });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(JSON.stringify(body));
+        if (requestSession !== currentSessionSeq || sessionRecognitionMode !== 'meeting') return;
+        const participant = body.status === 'matched'
+          ? sessionMeetingParticipants.find((item) => item.enrollmentId === body.enrollment_id)
+          : null;
+        if (participant) {
+          meetingRoleIdentity.set(roleIndex, {
+            status: 'matched',
+            enrollmentId: participant.enrollmentId,
+            userId: participant.userId,
+            similarity: body.similarity,
+            lastAttemptSamples: totalSamples,
+          });
+        } else {
+          meetingRoleIdentity.set(roleIndex, {
+            status: 'unknown',
+            similarity: body.similarity,
+            lastAttemptSamples: totalSamples,
+          });
+        }
+      } catch (_) {
+        if (requestSession === currentSessionSeq && sessionRecognitionMode === 'meeting') {
+          meetingRoleIdentity.set(roleIndex, {
+            status: 'unavailable',
+            lastAttemptSamples: totalSamples,
+          });
+        }
+      } finally {
+        meetingIdentityInFlight = false;
+        if (requestSession === currentSessionSeq) {
+          refreshMeetingRoleBadges(roleIndex);
+          scheduleMeetingIdentity();
+        }
+      }
+    }
+
     // --- AST v3 inbound handling ---
     function latticeText(result) {
       const wsArr = Array.isArray(result.ws) ? result.ws : [];
@@ -634,13 +964,15 @@
     }
 
     function resolveSentenceRole(result) {
-      if (sessionRecognitionMode !== 'diarization') return null;
+      if (sessionRecognitionMode !== 'diarization' && sessionRecognitionMode !== 'meeting') return null;
       const role = latticeRole(result);
       if (role >= 1 && role <= 4) currentSpeakerIndex = role;
       if (role === 0 && currentSpeakerIndex !== null) {
+        if (sessionRecognitionMode === 'meeting') return meetingRoleInfo(currentSpeakerIndex);
         return { key: 'asrtest.role.speaker', vars: { index: currentSpeakerIndex }, state: 'ready' };
       }
       if (role >= 1 && role <= 4) {
+        if (sessionRecognitionMode === 'meeting') return meetingRoleInfo(currentSpeakerIndex);
         return { key: 'asrtest.role.speaker', vars: { index: currentSpeakerIndex }, state: 'ready' };
       }
       return { key: 'asrtest.role.unavailable', vars: null, state: 'waiting' };
@@ -685,7 +1017,12 @@
         if (!document.getElementById(`ai-${segId}`)) addAIBubble(segId);
         stashSegmentAudio(segId, result.bg, result.ed);
         doneSegs.add(segId);
-        updateAIBubble(segId, text, 'done', resolveSentenceRole(result));
+        const roleInfo = resolveSentenceRole(result);
+        updateAIBubble(segId, text, 'done', roleInfo);
+        if (sessionRecognitionMode === 'meeting' && roleInfo && roleInfo.roleIndex) {
+          const rolePcm = capturedAudioSlice(result.bg, result.ed);
+          appendMeetingRoleAudio(roleInfo.roleIndex, rolePcm);
+        }
       }
     }
 
@@ -781,10 +1118,21 @@
       if (!slot) return;
       slot.replaceChildren();
       slot.classList.toggle('mt-1', Boolean(roleInfo));
-      if (!roleInfo) return;
+      if (!roleInfo) {
+        content.removeAttribute('data-meeting-role');
+        content.removeAttribute('data-meeting-session');
+        return;
+      }
       const badge = document.createElement('span');
       badge.className = 'status-pill';
       badge.dataset.state = roleInfo.state;
+      if (roleInfo.roleIndex) {
+        content.dataset.meetingRole = String(roleInfo.roleIndex);
+        content.dataset.meetingSession = String(roleInfo.sessionSeq);
+      } else {
+        content.removeAttribute('data-meeting-role');
+        content.removeAttribute('data-meeting-session');
+      }
       setDynText(badge, roleInfo.key, roleInfo.vars || undefined);
       slot.appendChild(badge);
     }
@@ -889,10 +1237,20 @@
         alert(t('asr.enroll.error.busyEnrolling'));
         return;
       }
+      if (meetingEnrollmentControllers.some((ctrl) => ctrl.isBusy())) {
+        alert(t('asr.enroll.error.busyEnrolling'));
+        return;
+      }
       const nextEnrollmentId = enrollmentCtrl ? enrollmentCtrl.getEnrollmentId() : null;
       if (nextRecognitionMode === 'target' && !nextEnrollmentId) {
         refreshRecognitionModeUi();
         alert(t('asrtest.mode.enrollmentRequired'));
+        return;
+      }
+      const meetingValidation = meetingRosterValidation();
+      if (nextRecognitionMode === 'meeting' && !meetingValidation.valid) {
+        refreshRecognitionModeUi();
+        alert(t(meetingValidation.key || 'asrtest.meeting.required'));
         return;
       }
 
@@ -939,7 +1297,17 @@
       startFrameSent = false;
       sessionRecognitionMode = nextRecognitionMode;
       sessionEnrollmentId = nextRecognitionMode === 'target' ? nextEnrollmentId : null;
+      sessionMeetingParticipants = nextRecognitionMode === 'meeting'
+        ? meetingValidation.ready.map((item) => ({
+          userId: item.userId,
+          enrollmentId: item.enrollmentId,
+        }))
+        : [];
       currentSpeakerIndex = null;
+      meetingRoleAudio.clear();
+      meetingRoleSampleTotals.clear();
+      meetingRoleIdentity.clear();
+      meetingIdentityInFlight = false;
 
       try {
         ws = new WebSocket(AST_V3_URL);
@@ -1146,6 +1514,9 @@
       refreshHotwordStatus();
       refreshRecognitionModeUi();
       if (enrollmentCtrl && enrollmentCtrl.refreshLabels) enrollmentCtrl.refreshLabels();
+      meetingEnrollmentControllers.forEach((ctrl) => {
+        if (ctrl && ctrl.refreshLabels) ctrl.refreshLabels();
+      });
       setDynText(micStatus, isRecording ? 'asr.mic.listening' : 'asr.mic.start');
       applyDyn(document);
       renderPipelineDebug();
@@ -1190,6 +1561,11 @@
         try { enrollmentCtrl.dispose(); } catch (_) { /* ignore */ }
         enrollmentCtrl = null;
       }
+      meetingEnrollmentControllers.forEach((ctrl) => {
+        try { ctrl.dispose(); } catch (_) { /* ignore */ }
+      });
+      meetingEnrollmentControllers = [];
+      meetingRosterRows = [];
     };
   }
 

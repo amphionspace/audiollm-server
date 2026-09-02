@@ -125,6 +125,11 @@ class Config:
     diarization_target: str = ""
     diarization_connect_timeout_sec: float = 2.0
     diarization_result_timeout_sec: float = 2.0
+    speaker_identity_timeout_sec: float = 2.0
+    speaker_identity_min_audio_sec: float = 3.0
+    speaker_identity_max_audio_sec: float = 10.0
+    speaker_identity_match_threshold: float = 0.70
+    speaker_identity_match_margin: float = 0.10
 
     # ---- ASR: per-endpoint primary override (/tuling/ast/v3) -------------
     # The AST v3 endpoint serves a *different* primary model than the global
@@ -436,6 +441,17 @@ class Config:
             object.__setattr__(self, "diarization_connect_timeout_sec", 2.0)
         if self.diarization_result_timeout_sec <= 0:
             object.__setattr__(self, "diarization_result_timeout_sec", 2.0)
+        if self.speaker_identity_timeout_sec <= 0:
+            object.__setattr__(self, "speaker_identity_timeout_sec", 2.0)
+        if self.speaker_identity_min_audio_sec <= 0:
+            object.__setattr__(self, "speaker_identity_min_audio_sec", 3.0)
+        if self.speaker_identity_max_audio_sec < self.speaker_identity_min_audio_sec:
+            object.__setattr__(self, "speaker_identity_min_audio_sec", 3.0)
+            object.__setattr__(self, "speaker_identity_max_audio_sec", 10.0)
+        if not 0 <= self.speaker_identity_match_threshold <= 1:
+            object.__setattr__(self, "speaker_identity_match_threshold", 0.70)
+        if not 0 <= self.speaker_identity_match_margin <= 1:
+            object.__setattr__(self, "speaker_identity_match_margin", 0.10)
         if self.asr_segment_voice_gate_threshold < 0:
             object.__setattr__(self, "asr_segment_voice_gate_threshold", 0.0)
         elif self.asr_segment_voice_gate_threshold > 1:

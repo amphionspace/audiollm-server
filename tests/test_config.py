@@ -561,9 +561,19 @@ def test_diarization_invariants_apply_to_direct_construction() -> None:
     invalid_timeouts = Config(
         diarization_connect_timeout_sec=0,
         diarization_result_timeout_sec=-1,
+        speaker_identity_timeout_sec=0,
+        speaker_identity_min_audio_sec=8,
+        speaker_identity_max_audio_sec=3,
+        speaker_identity_match_threshold=2,
+        speaker_identity_match_margin=-1,
     )
     assert invalid_timeouts.diarization_connect_timeout_sec == 2.0
     assert invalid_timeouts.diarization_result_timeout_sec == 2.0
+    assert invalid_timeouts.speaker_identity_timeout_sec == 2.0
+    assert invalid_timeouts.speaker_identity_min_audio_sec == 3.0
+    assert invalid_timeouts.speaker_identity_max_audio_sec == 10.0
+    assert invalid_timeouts.speaker_identity_match_threshold == 0.70
+    assert invalid_timeouts.speaker_identity_match_margin == 0.10
 
 
 def test_diarization_infrastructure_is_not_client_overridable() -> None:
@@ -572,6 +582,11 @@ def test_diarization_infrastructure_is_not_client_overridable() -> None:
         "diarization_target",
         "diarization_connect_timeout_sec",
         "diarization_result_timeout_sec",
+        "speaker_identity_timeout_sec",
+        "speaker_identity_min_audio_sec",
+        "speaker_identity_max_audio_sec",
+        "speaker_identity_match_threshold",
+        "speaker_identity_match_margin",
     }
     assert not fields & CLIENT_OVERRIDABLE_FIELDS
 
@@ -581,11 +596,21 @@ def test_diarization_infrastructure_is_not_client_overridable() -> None:
         diarization_target="attacker.invalid:1234",
         diarization_connect_timeout_sec=99,
         diarization_result_timeout_sec=99,
+        speaker_identity_timeout_sec=99,
+        speaker_identity_min_audio_sec=0.1,
+        speaker_identity_max_audio_sec=99,
+        speaker_identity_match_threshold=0.1,
+        speaker_identity_match_margin=0.9,
     )
     assert out.diarization_enabled == cfg.diarization_enabled
     assert out.diarization_target == cfg.diarization_target
     assert out.diarization_connect_timeout_sec == cfg.diarization_connect_timeout_sec
     assert out.diarization_result_timeout_sec == cfg.diarization_result_timeout_sec
+    assert out.speaker_identity_timeout_sec == cfg.speaker_identity_timeout_sec
+    assert out.speaker_identity_min_audio_sec == cfg.speaker_identity_min_audio_sec
+    assert out.speaker_identity_max_audio_sec == cfg.speaker_identity_max_audio_sec
+    assert out.speaker_identity_match_threshold == cfg.speaker_identity_match_threshold
+    assert out.speaker_identity_match_margin == cfg.speaker_identity_match_margin
 
 
 def test_asr_segment_voice_gate_is_server_enforced() -> None:

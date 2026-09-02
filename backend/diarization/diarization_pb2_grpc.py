@@ -39,6 +39,11 @@ class DiarizationServiceStub(object):
                 request_serializer=diarization__pb2.DiarizationRequest.SerializeToString,
                 response_deserializer=diarization__pb2.DiarizationEvent.FromString,
                 _registered_method=True)
+        self.ExtractSpeakerEmbedding = channel.unary_unary(
+                '/diarization.v1.DiarizationService/ExtractSpeakerEmbedding',
+                request_serializer=diarization__pb2.SpeakerEmbeddingRequest.SerializeToString,
+                response_deserializer=diarization__pb2.SpeakerEmbeddingResponse.FromString,
+                _registered_method=True)
         self.Healthz = channel.unary_unary(
                 '/diarization.v1.DiarizationService/Healthz',
                 request_serializer=diarization__pb2.HealthzRequest.SerializeToString,
@@ -50,6 +55,12 @@ class DiarizationServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def Diarize(self, request_iterator, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ExtractSpeakerEmbedding(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -68,6 +79,11 @@ def add_DiarizationServiceServicer_to_server(servicer, server):
                     servicer.Diarize,
                     request_deserializer=diarization__pb2.DiarizationRequest.FromString,
                     response_serializer=diarization__pb2.DiarizationEvent.SerializeToString,
+            ),
+            'ExtractSpeakerEmbedding': grpc.unary_unary_rpc_method_handler(
+                    servicer.ExtractSpeakerEmbedding,
+                    request_deserializer=diarization__pb2.SpeakerEmbeddingRequest.FromString,
+                    response_serializer=diarization__pb2.SpeakerEmbeddingResponse.SerializeToString,
             ),
             'Healthz': grpc.unary_unary_rpc_method_handler(
                     servicer.Healthz,
@@ -102,6 +118,33 @@ class DiarizationService(object):
             '/diarization.v1.DiarizationService/Diarize',
             diarization__pb2.DiarizationRequest.SerializeToString,
             diarization__pb2.DiarizationEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ExtractSpeakerEmbedding(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/diarization.v1.DiarizationService/ExtractSpeakerEmbedding',
+            diarization__pb2.SpeakerEmbeddingRequest.SerializeToString,
+            diarization__pb2.SpeakerEmbeddingResponse.FromString,
             options,
             channel_credentials,
             insecure,

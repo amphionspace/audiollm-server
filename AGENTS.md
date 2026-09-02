@@ -148,6 +148,7 @@ class Config:
 | `@app.post("/api/asr/transcriptions")` + `@app.get("/api/asr/transcriptions/{job_id}")` | `docs/api/transcription-jobs-api.md` + `docs/api-reference.md` 速览 |
 | `@app.post("/api/asr/enrollment")` | `docs/api-reference.md` + `docs/protocols/transcribe-streaming-protocol.md` 注册接口章节 |
 | `@app.delete("/api/asr/enrollment/{id}")` | 同上 |
+| `@app.post("/api/asr/speaker-identify")` | `docs/api-reference.md` |
 | `@app.get("/api/asr/hotword-pool")` + `@app.post("/api/asr/hotword-pool")` + `@app.delete("/api/asr/hotword-pool")` + `@app.post("/api/asr/hotword-pool/reload")` | `docs/api-reference.md` |
 | `@app.post("/api/audio/analyze")` | `docs/api/audio-analyze-api.md` + `docs/api/public-audio-analyze-api.md` |
 | `@app.post("/api/emotion/jobs")` + `@app.get("/api/emotion/jobs/{job_id}")` | `docs/api-reference.md` |
