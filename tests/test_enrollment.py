@@ -288,6 +288,17 @@ def test_parse_qwen3_asr_language_prefix():
     assert result["detected_language"] == "Chinese"
 
 
+def test_parse_qwen3_asr_repeated_language_prefixes():
+    result = parse_model_output(
+        "language Chinese<asr_text>第一段。"
+        "language Chinese<asr_text>第二段。"
+        "language Chinese<asr_text>第三段。",
+        enable_repetition_fix=False,
+    )
+    assert result["transcription"] == "第一段。第二段。第三段。"
+    assert result["detected_language"] == "Chinese"
+
+
 def test_parse_model_output_passes_through_bare_text():
     result = parse_model_output("你好世界", enable_repetition_fix=False)
     assert result["transcription"] == "你好世界"

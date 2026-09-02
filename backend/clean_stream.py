@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from .asr.client import parse_model_output
 from .config import get_service_upstream, load_config
 from .emotion_spec.service import infer_emotion_spec_from_wav
 from .http_client import get_client
@@ -30,7 +31,6 @@ router = APIRouter()
 
 SAMPLE_RATE = 16_000
 BYTES_PER_SECOND = SAMPLE_RATE * 2
-_ASR_PREFIX = re.compile(r"^language\s+[^<]+<asr_text>", re.IGNORECASE)
 _ASCII_TOKEN = re.compile(r"\b[A-Z][A-Z0-9-]+\b")
 
 BUILTIN_HOTWORDS: dict[str, list[str]] = {
@@ -119,8 +119,8 @@ async def transcribe_qwen(pcm: bytes, options: SessionOptions) -> str:
         timeout=upstream.timeout,
     )
     response.raise_for_status()
-    text = str(response.json().get("text") or "").strip()
-    return _ASR_PREFIX.sub("", text).strip()
+    raw_text = str(response.json().get("text") or "")
+    return parse_model_output(raw_text, enable_repetition_fix=False)["transcription"]
 
 
 def _refine_prompt(

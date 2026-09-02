@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 
 import numpy as np
@@ -20,6 +21,25 @@ def test_compute_delta_matches_cumulative_protocol() -> None:
     assert clean_stream.compute_delta("今天天", "今天天气") == "气"
     assert clean_stream.compute_delta("今天天汽", "今天天气很好") == "气很好"
     assert clean_stream.compute_delta("今天天气", "今天") == ""
+
+
+def test_transcribe_qwen_strips_repeated_provider_wrappers(monkeypatch) -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, str]:
+            return {"text": "language Chinese<asr_text>第一段。language Chinese<asr_text>第二段。"}
+
+    class FakeClient:
+        async def post(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(clean_stream, "get_client", lambda: FakeClient())
+    result = asyncio.run(
+        clean_stream.transcribe_qwen(b"\x00\x00", clean_stream.SessionOptions(language="zh"))
+    )
+    assert result == "第一段。第二段。"
 
 
 def test_cleanup_guardrail_accepts_formatting_and_rejects_rewrites() -> None:
