@@ -743,6 +743,131 @@ button {
   margin-top: 12px;
 }
 
+/* -------------------- Enhanced ASR -------------------- */
+.enhanced-model-badge {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border: 1px solid rgba(204, 120, 92, 0.28);
+  border-radius: 999px;
+  background: var(--accent-ghost);
+  color: var(--accent-deep);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.enhanced-chat-area {
+  scroll-behavior: smooth;
+  overscroll-behavior-y: contain;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.enhanced-settings-card {
+  overflow-y: auto;
+}
+
+.enhanced-field {
+  display: grid;
+  gap: 6px;
+}
+
+.enhanced-field > label {
+  color: var(--ink-faint);
+  font-size: 10.5px;
+}
+
+.enhanced-field > p {
+  margin: 0;
+  color: var(--ink-faint);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.enhanced-field > .hotword-input,
+.enhanced-field > .asr-lang-select {
+  width: 100%;
+}
+
+.enhanced-context-grid {
+  padding-top: 12px;
+}
+
+.enhanced-hotwords-field {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.enhanced-result-wrap {
+  width: min(100%, 720px);
+}
+
+.enhanced-result-card {
+  width: 100%;
+  max-width: none;
+}
+
+.enhanced-result-section + .enhanced-result-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.enhanced-result-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--ink-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.enhanced-result-text {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.65;
+}
+
+.enhanced-result-text.is-placeholder {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+.enhanced-emotion-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.enhanced-emotion-chip {
+  padding: 4px 8px;
+  border: 1px solid rgba(204, 120, 92, 0.25);
+  border-radius: 999px;
+  background: var(--accent-ghost);
+  color: var(--accent-deep);
+  font-size: 11px;
+}
+
+.enhanced-result-meta {
+  margin-top: 10px;
+  color: var(--ink-faint);
+  font-size: 10.5px;
+}
+
+.enhanced-error-bubble {
+  margin-left: 40px;
+  border: 1px solid rgba(180, 80, 74, 0.24);
+  background: rgba(180, 80, 74, 0.07);
+  color: var(--danger);
+}
+
+@media (max-width: 640px) {
+  .enhanced-model-badge { display: none; }
+  .enhanced-context-grid { grid-template-columns: 1fr; }
+}
+
 /* -------------------- Replay button --------------------
    ``.bubble-replay-slot`` is the placeholder rendered into the bubble
    skeleton from page load. It MUST occupy the exact box the eventual

@@ -10,7 +10,7 @@
 - AST v3 前端会议模式（最多注册 4 位业务用户，以 TitaNet 声纹将匿名角色绑定为会话内用户 ID）
 - 情感识别（SER 8 分类 / SEC 自由文本描述，整段语音推理）
 
-前端两个 Demo 页面（ASR / 情感）共享同一套侧边栏导航与 EN / 中文 实时语言切换。
+前端四个 Demo 页面（实时 ASR / 增强 ASR / AST v3 测试 / 情感）共享同一套侧边栏导航与 EN / 中文实时语言切换。
 
 ---
 
@@ -74,6 +74,7 @@ bash start.sh
 | 页面 | 路径 | 说明 |
 |---|---|---|
 | 实时语音转写 | / 或 /index.html | 双 ASR 模型并行 + 融合；右侧面板可开启"情感识别"开关，在每条 final 转写下附上情绪与语气 |
+| 增强语音识别 | /enhanced-asr.html | 通过 Gateway clean-stream 接入 Qwen3-ASR-1.7B，支持热词纠正、文本精修、翻译与情感增强 |
 | AST v3 实时语音识别（测试用） | /asr-test.html | 右侧可选择“角色分离 / 会议模式 / 目标说话人 / 普通识别”；会议模式可注册最多 4 个业务用户 ID，并在角色语音足够后更新气泡身份 |
 | 情感识别 | /emotion.html | 整段语音 SER / SEC |
 
@@ -85,7 +86,7 @@ bash start.sh
 
 ## 前端样式重建（Tailwind）
 
-前端三个 Demo 页面共用一份 **预编译** 的 Tailwind 工具类样式 `frontend/tailwind.css`（已入仓），运行时不再依赖 `cdn.tailwindcss.com` 的 JIT 脚本，跨页切换不会再有"重新跑一遍 Tailwind 编译"的卡顿。
+前端四个 Demo 页面共用一份 **预编译** 的 Tailwind 工具类样式 `frontend/tailwind.css`（已入仓），运行时不再依赖 `cdn.tailwindcss.com` 的 JIT 脚本，跨页切换不会再有"重新跑一遍 Tailwind 编译"的卡顿。
 
 仅当你修改了 `frontend/*.html` 或 `frontend/*.js` 中使用的 Tailwind 类名（包括 JS 字符串里拼接出来的 `lg:w-[380px]` 等动态类）后，需要重新生成一次：
 
@@ -536,7 +537,7 @@ backend/
   emotion/                   # 情感模型交互
     client.py                #   vLLM API 调用与输出解析
     prompt.py                #   情感识别 Prompt 与标签集
-frontend/                    # 静态 Web 前端（两个 Demo 页面 + 共享侧边栏 + EN/中文 i18n）
+frontend/                    # 静态 Web 前端（四个 Demo 页面 + 共享侧边栏 + EN/中文 i18n）
   index.html / app.js        #   实时 ASR 主页
   emotion.html / emotion-app.js  # 情感识别演示
   sidebar.js                 #   注入侧边栏导航与 EN/中 语言切换

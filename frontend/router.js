@@ -1,7 +1,7 @@
 /**
  * Client-side router for the Amphion demos.
  *
- * The three demo pages used to be independent HTML documents that the
+ * The demo pages used to be independent HTML documents that the
  * browser navigated between via cross-document View Transitions. That
  * forced the entire JS context (i18n dictionaries, audio worklets,
  * Tailwind styles, font cache) to be re-bootstrapped on every nav,
