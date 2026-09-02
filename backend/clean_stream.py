@@ -161,8 +161,11 @@ def _refine_prompt(
             )
         if emotion:
             instructions.append(
-                "情感描述只可用于补充符合语气的标点和少量匹配 emoji；"
-                "必须保留原文已有的每一个标点，不得删除或替换，也不得据此增删或替换任何字词。"
+                "可根据原文明确的语义或交际意图，以及情感描述，"
+                "在句末追加最多一个自然、常用且匹配的 emoji；语义明确时优先匹配语义，"
+                "不要总是使用笑脸。语义和情感都不明确或为中性时不要添加 emoji。"
+                "必须保留原文已有的每一个标点，不得删除、替换或移动，"
+                "也不得据此增删或替换任何字词。"
             )
         instruction = "\n".join(instructions)
     payload = {
@@ -171,10 +174,39 @@ def _refine_prompt(
         "glossary": options.glossary,
         "emotion": emotion or {},
     }
-    return [
-        {"role": "system", "content": instruction},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-    ]
+    messages = [{"role": "system", "content": instruction}]
+    if emotion and not options.translate_mode:
+        examples = [
+            ("加油！", "语气平静但带有鼓励意味", "加油！💪"),
+            ("恭喜你通过考试！", "语气真诚、喜悦", "恭喜你通过考试！🎉"),
+            ("太让人难过了。", "语气低落、悲伤", "太让人难过了。😢"),
+            ("你怎么能这样做！", "语气愤怒、强烈不满", "你怎么能这样做！😠"),
+            ("门外好像有人。", "语气害怕、紧张", "门外好像有人。😨"),
+            ("原来你也在这里？", "语气惊讶、意外", "原来你也在这里？😮"),
+            ("会议将在下午三点开始。", "语气中性、客观", "会议将在下午三点开始。"),
+        ]
+        for example_text, example_emotion, example_output in examples:
+            example_payload = {
+                "asr_text": example_text,
+                "language": "zh",
+                "glossary": [],
+                "emotion": {
+                    "mode": "sec",
+                    "label": example_emotion,
+                    "text": example_emotion,
+                },
+            }
+            messages.extend(
+                [
+                    {
+                        "role": "user",
+                        "content": json.dumps(example_payload, ensure_ascii=False),
+                    },
+                    {"role": "assistant", "content": example_output},
+                ]
+            )
+    messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False)})
+    return messages
 
 
 def _normalize_for_compare(text: str) -> str:

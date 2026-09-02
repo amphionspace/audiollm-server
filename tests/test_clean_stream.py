@@ -69,6 +69,39 @@ def test_emotion_cleanup_may_add_emoji_but_must_preserve_punctuation() -> None:
     ) == (False, "punctuation_dropped")
 
 
+def test_emotion_refine_prompt_uses_semantic_and_emotional_few_shots() -> None:
+    options = clean_stream.SessionOptions(language="zh", cleanup_level="light", text_emotion=True)
+    messages = clean_stream._refine_prompt(
+        "继续努力！",
+        options,
+        {"mode": "sec", "label": "encouraging", "text": "语气鼓励、坚定"},
+    )
+
+    assert [message["role"] for message in messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert "语义或交际意图" in messages[0]["content"]
+    assert "最多一个" in messages[0]["content"]
+    assert messages[1]["content"].startswith('{"asr_text": "加油！"')
+    assert messages[2] == {"role": "assistant", "content": "加油！💪"}
+    assert messages[-1]["content"].startswith('{"asr_text": "继续努力！"')
+
+
 def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
     class FakeSegmentingStream:
         def __init__(self, *, enable_partial):
