@@ -161,8 +161,8 @@ def _refine_prompt(
             )
         if emotion:
             instructions.append(
-                "情感描述只可用于选择句号、问号、感叹号或停顿；"
-                "绝对不能据此增删或替换任何字词，也不要添加 emoji。"
+                "情感描述只可用于补充符合语气的标点和少量匹配 emoji；"
+                "必须保留原文已有的每一个标点，不得删除或替换，也不得据此增删或替换任何字词。"
             )
         instruction = "\n".join(instructions)
     payload = {
@@ -206,6 +206,8 @@ def evaluate_cleanup_result(
     candidate: str,
     cleanup_level: str,
     glossary: list[str],
+    *,
+    preserve_punctuation: bool = False,
 ) -> tuple[bool, str]:
     """Reject cleanup output that is more likely to be a rewrite than a correction."""
     original_cmp = _normalize_for_compare(original)
@@ -223,6 +225,19 @@ def evaluate_cleanup_result(
     )
     if original_digits != candidate_digits:
         return False, "digits_changed"
+
+    if preserve_punctuation:
+        original_punctuation = [
+            char for char in original if unicodedata.category(char).startswith("P")
+        ]
+        candidate_punctuation = iter(
+            char for char in candidate if unicodedata.category(char).startswith("P")
+        )
+        if not all(
+            any(actual == expected for actual in candidate_punctuation)
+            for expected in original_punctuation
+        ):
+            return False, "punctuation_dropped"
 
     for token in _ASCII_TOKEN.findall(original):
         if token not in candidate:
@@ -356,7 +371,11 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                 guardrail_status = "not_applicable"
                 if not options.translate_mode:
                     accepted, reason = evaluate_cleanup_result(
-                        text, processed, options.cleanup_level, options.glossary
+                        text,
+                        processed,
+                        options.cleanup_level,
+                        options.glossary,
+                        preserve_punctuation=bool(emotion),
                     )
                     if not accepted:
                         logger.warning(

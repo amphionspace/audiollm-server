@@ -53,7 +53,7 @@ Gateway。识别只使用本机 `Qwen3-ASR-1.7B` HTTP 非流式模型，以累�
 | `translate_mode` | `false` | 开启后执行翻译而非 cleanup |
 | `target_language` | 无 | 翻译开启时必填，不能为 `auto` |
 | `cleanup.level` | `light` | `off`、`light`、`standard` |
-| `cleanup.text_emotion` | `false` | 调用 AmphionSPEC `sec`，并把结果提供给 refine |
+| `cleanup.text_emotion` | `false` | 调用 AmphionSPEC `sec`；refine 可补充情感标点和少量匹配 emoji，但不能删除或替换原标点 |
 | `hotwords.builtin` | `[]` | 最多一个：`finance`、`education`、`internet` |
 | `hotwords.custom` | `[]` | 最多取前 100 个自定义术语 |
 
@@ -99,7 +99,8 @@ refine 或翻译结果：
 ```
 
 cleanup 输出会经过保守 guardrail：检查与原文的相似度、长度、数字、英文缩写及已出现
-的 glossary 术语。输出疑似改写或丢失关键信息时，`text` 回退为原始句段，
+的 glossary 术语。情感增强允许新增标点和少量匹配 emoji，但会额外验证原文标点按原
+顺序完整保留。输出疑似改写、删除/替换原标点或丢失关键信息时，`text` 回退为原始句段，
 `guardrail_status` 为 `rejected:<reason>`，会话最终 `cleanup_status` 为
 `degraded_raw_only`。翻译模式不使用同语种 cleanup guardrail，状态为
 `not_applicable`。

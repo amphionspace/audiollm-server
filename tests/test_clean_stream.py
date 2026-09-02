@@ -45,6 +45,30 @@ def test_cleanup_guardrail_accepts_formatting_and_rejects_rewrites() -> None:
     )
 
 
+def test_emotion_cleanup_may_add_emoji_but_must_preserve_punctuation() -> None:
+    assert clean_stream.evaluate_cleanup_result(
+        "你好，世界！",
+        "你好，世界！😊",
+        "light",
+        [],
+        preserve_punctuation=True,
+    ) == (True, "ok")
+    assert clean_stream.evaluate_cleanup_result(
+        "你好，世界！",
+        "你好世界😊",
+        "light",
+        [],
+        preserve_punctuation=True,
+    ) == (False, "punctuation_dropped")
+    assert clean_stream.evaluate_cleanup_result(
+        "真的吗？",
+        "真的吗！😮",
+        "light",
+        [],
+        preserve_punctuation=True,
+    ) == (False, "punctuation_dropped")
+
+
 def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
     class FakeSegmentingStream:
         def __init__(self, *, enable_partial):
