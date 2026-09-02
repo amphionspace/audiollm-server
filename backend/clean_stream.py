@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import io
@@ -16,18 +17,18 @@ from typing import Any
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from .config import Upstream, get_service_upstream, load_config
+from .config import get_service_upstream, load_config
 from .emotion_spec.service import infer_emotion_spec_from_wav
 from .http_client import get_client
+from .streaming.audio_stream import VadSegmentedStream
+from .streaming.events import PartialSnapshot, SegmentReady
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 SAMPLE_RATE = 16_000
 BYTES_PER_SECOND = SAMPLE_RATE * 2
-PARTIAL_INTERVAL_BYTES = BYTES_PER_SECOND * 2
 MAX_AUDIO_BYTES = BYTES_PER_SECOND * 60
-SPEECH_RMS_THRESHOLD = 120.0
 _ASR_PREFIX = re.compile(r"^language\s+[^<]+<asr_text>", re.IGNORECASE)
 
 BUILTIN_HOTWORDS: dict[str, list[str]] = {
@@ -64,13 +65,6 @@ def _pcm_to_wav(pcm: bytes) -> bytes:
         wav.setframerate(SAMPLE_RATE)
         wav.writeframes(pcm)
     return output.getvalue()
-
-
-def _has_speech(pcm: bytes) -> bool:
-    if len(pcm) < 2:
-        return False
-    samples = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype="<i2").astype(np.float32)
-    return bool(samples.size and np.sqrt(np.mean(samples * samples)) >= SPEECH_RMS_THRESHOLD)
 
 
 def _parse_options(message: dict[str, Any]) -> SessionOptions:
@@ -182,12 +176,6 @@ async def infer_emotion(pcm: bytes, options: SessionOptions) -> dict[str, Any]:
     }
 
 
-async def _send_error(websocket: WebSocket, session_id: str, code: str, message: str) -> None:
-    await websocket.send_json(
-        {"type": "error", "session_id": session_id, "code": code, "message": message}
-    )
-
-
 def compute_delta(previous_text: str, current_text: str) -> str:
     """Match the referenced clean-stream protocol's cumulative-text delta."""
     if current_text.startswith(previous_text):
@@ -202,6 +190,21 @@ def compute_delta(previous_text: str, current_text: str) -> str:
     return current_text[prefix_len:]
 
 
+def _float_pcm_to_bytes(pcm: np.ndarray) -> bytes:
+    return (np.clip(pcm, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+
+
+def _join_segments(parts: list[str]) -> str:
+    result = ""
+    for part in parts:
+        value = part.strip()
+        if not value:
+            continue
+        separator = " " if result and result[-1].isascii() and value[0].isascii() else ""
+        result += separator + value
+    return result
+
+
 @router.websocket("/asr/v1/clean-stream")
 async def clean_stream_ws(websocket: WebSocket) -> None:
     """Gateway-compatible wire protocol, owned and served by this application."""
@@ -209,22 +212,119 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
     session_id = f"asr-clean-{secrets.token_hex(6)}"
     await websocket.send_json({"type": "session.created", "session": {"id": session_id}})
     options: SessionOptions | None = None
-    audio = bytearray()
-    last_partial_bytes = 0
-    last_partial_text = ""
+    stream: VadSegmentedStream | None = None
+    event_queue: asyncio.Queue[PartialSnapshot | SegmentReady | None] = asyncio.Queue()
+    worker: asyncio.Task[None] | None = None
+    postprocess_tasks: list[asyncio.Task[None]] = []
+    send_lock = asyncio.Lock()
+    raw_segments: list[str] = []
+    processed_segments: dict[int, str] = {}
+    postprocess_failed = False
+    emitted_text = ""
+    total_audio_bytes = 0
+    worker_error: Exception | None = None
+
+    async def send(payload: dict[str, Any]) -> None:
+        async with send_lock:
+            await websocket.send_json(payload)
+
+    async def send_error(code: str, message: str) -> None:
+        await send({"type": "error", "session_id": session_id, "code": code, "message": message})
+
+    async def postprocess_segment(index: int, text: str, pcm: bytes) -> None:
+        nonlocal postprocess_failed
+        assert options is not None
+        emotion: dict[str, Any] | None = None
+        try:
+            if options.text_emotion:
+                emotion = await infer_emotion(pcm, options)
+                await send({"type": "emotion.bucket", "segment_index": index, "emotion": emotion})
+            if options.translate_mode or options.cleanup_level != "off":
+                processed = await refine_text(text, options, emotion)
+                processed_segments[index] = processed
+                await send({
+                    "type": "postprocess.delta",
+                    "postprocess_mode": "translation" if options.translate_mode else "cleanup",
+                    "delta": processed,
+                    "text": processed,
+                    "segment_index": index,
+                })
+        except Exception as exc:
+            postprocess_failed = True
+            processed_segments[index] = text
+            logger.exception("clean-stream segment %d postprocess failed: %s", index, exc)
+
+    async def process_events() -> None:
+        nonlocal emitted_text, worker_error
+        assert options is not None
+        while True:
+            event = await event_queue.get()
+            try:
+                if event is None:
+                    return
+                if worker_error is not None:
+                    continue
+                pcm = _float_pcm_to_bytes(event.pcm)
+                if isinstance(event, PartialSnapshot):
+                    try:
+                        partial_tail = await transcribe_qwen(pcm, options)
+                    except Exception as exc:
+                        logger.warning("clean-stream partial ASR failed: %s", exc)
+                        continue
+                    current = _join_segments([*raw_segments, partial_tail])
+                    if current and current != emitted_text:
+                        await send({
+                            "type": "transcription.delta",
+                            "delta": compute_delta(emitted_text, current),
+                            "text": current,
+                        })
+                        emitted_text = current
+                    continue
+                segment_text = await transcribe_qwen(pcm, options)
+                if not segment_text:
+                    continue
+                raw_segments.append(segment_text)
+                current = _join_segments(raw_segments)
+                if current != emitted_text:
+                    await send({
+                        "type": "transcription.delta",
+                        "delta": compute_delta(emitted_text, current),
+                        "text": current,
+                    })
+                    emitted_text = current
+                index = len(raw_segments) - 1
+                postprocess_tasks.append(
+                    asyncio.create_task(postprocess_segment(index, segment_text, pcm))
+                )
+            except Exception as exc:
+                worker_error = exc
+                logger.exception("clean-stream ASR worker failed: %s", exc)
+            finally:
+                event_queue.task_done()
+
+    async def enqueue_events(events: list[Any]) -> None:
+        for event in events:
+            if isinstance(event, SegmentReady):
+                await event_queue.put(event)
+            elif isinstance(event, PartialSnapshot) and event_queue.empty():
+                await event_queue.put(event)
+
     try:
         while True:
             message = await websocket.receive_json()
             kind = message.get("type")
             if kind == "session.update":
                 if options is not None:
-                    await _send_error(websocket, session_id, "invalid_state", "session.update may only be sent once.")
+                    await send_error("invalid_state", "session.update may only be sent once.")
                     continue
                 try:
                     options = _parse_options(message)
                 except ValueError as exc:
-                    await _send_error(websocket, session_id, "invalid_request", str(exc))
+                    await send_error("invalid_request", str(exc))
                     continue
+                stream = VadSegmentedStream(enable_partial=True)
+                stream.configure(load_config())
+                worker = asyncio.create_task(process_events())
                 await websocket.send_json({
                     "type": "session.updated",
                     "session": {"id": session_id},
@@ -238,52 +338,50 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                 })
                 continue
             if options is None:
-                await _send_error(websocket, session_id, "invalid_state", "Send session.update before streaming audio.")
+                await send_error("invalid_state", "Send session.update before streaming audio.")
                 continue
             if kind == "input_audio_buffer.append":
                 try:
                     chunk = base64.b64decode(message.get("audio") or "", validate=True)
                 except (binascii.Error, ValueError, TypeError):
-                    await _send_error(websocket, session_id, "invalid_audio", "audio must be valid base64 PCM.")
+                    await send_error("invalid_audio", "audio must be valid base64 PCM.")
                     continue
                 if not chunk:
-                    await _send_error(websocket, session_id, "invalid_audio", "audio field is required.")
+                    await send_error("invalid_audio", "audio field is required.")
                     continue
-                if len(audio) + len(chunk) > MAX_AUDIO_BYTES:
-                    await _send_error(websocket, session_id, "audio_too_long", "Audio exceeds 60 seconds.")
+                if total_audio_bytes + len(chunk) > MAX_AUDIO_BYTES:
+                    await send_error("audio_too_long", "Audio exceeds 60 seconds.")
                     await websocket.close(code=1009)
                     return
-                audio.extend(chunk)
-                if len(audio) - last_partial_bytes >= PARTIAL_INTERVAL_BYTES and _has_speech(audio):
-                    partial = await transcribe_qwen(bytes(audio), options)
-                    if partial and partial != last_partial_text:
-                        delta = compute_delta(last_partial_text, partial)
-                        await websocket.send_json({"type": "transcription.delta", "delta": delta, "text": partial})
-                        last_partial_text = partial
-                    last_partial_bytes = len(audio)
+                total_audio_bytes += len(chunk)
+                assert stream is not None
+                await enqueue_events(list(stream.feed(chunk)))
                 continue
             if kind == "input_audio_buffer.commit":
                 if message.get("final") is not True:
-                    await _send_error(websocket, session_id, "invalid_request", "Only final=true is supported.")
+                    await send_error("invalid_request", "Only final=true is supported.")
                     continue
-                if not audio:
-                    await _send_error(websocket, session_id, "no_audio", "No audio data received.")
+                if not total_audio_bytes:
+                    await send_error("no_audio", "No audio data received.")
                     return
-                if not _has_speech(audio):
-                    await _send_error(websocket, session_id, "no_speech_detected", "No speech detected.")
+                assert stream is not None and worker is not None
+                await enqueue_events(list(stream.flush(force=True)))
+                await event_queue.join()
+                await event_queue.put(None)
+                await worker
+                if worker_error is not None:
+                    await send_error("server_error", "ASR service unavailable.")
                     return
-                final_text = await transcribe_qwen(bytes(audio), options)
-                if final_text != last_partial_text:
-                    delta = compute_delta(last_partial_text, final_text)
-                    await websocket.send_json({"type": "transcription.delta", "delta": delta, "text": final_text})
-                emotion: dict[str, Any] | None = None
-                if options.text_emotion:
-                    emotion = await infer_emotion(bytes(audio), options)
-                    await websocket.send_json({"type": "emotion.bucket", "emotion": emotion})
+                if not raw_segments:
+                    await send_error("no_speech_detected", "No speech detected.")
+                    return
+                if postprocess_tasks:
+                    await asyncio.gather(*postprocess_tasks)
+                final_text = _join_segments(raw_segments)
                 result: dict[str, Any] = {
                     "type": "transcription.done", "session_id": session_id,
                     "text": final_text,
-                    "usage": {"type": "duration", "seconds": round(len(audio) / BYTES_PER_SECOND, 3)},
+                    "usage": {"type": "duration", "seconds": round(total_audio_bytes / BYTES_PER_SECOND, 3)},
                     "language": options.language,
                     "builtin_hotword_lists": options.builtin,
                     "custom_hotword_count": len(options.custom),
@@ -295,26 +393,24 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                 if options.translate_mode or options.cleanup_level != "off":
                     status_key = "translation_status" if options.translate_mode else "cleanup_status"
                     text_key = "translated_text" if options.translate_mode else "cleaned_text"
-                    try:
-                        processed = await refine_text(final_text, options, emotion)
-                        result[text_key] = processed
-                        result[status_key] = "completed"
-                        await websocket.send_json({
-                            "type": "postprocess.delta",
-                            "postprocess_mode": result["postprocess_mode"],
-                            "delta": processed, "text": processed,
-                        })
-                    except Exception as exc:  # raw ASR remains usable if refine is down
-                        logger.exception("clean-stream refine failed: %s", exc)
-                        result[status_key] = "degraded_raw_only"
+                    result[text_key] = _join_segments(
+                        [processed_segments.get(index, text) for index, text in enumerate(raw_segments)]
+                    )
+                    result[status_key] = "degraded_raw_only" if postprocess_failed else "completed"
                 await websocket.send_json(result)
                 return
-            await _send_error(websocket, session_id, "invalid_request", "Unknown message type.")
+            await send_error("invalid_request", "Unknown message type.")
     except WebSocketDisconnect:
         return
     except Exception as exc:
         logger.exception("clean-stream session failed: %s", exc)
         try:
-            await _send_error(websocket, session_id, "server_error", "Temporary server error.")
+            await send_error("server_error", "Temporary server error.")
         except RuntimeError:
             pass
+    finally:
+        if worker is not None and not worker.done():
+            worker.cancel()
+        for task in postprocess_tasks:
+            if not task.done():
+                task.cancel()

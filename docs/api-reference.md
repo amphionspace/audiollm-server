@@ -60,7 +60,9 @@ curl -fsS http://172.16.0.3:8082/readyz
 
 `/asr/v1/clean-stream` 使用独立 JSON/base64 协议，不采用下文通用任务型 WS 的
 二进制 `start`/`stop` 流程。它不连接 Gateway，不要求客户端 API Key，只使用本机
-Qwen3-ASR-1.7B，且不使用 k2 或副模型。完整协议见
+Qwen3-ASR-1.7B，且不使用 k2 或副模型。录音期间每个 VAD final 都会异步启动
+情感与 refine/翻译并下发带 `segment_index` 的结果，最终 commit 只负责 flush 和
+drain。完整协议见
 [增强语音识别 WebSocket 协议](protocols/clean-stream-protocol.md)。
 
 `/transcribe-streaming` 的 `final` / `final_asr` 消息除文本外会带实际送入 LLM ASR 的 `audio_b64`（WAV base64）、`duration_sec` 和 `effective_hotwords`（本段音频经 RAG-ASR/Triton 实际召回的热词列表，不含临时请求热词），主前端用音频字段做分段回放、可用 `effective_hotwords` 展示本段召回命中。k2 模式下原始段仍来自 endpoint 对应的本地缓冲，不由本地 VAD 重新决定端点；但 `audio_b64` 会反映送模前 `asr_segment_voice_filter_*` 的裁剪结果。完整字段见 [实时转写 WebSocket 协议](protocols/transcribe-streaming-protocol.md)。服务端开启 `debug_dump_enabled`（`defaults.debug`，运维级、不在客户端覆写白名单）后，`ready` 带 `session_id`/`dump_dir`、`final` 带 `dump_id`，并把每段音频+元信息落盘到 `<dump_dir>/<session_id>/<seg_id>.{wav,json}`，前端在气泡上显示可复制的 `dump_id`，用于回放/最终结果对账，详见协议文档“调试落盘”小节。

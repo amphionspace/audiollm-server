@@ -21,9 +21,8 @@ Gateway。识别只使用本机 `Qwen3-ASR-1.7B` HTTP 非流式模型，以累�
      → session.update → session.updated
      → input_audio_buffer.append × N
      ← transcription.delta × N
+     ← emotion.bucket / postprocess.delta（每个 VAD final 异步触发，可选）
      → input_audio_buffer.commit(final=true)
-     ← emotion.bucket（可选）
-     ← postprocess.delta（可选）
      ← transcription.done
 ```
 
@@ -72,6 +71,12 @@ glossary，用于术语纠错；`off` 不承诺热词生效。
 
 当前只支持 `final=true`。
 
+服务端在录音期间持续执行 VAD。每个 VAD 句段 final 会立即排队做 Qwen3-ASR，
+然后在后台异步执行情感与 refine/翻译；音频接收不会等待后处理完成。客户端因此可在
+发送最终 commit 之前收到带 `segment_index` 的 `emotion.bucket` 和
+`postprocess.delta`。最终 commit 只负责 flush 尾段、等待已提交任务 drain，并发送
+会话级 `transcription.done`。
+
 ## 服务端事件
 
 原始识别累计结果：
@@ -83,13 +88,13 @@ glossary，用于术语纠错；`off` 不承诺热词生效。
 情感增强开启时返回（对外 mode 只有 `ser` / `sec`，本接口使用 `sec`）：
 
 ```json
-{"type":"emotion.bucket","emotion":{"mode":"sec","label":"happy","text":"语气轻快"}}
+{"type":"emotion.bucket","segment_index":0,"emotion":{"mode":"sec","label":"happy","text":"语气轻快"}}
 ```
 
 refine 或翻译结果：
 
 ```json
-{"type":"postprocess.delta","postprocess_mode":"cleanup","delta":"今天天气。","text":"今天天气。"}
+{"type":"postprocess.delta","postprocess_mode":"cleanup","segment_index":0,"delta":"今天天气。","text":"今天天气。"}
 ```
 
 最终结果：

@@ -23,6 +23,21 @@ def test_compute_delta_matches_cumulative_protocol() -> None:
 
 
 def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
+    class FakeSegmentingStream:
+        def __init__(self, *, enable_partial):
+            assert enable_partial is True
+
+        def configure(self, cfg):
+            return None
+
+        def feed(self, pcm):
+            samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+            return [clean_stream.SegmentReady(pcm=samples)]
+
+        def flush(self, *, force):
+            assert force is True
+            return []
+
     async def fake_asr(pcm, options):
         assert options.language == "zh"
         return "欢迎使用 Amphion"
@@ -38,6 +53,7 @@ def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
     monkeypatch.setattr(clean_stream, "transcribe_qwen", fake_asr)
     monkeypatch.setattr(clean_stream, "infer_emotion", fake_emotion)
     monkeypatch.setattr(clean_stream, "refine_text", fake_refine)
+    monkeypatch.setattr(clean_stream, "VadSegmentedStream", FakeSegmentingStream)
 
     with TestClient(app) as client:
         with client.websocket_connect("/asr/v1/clean-stream") as ws:
@@ -53,11 +69,12 @@ def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
             assert updated["hotwords"] == {"builtin": ["internet"], "custom_count": 1}
             ws.send_json({"type": "input_audio_buffer.append", "audio": _tone()})
             assert ws.receive_json()["type"] == "transcription.delta"
-            ws.send_json({"type": "input_audio_buffer.commit", "final": True})
             emotion = ws.receive_json()
             assert emotion["type"] == "emotion.bucket"
             assert emotion["emotion"]["mode"] == "sec"
             assert ws.receive_json()["type"] == "postprocess.delta"
+            # Segment final/refine arrives while the session is still recording.
+            ws.send_json({"type": "input_audio_buffer.commit", "final": True})
             done = ws.receive_json()
             assert done["type"] == "transcription.done"
             assert done["text"] == "欢迎使用 Amphion"
