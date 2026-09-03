@@ -643,6 +643,23 @@ async def test_session_rejects_legacy_start_user_id():
 
 
 @pytest.mark.asyncio
+async def test_emotion_session_rejects_removed_mode():
+    stream = _ScriptedStream(feed_events=[], flush_events=[])
+    ws = FakeWebSocket([{"text": '{"type":"start","mode":"sepc"}'}])
+
+    session = StreamingSession(ws, stream=stream, engine=EmotionTaskEngine())
+    await session.run()
+    await session.cleanup()
+
+    assert {
+        "type": "error",
+        "code": "invalid_start",
+        "message": "mode must be ser or sec",
+    } in ws.sent
+    assert session._started is False
+
+
+@pytest.mark.asyncio
 async def test_session_dispatches_async_partial_text_and_segment():
     stream = _AsyncScriptedStream()
     engine = _RecorderEngine()
@@ -824,7 +841,7 @@ async def test_emotion_engine_emits_final_emotion_sec(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_emotion_engine_falls_back_to_config_mode(monkeypatch):
-    """When start has no mode, engine should pick Config.emotion_task_mode."""
+    """When start has no mode, engine should pick the configured public mode."""
     sent: list[dict] = []
 
     async def _send_json(payload):
@@ -1445,7 +1462,7 @@ def test_emotion_prompt_constants_match_amphion():
     )
 
     assert SER_PROMPT == "Classify the emotion of the following audio:"
-    assert SEC_PROMPT == "Describe the emotion of the following audio:"
+    assert SEC_PROMPT == "Describe the paralinguistic emotion cues of the following audio:"
     assert SER_TAXONOMY == (
         "Neutral",
         "Happy",
@@ -1458,7 +1475,8 @@ def test_emotion_prompt_constants_match_amphion():
     )
     assert normalize_mode("SER") == "ser"
     assert normalize_mode("sec") == "sec"
-    assert normalize_mode("???") == "ser"  # default fallback
+    with pytest.raises(ValueError, match="mode must be ser or sec"):
+        normalize_mode("???")
 
 
 # ---------------------------------------------------------------------------

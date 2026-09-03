@@ -212,12 +212,9 @@
    * POST an emotion-style job endpoint (202) and poll until succeeded or failed.
    * Returns the ``final_emotion`` result object.
    *
-   * ``options.endpoint`` chooses which backend handles the job:
-   *   - ``/api/emotion/jobs`` (default) — baseline emotion model
-   *   - ``/api/emotion-spec/jobs`` — AmphionSPEC paralinguistic model
-   * Both servers return the same {job_id, status, poll_url} envelope so
-   * the polling code below stays endpoint-agnostic (it follows the
-   * ``poll_url`` from the create response when present).
+   * ``options.endpoint`` can override the default ``/api/emotion/jobs``.
+   * The endpoint returns {job_id, status, poll_url}; polling follows the
+   * returned URL when present.
    */
   async function submitEmotionJobAndPoll(wavBytes, formFields, options) {
     const opts = options || {};

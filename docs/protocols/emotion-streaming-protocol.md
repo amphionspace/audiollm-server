@@ -10,7 +10,7 @@
 |---|---|
 | 创建任务 | `POST /api/emotion/jobs` |
 | 查询任务 | `GET /api/emotion/jobs/{job_id}` |
-| Base URL | `http://172.16.0.3:8082` |
+| Base URL | `https://playground.amphion.top` |
 | 鉴权 | 无内置鉴权 |
 | 音频输入 | `multipart/form-data` 字段 `audio`（WAV 文件） |
 | 中间结果 | 不支持 |
@@ -23,7 +23,9 @@
 | `ser` | Speech Emotion Recognition | 8 分类情感标签 |
 | `sec` | Speech Emotion Captioning | 自由文本情感描述，并尽量给出匹配标签 |
 
-`mode` 不传时使用服务端配置 `emotion_task_mode`，通常为 `ser`。
+`mode` 不传时使用服务端配置 `emotion_task_mode`，当前为 `sec`。公开协议只接受
+`ser` / `sec`；模型名称不会出现在路径、mode 或响应字段中。其他值返回 `400`：
+`{"detail":"mode must be ser or sec"}`。
 
 ### SER 标签集
 
@@ -145,7 +147,7 @@ Client                                      Server
 pip install requests
 
 python docs/examples/http_emotion_job.py sample.wav \
-  --base-url http://172.16.0.3:8082 \
+  --base-url https://playground.amphion.top \
   --mode ser \
   --language zh
 ```
@@ -153,7 +155,7 @@ python docs/examples/http_emotion_job.py sample.wav \
 ## 部署说明
 
 - Job 状态保存在 **进程内存** 中；`uvicorn --workers N` 且 N>1 时，创建与轮询必须命中同一 worker，或后续引入 Redis 等共享存储。
-- 单 worker systemd 部署（`172.16.0.3:8082`）下可直接使用本 API。
+- 当前公网部署使用单 worker，创建和轮询可直接使用同一 Base URL。
 
 ## 相关文档
 

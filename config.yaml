@@ -167,13 +167,13 @@ defaults:
                                           # (实测 350ms: 636 段 p50 1.5s; 800ms: 303 段
                                           #  p50 3.2s, e2e 还快 11%)
   emotion:
-    emotion_task_mode: ser
+    emotion_task_mode: sec
     emotion_max_audio_seconds: 20.0
     emotion_max_concurrent_jobs: 8        # 进程级 job 背压
     emotion_job_queue_max: 64
     emotion_job_ttl_sec: 3600
   emotion_spec:
-    emotion_spec_task_mode: sepc
+    emotion_spec_task_mode: sec
     emotion_spec_max_audio_seconds: 20.0
     emotion_spec_max_concurrent_jobs: 8
     emotion_spec_job_queue_max: 64
@@ -197,7 +197,7 @@ rest:
   upstreams:                     # 共享绑定(/api/asr/upload、/api/audio/analyze、情感 jobs)
     primary: amphion_asr
     secondary: qwen_asr
-    emotion: amphion_emotion
+    emotion: amphion_spec
     emotion_spec: amphion_spec
   routes:
     transcribe:                  # 长音频离线转写 (POST /api/asr/transcriptions) 专属推理配置
@@ -228,4 +228,4 @@ endpoints:
   - path: /emotion-segmented-streaming
     protocol: native
     task: emotion
-    upstreams: { emotion: amphion_emotion }
+    upstreams: { emotion: amphion_spec }

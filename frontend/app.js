@@ -936,8 +936,8 @@
   function renderEmotionMeta(emotion) {
     if (!emotion) return '';
     const ser = String(emotion.ser_label || '').trim();
-    const sepcText = String(emotion.sepc_text || '').trim();
-    if (!ser && !sepcText) return '';
+    const secText = String(emotion.sec_text || '').trim();
+    if (!ser && !secText) return '';
 
     const parts = [];
     if (ser) {
@@ -945,9 +945,9 @@
         `<span class="text-faint">${escapeHtml(t('asr.emotion.result.ser'))}:</span> ${escapeHtml(ser)}`
       );
     }
-    if (sepcText) {
+    if (secText) {
       parts.push(
-        `<span class="text-faint">${escapeHtml(t('asr.emotion.result.sepc'))}:</span> ${escapeHtml(sepcText)}`
+        `<span class="text-faint">${escapeHtml(t('asr.emotion.result.sec'))}:</span> ${escapeHtml(secText)}`
       );
     }
     return `
@@ -1098,8 +1098,8 @@
       const hasEmotionSignal =
         !!emotionInfo &&
         (String(emotionInfo.ser_label || '').trim() ||
-          String(emotionInfo.sepc_text || '').trim() ||
-          String(emotionInfo.sepc_label || '').trim());
+          String(emotionInfo.sec_text || '').trim() ||
+          String(emotionInfo.sec_label || '').trim());
 
       // Hotword feedback is now exclusively the inline <mark> highlight
       // applied by applyHotwordHighlights once the final text has settled.

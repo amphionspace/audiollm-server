@@ -13,7 +13,7 @@ The same engine class powers two endpoints with different stream strategies:
 
 The task variant (``ser`` for classification, ``sec`` for free-form caption)
 is selected per session via the ``mode`` field on the ``start`` control
-message; if absent, ``Config.emotion_task_mode`` (default ``"ser"``) is used.
+message; if absent, ``Config.emotion_task_mode`` (default ``"sec"``) is used.
 """
 
 from __future__ import annotations

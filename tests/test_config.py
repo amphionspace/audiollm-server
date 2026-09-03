@@ -188,7 +188,8 @@ def test_shipped_config_projects_rest_bindings() -> None:
     assert cfg.vllm_prompt_template == "amphion_asr_1.7b"
     assert cfg.vllm_prompt_template in VALID_PRIMARY_PROMPT_TEMPLATES
     assert cfg.secondary_vllm_base_url == "http://localhost:8001"
-    assert cfg.emotion_vllm_base_url == "http://localhost:8222"
+    assert cfg.emotion_vllm_base_url == "http://localhost:9001"
+    assert cfg.emotion_vllm_model_name == "AmphionSPEC"
     assert cfg.emotion_spec_vllm_base_url == "http://localhost:9001"
     assert cfg.asr_request_timeout == 120
     assert cfg.emotion_request_timeout == 30
@@ -198,8 +199,8 @@ def test_shipped_config_projects_rest_bindings() -> None:
     assert cfg.pseudo_stream_first_partial_ms == 200
     assert cfg.enable_dual_asr_fusion is False
     assert cfg.enable_secondary_asr is True
-    assert cfg.emotion_task_mode == "ser"
-    assert cfg.emotion_spec_task_mode == "sepc"
+    assert cfg.emotion_task_mode == "sec"
+    assert cfg.emotion_spec_task_mode == "sec"
     assert cfg.enable_asr_repetition_fix is True
     assert cfg.k2_enabled is True
     assert cfg.k2_target == "localhost:50051"

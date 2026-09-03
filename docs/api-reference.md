@@ -65,6 +65,10 @@ Qwen3-ASR-1.7B，且不使用 k2 或副模型。录音期间每个 VAD final 都
 drain。完整协议见
 [增强语音识别 WebSocket 协议](protocols/clean-stream-protocol.md)。
 
+公开情感协议统一只使用 `ser` / `sec`：`ser` 返回分类标签，`sec` 返回自由文本情感
+描述。AmphionSPEC 是服务端内部模型名，不作为 route、mode 或响应字段暴露；不提供
+`/api/emotion-spec/jobs`，传入 `spec` / `sepc` 等 mode 返回参数错误。
+
 clean-stream 不设置 60 秒会话硬上限。cleanup 使用保守 prompt，并在下发前检查
 相似度、长度、数字、英文缩写及 glossary 术语；情感增强通过 few-shot 示例综合文本
 语义、交际意图和语音情感，可在句末新增最多一个匹配 emoji，但不得删除或替换原标点。
@@ -161,7 +165,7 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 | 融合阈值 | fusion_similarity_threshold、fusion_min_primary_score、fusion_max_repetition_ratio、fusion_disagreement_threshold、fusion_hotword_boost、fusion_primary_score_margin |
 | 热词召回 | enable_hotword_recall、recall_top_k |
 | TS-ASR | asr_enrollment_min_sec、asr_enrollment_max_sec、asr_enrollment_ttl_sec |
-| 情感（仅情感端点有效） | emotion_task_mode、emotion_request_timeout、emotion_max_audio_seconds、emotion_spec_task_mode、emotion_spec_request_timeout、emotion_spec_max_audio_seconds |
+| 情感（仅情感端点有效） | emotion_task_mode、emotion_request_timeout、emotion_max_audio_seconds |
 
 `pseudo_stream_first_partial_ms` 是每段语音首个 partial（伪流式中间结果）的触发门槛，只对会输出 partial 的端点生效：`/transcribe-streaming` 与 `/tuling/ast/v3`。`/emotion-segmented-streaming` 不产 partial（服务端固定关闭），传入无效。它与 `vad_start_frames` 一起按 max 决定本地伪流式首字延迟；调低只让首字更早出，不改变 final 段的短噪声过滤（仍由 `min_segment_duration_ms` 控制，不变量 `pseudo_stream_first_partial_ms ≤ min_segment_duration_ms`）。
 

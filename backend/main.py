@@ -65,8 +65,8 @@ from .audio.utils import (
     wav_base64_to_pcm_16k_mono,
     wav_bytes_to_pcm_16k_mono,
 )
-from .config import SAMPLE_RATE, Upstream, load_config, load_parsed, load_transcribe_config
 from .clean_stream import router as clean_stream_router
+from .config import SAMPLE_RATE, Upstream, load_config, load_parsed, load_transcribe_config
 from .diarization.client import (
     SpeakerEmbeddingUnavailableError,
     close_diarization_channels,
@@ -75,8 +75,8 @@ from .diarization.client import (
 )
 from .emotion.client import query_emotion_model
 from .emotion.jobs import JobQueueFullError, get_emotion_job_store
+from .emotion.prompt import normalize_mode as normalize_emotion_mode
 from .emotion.service import EmotionDecodeError, decode_wav_capped
-from .emotion_spec.jobs import get_emotion_spec_job_store
 from .http_client import close_client
 from .recall_user import HotwordPoolIdError, normalize_hotword_pool_id
 from .streaming import (
@@ -1496,6 +1496,10 @@ async def emotion_create_job(
     """Enqueue whole-utterance emotion inference; poll GET /api/emotion/jobs/{id}."""
     raw = await _read_audio_bytes(audio)
     cfg = load_config()
+    try:
+        normalized_mode = normalize_emotion_mode(mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     cap = float(getattr(cfg, "emotion_max_audio_seconds", 0.0))
     try:
         decode_wav_capped(raw, cap)
@@ -1507,7 +1511,7 @@ async def emotion_create_job(
     try:
         job = await store.submit(
             raw,
-            mode=mode,
+            mode=normalized_mode,
             language=language,
             cfg=cfg,
         )
@@ -1533,64 +1537,6 @@ async def emotion_create_job(
 async def emotion_get_job(job_id: str):
     """Poll async emotion job status and result."""
     store = get_emotion_job_store()
-    job = await store.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    return job.to_poll_dict()
-
-
-@app.post("/api/emotion-spec/jobs", status_code=202)
-async def emotion_spec_create_job(
-    audio: UploadFile = File(...),
-    mode: str = Form(""),
-    language: str = Form(""),
-):
-    """Enqueue whole-utterance AmphionSPEC inference; poll GET /api/emotion-spec/jobs/{id}.
-
-    Independent of ``/api/emotion/jobs`` — separate queue, separate
-    concurrency budget, separate vLLM endpoint (cfg.emotion_spec_vllm_*).
-    ``mode`` accepts ``ser`` or ``sepc`` (alias ``spec`` is normalized to
-    ``sepc``); empty falls back to ``cfg.emotion_spec_task_mode``.
-    """
-    raw = await _read_audio_bytes(audio)
-    cfg = load_config()
-    cap = float(getattr(cfg, "emotion_spec_max_audio_seconds", 0.0))
-    try:
-        decode_wav_capped(raw, cap)
-    except EmotionDecodeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    store = get_emotion_spec_job_store()
-    store.configure(cfg)
-    try:
-        job = await store.submit(
-            raw,
-            mode=mode,
-            language=language,
-            cfg=cfg,
-        )
-    except JobQueueFullError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=str(exc),
-            headers={"Retry-After": "5"},
-        ) from exc
-
-    poll_url = f"/api/emotion-spec/jobs/{job.job_id}"
-    return JSONResponse(
-        status_code=202,
-        content={
-            "job_id": job.job_id,
-            "status": job.status,
-            "poll_url": poll_url,
-        },
-    )
-
-
-@app.get("/api/emotion-spec/jobs/{job_id}")
-async def emotion_spec_get_job(job_id: str):
-    """Poll async AmphionSPEC job status and result."""
-    store = get_emotion_spec_job_store()
     job = await store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")

@@ -33,8 +33,7 @@ def build_final_emotion_spec_payload(
     """Build the canonical ``final_emotion`` response object for SPEC.
 
     Reuses the same ``type: "final_emotion"`` envelope as the baseline
-    emotion service so the frontend can share its renderer; only the
-    ``mode`` field distinguishes ``ser`` / ``sepc`` from ``ser`` / ``sec``.
+    emotion service. Model identity is not exposed in the protocol.
     """
     payload: dict[str, Any] = {
         "type": "final_emotion",
@@ -69,7 +68,7 @@ async def infer_emotion_spec_from_wav(
     cfg: Config,
 ) -> dict[str, Any]:
     """Run whole-utterance SPEC inference and return ``final_emotion`` dict."""
-    fallback = getattr(cfg, "emotion_spec_task_mode", "sepc")
+    fallback = getattr(cfg, "emotion_spec_task_mode", "sec")
     chosen_mode: EmotionSpecMode = normalize_mode(mode or fallback)
     if not raw_wav:
         return empty_final_emotion_spec(mode=chosen_mode, language=language)

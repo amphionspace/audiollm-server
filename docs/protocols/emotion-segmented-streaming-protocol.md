@@ -77,9 +77,13 @@ Client                                      Server
 | `format` | string | 否 | 固定为 `pcm_s16le` |
 | `sample_rate_hz` | integer | 否 | 固定为 `16000` |
 | `channels` | integer | 否 | 固定为 `1` |
-| `mode` | string | 否 | `ser` 或 `sec`，不传使用服务端默认 |
+| `mode` | string | 否 | 仅支持 `ser` 或 `sec`，不传使用服务端默认 `sec` |
 | `language` | string | 否 | 透传语言字段；也可通过 query 参数传入 |
 | `config` | object | 否 | 当前连接的服务端配置覆写 |
+
+若 `mode` 不是 `ser` 或 `sec`，服务端返回
+`{"type":"error","code":"invalid_start","message":"mode must be ser or sec"}`，
+且不会启动该轮识别。
 
 ### 二进制音频帧
 
@@ -150,7 +154,7 @@ payload 与整段情感接口一致：
 pip install websockets numpy
 
 python tests/test_emotion_ws_client.py sample.wav \
-  --url ws://172.16.0.3:8082/emotion-segmented-streaming \
+  --url wss://playground.amphion.top/emotion-segmented-streaming \
   --mode ser \
 ```
 

@@ -6,7 +6,7 @@ from .client import (
 from .prompt import (
     DEFAULT_MODE,
     PROMPTS,
-    SEPC_PROMPT,
+    SEC_PROMPT,
     SER_PROMPT,
     EmotionSpecMode,
     get_prompt,
@@ -26,7 +26,7 @@ __all__ = [
     "EmotionSpecMode",
     "EmotionSpecResult",
     "PROMPTS",
-    "SEPC_PROMPT",
+    "SEC_PROMPT",
     "SER_PROMPT",
     "build_final_emotion_spec_payload",
     "decode_wav_capped",

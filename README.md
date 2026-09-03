@@ -487,11 +487,11 @@ ASR 热词偏置来自 `config.yaml -> services.recall` 指向的 Triton 召回�
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `emotion_vllm_base_url` | string | `http://localhost:8222` | 情感识别模型的 vLLM 服务地址；`config.yaml` 默认独立部署在 8222（`config.py` 内置默认则复用主 ASR 后端） |
-| `emotion_vllm_model_name` | string | `AmphionSE` | 情感识别模型名称；独立的 AmphionSE 检查点 |
+| `emotion_vllm_base_url` | string | `http://localhost:9001` | 情感识别模型的 vLLM 服务地址；当前部署 AmphionSPEC |
+| `emotion_vllm_model_name` | string | `AmphionSPEC` | 服务端内部模型名，不进入公开协议 |
 | `emotion_request_timeout` | float | `30.0` | 情感推理 HTTP 请求总超时（秒） |
 | `emotion_max_audio_seconds` | float | `20.0` | 单次推理处理的最长音频秒数；超过则保留尾部，贴合 Amphion SER/SEC 训练时 1-20s 的 utterance 上限 |
-| `emotion_task_mode` | string | `ser` | 缺省任务变体：`ser` 输出 8 分类标签，`sec` 输出自由文本描述 |
+| `emotion_task_mode` | string | `sec` | 缺省任务变体：`ser` 输出 8 分类标签，`sec` 输出自由文本描述；公开协议只接受这两个值 |
 | `emotion_max_concurrent_jobs` | int | `8` | 异步 HTTP 任务同时调 vLLM 的上限 |
 | `emotion_job_queue_max` | int | `64` | 异步任务排队上限，超出返回 503 |
 | `emotion_job_ttl_sec` | float | `3600` | 已完成任务元数据保留秒数 |

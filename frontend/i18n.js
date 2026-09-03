@@ -193,7 +193,7 @@
     'asr.emotion.toggle.on': 'ON',
     'asr.emotion.toggle.off': 'OFF',
     'asr.emotion.result.ser': 'Emotion',
-    'asr.emotion.result.sepc': 'Tone',
+    'asr.emotion.result.sec': 'Tone',
     'asr.emotion.onlyPlaceholder': '(No speech detected — emotion only)',
 
     'asr.enroll.title': 'Target speaker (optional)',
@@ -297,9 +297,9 @@
     'emotion.mode.label': 'Mode',
     'emotion.mode.aria': 'Emotion task mode',
     'emotion.mode.option.ser.html': 'SER &middot; label',
-    'emotion.mode.option.sepc.html': 'SEPC &middot; description',
+    'emotion.mode.option.sec.html': 'SEC &middot; description',
     'emotion.mode.tag.ser': 'SER',
-    'emotion.mode.tag.sepc': 'SEPC',
+    'emotion.mode.tag.sec': 'SEC',
     'emotion.result.placeholder': 'Result will appear here.',
     'emotion.result.connecting': 'Connecting…',
     'emotion.result.opening': 'Opening mic…',
@@ -314,7 +314,7 @@
     'emotion.history.empty': 'No sessions yet.',
     'emotion.labels.note':
       'SER labels: Neutral, Happy, Sad, Angry, Fear, Disgust, Surprise, Other/Complex.'
-      + ' SEPC returns a free-form description of paralinguistic cues — prosody,'
+      + ' SEC returns a free-form description of paralinguistic cues — prosody,'
       + ' tempo, voice quality, and other non-lexical signals.',
     'emotion.btn.start': 'Click to start',
     'emotion.btn.recording': 'Listening… click to stop',
@@ -538,7 +538,7 @@
     'asr.emotion.toggle.on': '开',
     'asr.emotion.toggle.off': '关',
     'asr.emotion.result.ser': '情绪',
-    'asr.emotion.result.sepc': '语气',
+    'asr.emotion.result.sec': '语气',
     'asr.emotion.onlyPlaceholder': '（未识别到文本 · 仅情感）',
 
     'asr.enroll.title': '目标说话人（可选）',
@@ -639,9 +639,9 @@
     'emotion.mode.label': '模式',
     'emotion.mode.aria': '情感任务模式',
     'emotion.mode.option.ser.html': 'SER &middot; 标签',
-    'emotion.mode.option.sepc.html': 'SEPC &middot; 描述',
+    'emotion.mode.option.sec.html': 'SEC &middot; 描述',
     'emotion.mode.tag.ser': 'SER',
-    'emotion.mode.tag.sepc': 'SEPC',
+    'emotion.mode.tag.sec': 'SEC',
     'emotion.result.placeholder': '结果将显示在这里。',
     'emotion.result.connecting': '连接中…',
     'emotion.result.opening': '正在打开麦克风…',
@@ -656,7 +656,7 @@
     'emotion.history.empty': '暂无记录。',
     'emotion.labels.note':
       'SER 标签：中性、开心、悲伤、愤怒、恐惧、厌恶、惊讶、其他/复合。'
-      + 'SEPC 返回对副语言线索的自由文本描述——韵律、语速、音质等非词汇信号。',
+      + 'SEC 返回对副语言线索的自由文本描述——韵律、语速、音质等非词汇信号。',
     'emotion.btn.start': '点击开始',
     'emotion.btn.recording': '聆听中…再次点击停止',
     'emotion.btn.analyzing': '分析中…',
