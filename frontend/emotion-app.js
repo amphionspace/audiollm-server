@@ -179,6 +179,7 @@
     const mode = data.mode || modeSelect.value || 'ser';
     const label = String(data.label || '').trim();
     const text = String(data.text || '').trim();
+    const topEmotions = Array.isArray(data.top_emotions) ? data.top_emotions : [];
     const duration = typeof data.duration_sec === 'number' ? data.duration_sec : 0;
 
     const tag = modeTag(mode);
@@ -201,6 +202,15 @@
         '<div class="flex items-center gap-2">'
         + '<span class="text-base font-semibold">' + escapeHtml(displayLabel) + '</span>'
         + '</div>';
+      if (topEmotions.length) {
+        body += '<div class="mt-2 text-[11px] text-muted">'
+          + topEmotions.map((item) => {
+            const score = Number(item && item.score);
+            const suffix = Number.isFinite(score) ? ' ' + (score * 100).toFixed(1) + '%' : '';
+            return escapeHtml(String((item && item.label) || '')) + suffix;
+          }).join(' · ')
+          + '</div>';
+      }
       if (!label && text && text !== label) {
         body += '<div class="mt-1 text-[11px] text-muted">'
           + escapeHtml(t('emotion.result.raw', { text }))

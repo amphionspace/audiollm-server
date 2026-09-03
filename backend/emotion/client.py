@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from typing import Any, TypedDict
 
@@ -50,9 +51,59 @@ class EmotionResult(TypedDict):
     label: str
     text: str
     raw_text: str
+    top_emotions: list[dict[str, object]]
+    best_label: str
+    best_score: float
 
 
 _LABEL_LOOKUP: dict[str, str] = {label.casefold(): label for label in SER_TAXONOMY}
+
+
+def _taxonomy_label_for_token(raw: object) -> str:
+    token = str(raw or "").strip().casefold()
+    if not token:
+        return ""
+    matches = [
+        label
+        for label in SER_TAXONOMY
+        if (head := label.split("/", 1)[0].casefold()) == token
+        or head.startswith(token)
+    ]
+    return matches[0] if len(matches) == 1 else ""
+
+
+def _rank_top_emotions(choice: object) -> list[dict[str, object]]:
+    """Normalize SER first-token logprobs into taxonomy posterior scores."""
+    if not isinstance(choice, dict):
+        return []
+    logprobs = choice.get("logprobs")
+    if not isinstance(logprobs, dict):
+        return []
+    content = logprobs.get("content")
+    if not isinstance(content, list) or not content or not isinstance(content[0], dict):
+        return []
+    candidates = content[0].get("top_logprobs")
+    if not isinstance(candidates, list):
+        return []
+    by_label: dict[str, float] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        label = _taxonomy_label_for_token(candidate.get("token"))
+        value = candidate.get("logprob")
+        if not label or not isinstance(value, (int, float)) or not math.isfinite(value):
+            continue
+        by_label[label] = max(by_label.get(label, -math.inf), float(value))
+    if not by_label:
+        return []
+    maximum = max(by_label.values())
+    denominator = sum(math.exp(value - maximum) for value in by_label.values())
+    ranked = [
+        {"label": label, "score": round(math.exp(value - maximum) / denominator, 6)}
+        for label, value in by_label.items()
+    ]
+    ranked.sort(key=lambda item: float(item["score"]), reverse=True)
+    return ranked
 
 
 def _content_to_text(content: Any) -> str:
@@ -132,7 +183,10 @@ def _parse_ser(raw: str) -> EmotionResult:
     if not label:
         logger.warning("Could not map SER output to taxonomy: %.200s", raw)
 
-    return EmotionResult(mode="ser", label=label, text=label, raw_text=raw)
+    return EmotionResult(
+        mode="ser", label=label, text=label, raw_text=raw,
+        top_emotions=[], best_label="", best_score=0.0,
+    )
 
 
 def _parse_sec(raw: str) -> EmotionResult:
@@ -154,14 +208,20 @@ def _parse_sec(raw: str) -> EmotionResult:
         pass
 
     label = _match_taxonomy(summary)
-    return EmotionResult(mode="sec", label=label, text=summary, raw_text=raw)
+    return EmotionResult(
+        mode="sec", label=label, text=summary, raw_text=raw,
+        top_emotions=[], best_label="", best_score=0.0,
+    )
 
 
 def parse_emotion_output(raw_text: str, mode: EmotionMode = DEFAULT_MODE) -> EmotionResult:
     """Parse the model output into a normalized :class:`EmotionResult`."""
     raw = str(raw_text or "")
     if not raw.strip():
-        return EmotionResult(mode=mode, label="", text="", raw_text="")
+        return EmotionResult(
+            mode=mode, label="", text="", raw_text="",
+            top_emotions=[], best_label="", best_score=0.0,
+        )
     if mode == "sec":
         return _parse_sec(raw)
     return _parse_ser(raw)
@@ -184,13 +244,24 @@ async def query_emotion_model(
         "messages": _build_messages(audio_wav_base64, mode),
         "max_tokens": int(max_tokens) if max_tokens else (32 if mode == "ser" else 256),
     }
+    if mode == "ser":
+        payload.update({"logprobs": True, "top_logprobs": 20})
     resp = await client.post(
         f"{base}/v1/chat/completions",
         json=payload,
         timeout=timeout if timeout is not None else default_config.emotion_request_timeout,
     )
     resp.raise_for_status()
-    raw_text = _content_to_text(
-        resp.json()["choices"][0]["message"]["content"]
-    )
-    return parse_emotion_output(raw_text, mode=mode)
+    response_payload = resp.json()
+    choice = response_payload["choices"][0]
+    raw_text = _content_to_text(choice["message"]["content"])
+    result = parse_emotion_output(raw_text, mode=mode)
+    if mode == "ser":
+        ranked = _rank_top_emotions(choice)
+        result["top_emotions"] = ranked[:3]
+        result["best_label"] = result["label"]
+        for candidate in ranked:
+            if candidate["label"] == result["label"]:
+                result["best_score"] = float(candidate["score"])
+                break
+    return result

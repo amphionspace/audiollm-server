@@ -70,6 +70,11 @@ def build_final_emotion_payload(
         payload["raw_text"] = raw_text
     if language:
         payload["language"] = language
+    top_emotions = result.get("top_emotions")
+    if mode == "ser" and isinstance(top_emotions, list) and top_emotions:
+        payload["top_emotions"] = top_emotions
+        payload["best_label"] = result.get("best_label", payload["label"])
+        payload["best_score"] = result.get("best_score", 0.0)
     return payload
 
 

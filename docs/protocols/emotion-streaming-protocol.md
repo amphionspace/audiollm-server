@@ -108,11 +108,30 @@ Client                                      Server
     "mode": "ser",
     "label": "Happy",
     "text": "Happy",
+    "top_emotions": [
+      {"label": "Happy", "score": 0.873421},
+      {"label": "Neutral", "score": 0.102314},
+      {"label": "Surprise", "score": 0.018205}
+    ],
+    "best_label": "Happy",
+    "best_score": 0.873421,
     "duration_sec": 3.21,
     "language": "zh"
   }
 }
 ```
+
+`ser` 成功结果会额外返回 Top-3：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `top_emotions` | array | 按 `score` 从高到低排列的 Top-3 情绪标签 |
+| `best_label` | string | 最佳标签，与 `label` 保持一致 |
+| `best_score` | number | 最佳标签分数，范围 `0–1` |
+
+`score` 来自 AmphionSPEC SER 首个输出 token 在 8 类情绪候选中的归一化后验，
+适合排序和阈值判断，但不是经过独立数据集校准的统计置信度。`sec` 是自由文本描述，
+不返回上述三个字段。
 
 ### 失败
 

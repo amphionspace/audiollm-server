@@ -775,6 +775,12 @@ async def test_emotion_engine_emits_final_emotion_ser(monkeypatch):
             "label": "Happy",
             "text": "Happy",
             "raw_text": "Happy",
+            "top_emotions": [
+                {"label": "Happy", "score": 0.8},
+                {"label": "Neutral", "score": 0.2},
+            ],
+            "best_label": "Happy",
+            "best_score": 0.8,
         }
 
     monkeypatch.setattr("backend.tasks.emotion.query_emotion_model", _fake_query)
@@ -791,7 +797,9 @@ async def test_emotion_engine_emits_final_emotion_ser(monkeypatch):
     assert sent[0]["label"] == "Happy"
     assert sent[0]["text"] == "Happy"
     assert sent[0]["language"] == "zh"
-    assert "scores" not in sent[0]
+    assert sent[0]["top_emotions"][0] == {"label": "Happy", "score": 0.8}
+    assert sent[0]["best_label"] == "Happy"
+    assert sent[0]["best_score"] == 0.8
 
 
 @pytest.mark.asyncio
@@ -1430,6 +1438,39 @@ def test_emotion_parser_ser_unknown_returns_empty_label():
 
     out = parse_emotion_output("???", mode="ser")
     assert out["label"] == ""
+
+
+def test_emotion_ser_logprobs_are_ranked_as_top_three_taxonomy_scores():
+    from backend.emotion.client import _rank_top_emotions
+
+    ranked = _rank_top_emotions(
+        {
+            "logprobs": {
+                "content": [
+                    {
+                        "top_logprobs": [
+                            {"token": "neutral", "logprob": -0.1},
+                            {"token": "happy", "logprob": -2.1},
+                            {"token": "other", "logprob": -4.1},
+                            {"token": "sad", "logprob": -5.1},
+                            {"token": "sur", "logprob": -6.1},
+                            {"token": "ang", "logprob": -7.1},
+                            {"token": "f", "logprob": -8.1},
+                            {"token": "dis", "logprob": -9.1},
+                        ]
+                    }
+                ]
+            }
+        }
+    )
+
+    assert [item["label"] for item in ranked[:3]] == [
+        "Neutral",
+        "Happy",
+        "Other/Complex",
+    ]
+    assert ranked[0]["score"] > ranked[1]["score"] > ranked[2]["score"]
+    assert abs(sum(float(item["score"]) for item in ranked) - 1.0) < 1e-5
 
 
 def test_emotion_parser_sec_returns_freeform_text():

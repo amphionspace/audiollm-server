@@ -117,12 +117,19 @@ payload 与整段情感接口一致：
   "mode": "ser",
   "label": "Neutral",
   "text": "Neutral",
+  "top_emotions": [
+    {"label": "Neutral", "score": 0.903211},
+    {"label": "Happy", "score": 0.081422},
+    {"label": "Other/Complex", "score": 0.010351}
+  ],
+  "best_label": "Neutral",
+  "best_score": 0.903211,
   "duration_sec": 2.68,
   "language": "zh"
 }
 ```
 
-`final_emotion` 字段与 [整段情感 HTTP API](emotion-streaming-protocol.md#查询任务) 的 `result` 一致。此处 `duration_sec` 表示**当前 VAD 语音段**的推理时长，不是整段任务的累计时长。
+`final_emotion` 字段与 [整段情感 HTTP API](emotion-streaming-protocol.md#查询任务) 的 `result` 一致；`ser` 返回 Top-3，`sec` 不返回分数列表。此处 `duration_sec` 表示**当前 VAD 语音段**的推理时长，不是整段任务的累计时长。
 
 ### error
 

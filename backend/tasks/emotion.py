@@ -128,6 +128,11 @@ class EmotionTaskEngine(BaseTaskEngine):
         raw_text = result.get("raw_text", "")
         if raw_text and raw_text != payload["text"]:
             payload["raw_text"] = raw_text
+        top_emotions = result.get("top_emotions")
+        if self._mode == "ser" and isinstance(top_emotions, list) and top_emotions:
+            payload["top_emotions"] = top_emotions
+            payload["best_label"] = result.get("best_label", payload["label"])
+            payload["best_score"] = result.get("best_score", 0.0)
         if ctx.language:
             payload["language"] = ctx.language
         return payload

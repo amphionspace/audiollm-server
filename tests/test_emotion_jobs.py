@@ -70,13 +70,25 @@ async def test_job_store_queue_full():
 
 def test_build_final_emotion_payload():
     payload = build_final_emotion_payload(
-        {"label": "Happy", "text": "Happy"},
+        {
+            "label": "Happy",
+            "text": "Happy",
+            "top_emotions": [
+                {"label": "Happy", "score": 0.8},
+                {"label": "Neutral", "score": 0.2},
+            ],
+            "best_label": "Happy",
+            "best_score": 0.8,
+        },
         mode="ser",
         duration_sec=1.5,
         language="zh",
     )
     assert payload["type"] == "final_emotion"
     assert payload["label"] == "Happy"
+    assert payload["best_label"] == "Happy"
+    assert payload["best_score"] == 0.8
+    assert len(payload["top_emotions"]) == 2
     assert payload["language"] == "zh"
 
 

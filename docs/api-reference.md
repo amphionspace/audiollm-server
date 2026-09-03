@@ -112,7 +112,7 @@ AST v3 角色/声纹路由速览：
 | POST | `/api/asr/hotword-pool/delete` | 从热词池删除热词，兼容不稳定支持 DELETE body 的客户端 | JSON `hotword_pool_id`、`hotwords` |
 | POST | `/api/asr/hotword-pool/clear` | 清空指定热词池 | JSON 或 query `hotword_pool_id` |
 | POST | `/api/asr/hotword-pool/reload` | 让 RAG-ASR 从热词池文件 reload 热词 | JSON 或 query `hotword_pool_id` |
-| POST | `/api/emotion/jobs` | 异步整段情感识别（202 + 轮询） | `audio`、`mode`、`language` |
+| POST | `/api/emotion/jobs` | 异步整段情感识别（202 + 轮询）；SER 结果含 Top-3 标签与分数 | `audio`、`mode`、`language` |
 | GET | `/api/emotion/jobs/{job_id}` | 查询情感任务状态与结果 | — |
 | POST | `/api/audio/analyze` | 非实时聚合分析：ASR 原始结果、文本清洗、情感标签和情感描述 | `audio`、`language`、`hotwords`、`enrollment_id` |
 
