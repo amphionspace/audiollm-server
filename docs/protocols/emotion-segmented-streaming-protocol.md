@@ -10,7 +10,8 @@
 |---|---|
 | 协议 | WebSocket |
 | 路径 | `/emotion-segmented-streaming` |
-| 完整 URL | `ws://172.16.0.3:8082/emotion-segmented-streaming?language=<lang>` |
+| 公网 URL | `wss://playground.amphion.top/emotion-segmented-streaming?language=<lang>` |
+| 内网 URL | `ws://172.16.0.3:8082/emotion-segmented-streaming?language=<lang>` |
 | 鉴权 | 无内置鉴权，无需自定义请求头 |
 | 音频输入 | 二进制 PCM 帧，16 kHz、mono、signed 16-bit little-endian |
 | 分段策略 | 服务端 VAD 自动切段 |

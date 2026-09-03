@@ -487,7 +487,7 @@ python docs/examples/rest_upload.py emotion sample.wav \
 
 ```bash
 python tests/test_emotion_ws_client.py sample.wav \
-  --url ws://172.16.0.3:8082/emotion-segmented-streaming \
+  --url wss://playground.amphion.top/emotion-segmented-streaming \
   --segmented \
   --language zh
 ```
