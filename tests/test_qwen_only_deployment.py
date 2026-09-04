@@ -48,3 +48,29 @@ def test_kubernetes_uses_bundled_images_without_model_download_resources() -> No
         assert "initContainers" not in deployment["spec"]["template"]["spec"]
         volumes = deployment["spec"]["template"]["spec"].get("volumes", [])
         assert not any("persistentVolumeClaim" in volume for volume in volumes)
+
+
+def test_docker_compose_builds_the_three_self_contained_services() -> None:
+    compose = yaml.safe_load(
+        (ROOT / "deploy" / "docker" / "compose.qwen-only.yaml").read_text(encoding="utf-8")
+    )
+    services = compose["services"]
+
+    assert set(services) == {"qwen3-asr", "amphion-spec", "gateway"}
+    assert services["qwen3-asr"]["build"]["dockerfile"].endswith("Dockerfile.qwen3-asr")
+    assert services["amphion-spec"]["build"]["dockerfile"].endswith(
+        "Dockerfile.amphion-spec"
+    )
+    assert "${QWEN3_ASR_GPU_MEMORY_UTILIZATION:-0.15}" in services["qwen3-asr"]["command"]
+    assert "${AMPHION_SPEC_GPU_MEMORY_UTILIZATION:-0.10}" in services["amphion-spec"][
+        "command"
+    ]
+    gateway_env = services["gateway"]["environment"]
+    assert gateway_env["QWEN3_ASR_BASE_URL"] == "http://qwen3-asr:8000"
+    assert gateway_env["AMPHION_SPEC_BASE_URL"] == "http://amphion-spec:8000"
+
+    env_example = (
+        ROOT / "deploy" / "docker" / "qwen-only.env.example"
+    ).read_text(encoding="utf-8")
+    assert "REFINE_API_KEY=replace-me" in env_example
+    assert "ARK_APIKEY" not in env_example

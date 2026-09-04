@@ -20,6 +20,10 @@ spec:
           env:
             - name: CONFIG_PATH
               value: /etc/audiollm/config.yaml
+            - name: QWEN3_ASR_BASE_URL
+              value: http://qwen3-asr:8000
+            - name: AMPHION_SPEC_BASE_URL
+              value: http://amphion-spec:8000
           envFrom:
             - secretRef:
                 name: audiollm-refine

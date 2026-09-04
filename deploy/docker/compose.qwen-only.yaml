@@ -1,0 +1,75 @@
+services:
+  qwen3-asr:
+    image: audiollm/qwen3-asr-1.7b:local
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.qwen3-asr
+      args:
+        VLLM_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:v0.18.0}
+    gpus: all
+    command:
+      - /models/qwen3-asr-1.7b
+      - --served-model-name
+      - Qwen/Qwen3-ASR-1.7B
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - ${QWEN3_ASR_GPU_MEMORY_UTILIZATION:-0.15}
+      - --max-model-len
+      - "32768"
+    ports:
+      - "${QWEN3_ASR_PORT:-8011}:8000"
+    restart: unless-stopped
+
+  amphion-spec:
+    image: audiollm/amphion-spec-vllm:local
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.amphion-spec
+      args:
+        VLLM_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:v0.18.0}
+    gpus: all
+    command:
+      - /models/amphion-spec
+      - --served-model-name
+      - AmphionSPEC
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --trust-remote-code
+      - --limit-mm-per-prompt
+      - '{"audio":2}'
+      - --gpu-memory-utilization
+      - ${AMPHION_SPEC_GPU_MEMORY_UTILIZATION:-0.10}
+      - --max-model-len
+      - "16384"
+    ports:
+      - "${AMPHION_SPEC_PORT:-9001}:8000"
+    restart: unless-stopped
+
+  gateway:
+    image: audiollm/server:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        APT_DEBIAN_MIRROR: ${APT_DEBIAN_MIRROR:-http://deb.debian.org/debian}
+        APT_SECURITY_MIRROR: ${APT_SECURITY_MIRROR:-http://deb.debian.org/debian-security}
+    environment:
+      CONFIG_PATH: /etc/audiollm/config.yaml
+      QWEN3_ASR_BASE_URL: http://qwen3-asr:8000
+      AMPHION_SPEC_BASE_URL: http://amphion-spec:8000
+      REFINE_BASE_URL: ${REFINE_BASE_URL}
+      REFINE_MODEL: ${REFINE_MODEL}
+      REFINE_API_KEY: ${REFINE_API_KEY}
+    volumes:
+      - ../k8s/qwen-only/config.yaml:/etc/audiollm/config.yaml:ro
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      - qwen3-asr
+      - amphion-spec
+    restart: unless-stopped
