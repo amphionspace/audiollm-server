@@ -23,6 +23,7 @@ def test_model_images_use_local_weights_and_local_spec_plugin() -> None:
     spec = (ROOT / "deploy" / "docker" / "Dockerfile.amphion-spec").read_text(encoding="utf-8")
 
     assert "COPY models/qwen3-asr-1.7b" in qwen
+    assert "FROM vllm/vllm-openai:v0.18.0" in qwen
     assert "COPY models/amphion-spec" in spec
     assert "COPY deploy/plugins/amphion_spec_vllm" in spec
     assert "git clone" not in spec
