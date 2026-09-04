@@ -15,22 +15,8 @@ spec:
     spec:
       containers:
         - name: qwen3-asr
-          image: qwenllm/qwen3-asr:latest
+          image: registry.example.com/audiollm/qwen3-asr-1.7b:0.1.0
           imagePullPolicy: IfNotPresent
-          command:
-            - qwen-asr-serve
-          args:
-            - Qwen/Qwen3-ASR-1.7B
-            - --served-model-name
-            - Qwen/Qwen3-ASR-1.7B
-            - --host
-            - 0.0.0.0
-            - --port
-            - "8000"
-            - --gpu-memory-utilization
-            - "0.70"
-            - --max-model-len
-            - "32768"
           ports:
             - name: http
               containerPort: 8000

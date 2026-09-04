@@ -1,13 +1,9 @@
 FROM vllm/vllm-openai:v0.18.0
 
-ARG AMPHION_ASR_REPOSITORY=https://github.com/amphionspace/AmphionASR.git
-ARG AMPHION_ASR_REVISION=5525368ef2aae0d19d0dbe00cbb1c7a144712090
+COPY deploy/plugins/amphion_spec_vllm /opt/amphion-spec-vllm
+RUN pip install --no-cache-dir --no-deps --no-build-isolation /opt/amphion-spec-vllm
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
-    && git clone "$AMPHION_ASR_REPOSITORY" /opt/AmphionASR \
-    && git -C /opt/AmphionASR checkout "$AMPHION_ASR_REVISION" \
-    && pip install --no-cache-dir /opt/AmphionASR/src/integrations/vllm/plugin \
-    && rm -rf /var/lib/apt/lists/* /root/.cache/pip
+COPY models/amphion-spec /models/amphion-spec
 
 ENTRYPOINT ["vllm", "serve"]
+CMD ["/models/amphion-spec", "--served-model-name", "AmphionSPEC", "--host", "0.0.0.0", "--port", "8000", "--trust-remote-code", "--limit-mm-per-prompt", "{\"audio\":2}", "--gpu-memory-utilization", "0.70", "--max-model-len", "16384"]

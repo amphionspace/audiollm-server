@@ -13,39 +13,10 @@ spec:
       labels:
         app: amphion-spec
     spec:
-      initContainers:
-        - name: fetch-model
-          image: python:3.10.15-slim-bookworm
-          command:
-            - python
-            - /scripts/fetch_model.py
-          envFrom:
-            - secretRef:
-                name: audiollm-model-source
-          volumeMounts:
-            - name: model
-              mountPath: /models/amphion-spec
-            - name: fetch-script
-              mountPath: /scripts
       containers:
         - name: amphion-spec
           image: registry.example.com/audiollm/amphion-spec-vllm:0.1.0
           imagePullPolicy: IfNotPresent
-          args:
-            - /models/amphion-spec
-            - --served-model-name
-            - AmphionSPEC
-            - --host
-            - 0.0.0.0
-            - --port
-            - "8000"
-            - --trust-remote-code
-            - --limit-mm-per-prompt
-            - '{"audio":2}'
-            - --gpu-memory-utilization
-            - "0.70"
-            - --max-model-len
-            - "16384"
           ports:
             - name: http
               containerPort: 8000
@@ -70,18 +41,9 @@ spec:
               port: http
             periodSeconds: 10
           volumeMounts:
-            - name: model
-              mountPath: /models/amphion-spec
-              readOnly: true
             - name: dshm
               mountPath: /dev/shm
       volumes:
-        - name: model
-          persistentVolumeClaim:
-            claimName: amphion-spec-model
-        - name: fetch-script
-          configMap:
-            name: amphion-spec-fetch-script
         - name: dshm
           emptyDir:
             medium: Memory

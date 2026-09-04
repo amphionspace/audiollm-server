@@ -1,0 +1,8 @@
+**
+!deploy/
+!deploy/plugins/
+!deploy/plugins/amphion_spec_vllm/
+!deploy/plugins/amphion_spec_vllm/**
+!models/
+!models/amphion-spec/
+!models/amphion-spec/**

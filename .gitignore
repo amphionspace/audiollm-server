@@ -39,6 +39,10 @@ bench_results/
 # Debug dumps (per-session audio + metadata written when debug_dump_enabled)
 debug_dumps/
 
+# Local deployment model bundles. These are part of a copied workspace but
+# must never be uploaded to Git.
+models/
+
 # Testing & coverage
 .pytest_cache/
 .mypy_cache/

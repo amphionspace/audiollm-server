@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amphion-spec-vllm"
+version = "0.1.0"
+description = "Self-contained vLLM registration for the bundled AmphionSPEC checkpoint"
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+amphion_spec = "amphion_spec_vllm:register"
+
+[tool.setuptools.packages.find]
+where = ["src"]

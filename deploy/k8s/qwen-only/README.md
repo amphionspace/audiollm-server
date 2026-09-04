@@ -15,8 +15,8 @@
 
 | 依赖 | 固定标识 | 用途 | 是否必需 |
 |---|---|---|---|
-| Qwen3-ASR | `Qwen/Qwen3-ASR-1.7B` | 流式伪 partial/final、离线长音频转写 | 是 |
-| AmphionSPEC | checkpoint archive + SHA256，served name `AmphionSPEC` | SER、SEC、增强转写的语音情绪 | 是 |
+| Qwen3-ASR | `models/qwen3-asr-1.7b`，served name `Qwen/Qwen3-ASR-1.7B` | 流式伪 partial/final、离线长音频转写 | 是，随项目目录交付 |
+| AmphionSPEC | `models/amphion-spec`，served name `AmphionSPEC` | SER、SEC、增强转写的语音情绪 | 是，随项目目录交付 |
 | Refine LLM | OpenAI-compatible base URL/model/API key | 文本清洗、翻译、Qwen 热词纠错、SEC 语言兜底 | 是 |
 | TEN VAD | Gateway Python 包 `ten-vad` | 本地切段与伪流式 | 是，已打入 Gateway 镜像 |
 
@@ -30,51 +30,54 @@
 - Kubernetes 1.27+
 - NVIDIA device plugin
 - nginx ingress controller
-- 一个支持 `ReadWriteOnce` 的默认 StorageClass
 - 推荐两张 GPU，Qwen3-ASR 与 AmphionSPEC 各占一张。当前 H20 实测显存分别约
   15.9 GiB 与 11.1 GiB；不同卡型、并发和上下文长度会改变实际占用。
-- 能访问 Docker Hub、模型下载地址和 Refine LLM
+- 构建阶段能拉取基础镜像，运行阶段能访问 Refine LLM
 
 如果用 GPU time-slicing 或其他共享方案把两个模型放在同一张大显存卡上，需要
 由集群管理员提供对应的 device-plugin 配置；本清单不隐式假设 GPU 可以共享。
 
 ## 1. 构建并推送镜像
 
+先确认收到的项目目录包含完整模型：
+
+```bash
+cd /path/to/audiollm-server
+python deploy/k8s/qwen-only/verify_models.py
+```
+
+模型不会上传 Git，但会从本项目的 `models/` 复制到各自镜像；Pod 启动时不下载权重，
+也不需要模型 URL、SHA256、Hugging Face token、PVC 或 initContainer。
+
 ```bash
 docker build -t REGISTRY/audiollm/server:0.1.0 .
+docker build \
+  -f deploy/docker/Dockerfile.qwen3-asr \
+  -t REGISTRY/audiollm/qwen3-asr-1.7b:0.1.0 .
 docker build \
   -f deploy/docker/Dockerfile.amphion-spec \
   -t REGISTRY/audiollm/amphion-spec-vllm:0.1.0 .
 docker push REGISTRY/audiollm/server:0.1.0
+docker push REGISTRY/audiollm/qwen3-asr-1.7b:0.1.0
 docker push REGISTRY/audiollm/amphion-spec-vllm:0.1.0
 ```
 
-部署前把镜像改成实际 registry，并把 Qwen 官方镜像固定到经过验证的 tag 或 digest：
+部署前把三个镜像改成实际 registry：
 
 ```bash
 cd deploy/k8s/qwen-only
 kustomize edit set image \
   registry.example.com/audiollm/server:0.1.0=REGISTRY/audiollm/server:0.1.0 \
+  registry.example.com/audiollm/qwen3-asr-1.7b:0.1.0=REGISTRY/audiollm/qwen3-asr-1.7b:0.1.0 \
   registry.example.com/audiollm/amphion-spec-vllm:0.1.0=REGISTRY/audiollm/amphion-spec-vllm:0.1.0
 ```
 
-## 2. 发布 AmphionSPEC 模型制品
-
-模型压缩包根目录必须直接包含 `config.json`、权重、tokenizer 和 checkpoint
-自带的 Python 文件。初始化容器会校验 SHA256、拒绝路径穿越和链接，然后解压到
-PVC；已下载且 SHA256 相同时不会重复下载。
-
-```bash
-tar -C /path/to/amphion-spec -cf amphion-spec.tar .
-sha256sum amphion-spec.tar
-# 将 amphion-spec.tar 上传到集群可访问的 HTTPS/object-storage 地址
-```
-
 AmphionSPEC 使用 `AmphionASRForConditionalGeneration` 架构，因此模型服务镜像还
-必须安装 `vllm-amphion-asr` 插件。`Dockerfile.amphion-spec` 固定使用
-AmphionASR commit `5525368ef2aae0d19d0dbe00cbb1c7a144712090` 构建插件。
+必须安装 vLLM plugin。plugin 已最小化收录在
+`deploy/plugins/amphion_spec_vllm`，镜像直接从本项目安装，不依赖
+`open-audio-llm` 或在线 clone AmphionASR。
 
-## 3. 创建 Secret
+## 2. 创建 Secret
 
 不要提交真实密钥。复制示例、填写值后单独 apply：
 
@@ -87,7 +90,7 @@ kubectl apply -f /tmp/audiollm-secrets.yaml
 `REFINE_BASE_URL` 应包含兼容服务的版本前缀，例如 `https://host.example/v1`；
 Gateway 会在其后追加 `/chat/completions`。
 
-## 4. 修改域名并部署
+## 3. 修改域名并部署
 
 把 `ingress.yaml` 中的 `audiollm.example.com` 和 TLS Secret 改成实际值，然后：
 
@@ -99,7 +102,7 @@ kubectl -n audiollm rollout status deployment/audiollm-server --timeout=5m
 kubectl -n audiollm get pods,svc,ingress
 ```
 
-## 5. 验收接口
+## 4. 验收接口
 
 准备一段有清晰说话声的 16 kHz、mono、s16le WAV：
 
