@@ -54,6 +54,9 @@
 
 ## 快速开始
 
+如果需要交付包含 Qwen3-ASR-1.7B、AmphionSPEC 和 Gateway 的独立 Docker 部署，
+请直接阅读 [Qwen-only 增强 ASR 交付与 Docker 部署](docs/deployment/qwen-only-docker.md)。
+
 ```bash
 # 安装依赖（二选一）
 pip install -e .
@@ -254,7 +257,9 @@ python tests/test_ws_client.py audio.wav --language en --chunk-ms 100
 
 ## vLLM 推理服务
 
-本仓库只负责调用 OpenAI 兼容的 vLLM HTTP 服务；模型服务的启动与部署脚本维护在相邻仓库 `/home/ubuntu/workspace/open-audio-llm`。
+默认开发部署可以调用外部 OpenAI-compatible vLLM 服务；Qwen-only 交付配置则在
+本仓库内构建和启动 Qwen3-ASR 与 AmphionSPEC，详见
+[Docker 交付说明](docs/deployment/qwen-only-docker.md)。
 
 启动本服务前，请确认 `config.yaml -> upstreams` 中配置的 vLLM 地址已经可访问，例如默认主 ASR `http://localhost:8009`、副 ASR `http://localhost:8001`、情感模型 `http://localhost:8222`。
 
