@@ -409,7 +409,7 @@ def test_get_service_upstream() -> None:
     assert clean_asr is not None
     assert clean_asr.name == "qwen3_clean_asr"
     assert clean_asr.base_url == "http://localhost:8011"
-    assert clean_asr.model_name == "/data/models/Qwen3-ASR-1.7B"
+    assert clean_asr.model_name == "Qwen/Qwen3-ASR-1.7B"
     assert get_service_upstream("hotword").name == "hotword_llm"
     assert get_service_upstream("recall").name == "triton_recall"
     assert get_service_upstream("nonexistent") is None

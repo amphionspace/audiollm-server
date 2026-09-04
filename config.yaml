@@ -30,7 +30,7 @@ upstreams:
     timeout: 120
   qwen3_clean_asr:
     base_url: http://localhost:8011
-    model_name: /data/models/Qwen3-ASR-1.7B
+    model_name: Qwen/Qwen3-ASR-1.7B
     timeout: 120
   amphion_emotion:
     base_url: http://localhost:8222
