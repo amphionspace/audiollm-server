@@ -21,7 +21,7 @@ import math
 import re
 from typing import Any, TypedDict
 
-from ..config import default_config
+from ..config import default_config, get_service_upstream
 from ..http_client import get_client
 from .prompt import (
     DEFAULT_MODE,
@@ -32,6 +32,9 @@ from .prompt import (
 )
 
 logger = logging.getLogger(__name__)
+
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
 
 
 class EmotionResult(TypedDict):
@@ -120,12 +123,16 @@ def _content_to_text(content: Any) -> str:
     return str(content or "")
 
 
-def _build_messages(audio_wav_base64: str, mode: EmotionMode) -> list[dict]:
+def _build_messages(
+    audio_wav_base64: str,
+    mode: EmotionMode,
+    language: str = "",
+) -> list[dict]:
     return [
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": get_prompt(mode)},
+                {"type": "text", "text": get_prompt(mode, language)},
                 {
                     "type": "input_audio",
                     "input_audio": {
@@ -136,6 +143,58 @@ def _build_messages(audio_wav_base64: str, mode: EmotionMode) -> list[dict]:
             ],
         }
     ]
+
+
+def _needs_sec_language_translation(text: str, language: str) -> bool:
+    normalized = str(language or "").strip().lower()
+    has_cjk = bool(_CJK_RE.search(text))
+    if normalized in {"zh", "zh-cn", "cn", "chinese"}:
+        return bool(text.strip()) and (not has_cjk or bool(_LATIN_RE.search(text)))
+    if normalized in {"en", "en-us", "en-gb", "english"}:
+        return has_cjk
+    return False
+
+
+async def _translate_sec_output(text: str, language: str) -> str:
+    upstream = get_service_upstream("speech_refine")
+    if upstream is None or not upstream.api_key:
+        raise RuntimeError("speech_refine upstream is not configured")
+    normalized = str(language or "").strip().lower()
+    target = (
+        "Simplified Chinese"
+        if normalized in {"zh", "zh-cn", "cn", "chinese"}
+        else "English"
+    )
+    response = await get_client().post(
+        f"{upstream.base_url.rstrip('/')}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {upstream.api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": upstream.model_name,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        f"Translate the emotion description into {target}. Preserve its meaning "
+                        "and intensity. Translate every word, including technical emotion terms. "
+                        "Return only the translated description and do not mix languages."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+            "temperature": 0.0,
+            "max_tokens": upstream.max_tokens or 512,
+            "thinking": {"type": "disabled"},
+        },
+        timeout=upstream.timeout,
+    )
+    response.raise_for_status()
+    translated = _content_to_text(response.json()["choices"][0]["message"]["content"])
+    if not translated.strip() or _needs_sec_language_translation(translated, language):
+        raise RuntimeError(f"SEC translation did not produce {target}")
+    return translated.strip()
 
 
 def _strip_code_fence(text: str) -> str:
@@ -231,6 +290,7 @@ async def query_emotion_model(
     audio_wav_base64: str,
     *,
     mode: EmotionMode = DEFAULT_MODE,
+    language: str = "",
     base_url: str | None = None,
     model_name: str | None = None,
     timeout: float | None = None,
@@ -241,7 +301,7 @@ async def query_emotion_model(
     base = (base_url or default_config.emotion_vllm_base_url).rstrip("/")
     payload: dict[str, Any] = {
         "model": model_name or default_config.emotion_vllm_model_name,
-        "messages": _build_messages(audio_wav_base64, mode),
+        "messages": _build_messages(audio_wav_base64, mode, language),
         "max_tokens": int(max_tokens) if max_tokens else (32 if mode == "ser" else 256),
     }
     if mode == "ser":
@@ -256,6 +316,8 @@ async def query_emotion_model(
     choice = response_payload["choices"][0]
     raw_text = _content_to_text(choice["message"]["content"])
     result = parse_emotion_output(raw_text, mode=mode)
+    if mode == "sec" and _needs_sec_language_translation(result["text"], language):
+        result["text"] = await _translate_sec_output(result["text"], language)
     if mode == "ser":
         ranked = _rank_top_emotions(choice)
         result["top_emotions"] = ranked[:3]

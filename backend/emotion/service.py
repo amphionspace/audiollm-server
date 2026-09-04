@@ -113,6 +113,7 @@ async def infer_emotion_from_wav(
     result = await query_emotion_model(
         wav_b64,
         mode=chosen_mode,
+        language=language,
         base_url=cfg.emotion_vllm_base_url,
         model_name=cfg.emotion_vllm_model_name,
         timeout=cfg.emotion_request_timeout,

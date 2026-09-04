@@ -65,6 +65,7 @@ from .audio.utils import (
     wav_base64_to_pcm_16k_mono,
     wav_bytes_to_pcm_16k_mono,
 )
+from .clean_stream import SessionOptions, parse_options
 from .clean_stream import router as clean_stream_router
 from .config import SAMPLE_RATE, Upstream, load_config, load_parsed, load_transcribe_config
 from .diarization.client import (
@@ -1390,13 +1391,86 @@ async def asr_upload(
     }
 
 
+def _parse_transcription_enhancement_options(
+    *,
+    config: str | None,
+    language: str | None,
+    hotwords: str | None,
+    translate_mode: bool | None,
+    target_language: str | None,
+    cleanup_level: str | None,
+    cleanup_text_emotion: bool | None,
+    hotwords_builtin: str | None,
+) -> SessionOptions | None:
+    enhanced_fields_present = bool(config and config.strip()) or any(
+        value is not None
+        for value in (
+            translate_mode,
+            target_language,
+            cleanup_level,
+            cleanup_text_emotion,
+            hotwords_builtin,
+        )
+    )
+    if not enhanced_fields_present:
+        return None
+
+    payload: dict[str, Any] = {}
+    if config and config.strip():
+        try:
+            decoded = json.loads(config)
+        except json.JSONDecodeError as exc:
+            raise ValueError("config must be valid JSON.") from exc
+        if not isinstance(decoded, dict):
+            raise ValueError("config must be a JSON object.")
+        payload = decoded
+
+    if language is not None:
+        payload["language"] = language
+    if translate_mode is not None:
+        payload["translate_mode"] = translate_mode
+    if target_language is not None:
+        payload["target_language"] = target_language
+
+    cleanup = payload.get("cleanup") or {}
+    if not isinstance(cleanup, dict):
+        raise ValueError("cleanup and hotwords must be objects.")
+    cleanup = dict(cleanup)
+    if cleanup_level is not None:
+        cleanup["level"] = cleanup_level
+    if cleanup_text_emotion is not None:
+        cleanup["text_emotion"] = cleanup_text_emotion
+    requested_cleanup_level = str(cleanup.get("level") or "light").lower()
+    if requested_cleanup_level not in {"off", "light", "standard"}:
+        cleanup["level"] = "light"
+    payload["cleanup"] = cleanup
+
+    hotword_options = payload.get("hotwords") or {}
+    if not isinstance(hotword_options, dict):
+        raise ValueError("cleanup and hotwords must be objects.")
+    hotword_options = dict(hotword_options)
+    if hotwords is not None:
+        hotword_options["custom"] = _parse_csv(hotwords)
+    if hotwords_builtin is not None:
+        hotword_options["builtin"] = _parse_csv(hotwords_builtin)
+    payload["hotwords"] = hotword_options
+
+    return parse_options(payload)
+
+
 @app.post("/api/asr/transcriptions", status_code=202)
 async def asr_transcription_create(
     audio: UploadFile = File(...),
-    language: str = Form(""),
-    hotwords: str = Form(""),
+    language: str | None = Form(None),
+    hotwords: str | None = Form(None),
     hotword_pool_id: str = Form(""),
     user_id: str | None = Form(None),
+    config: str | None = Form(None),
+    translate_mode: bool | None = Form(None),
+    target_language: str | None = Form(None),
+    cleanup_level: str | None = Form(None),
+    cleanup_text_emotion: bool | None = Form(None),
+    hotwords_builtin: str | None = Form(None),
 ):
     """Enqueue offline transcription of a long recording (meeting minutes).
 
@@ -1419,6 +1493,26 @@ async def asr_transcription_create(
     # choice, fusion switch) layered over the shared REST defaults.
     cfg = load_transcribe_config()
     _reject_legacy_hotword_user_id(user_id)
+    try:
+        enhancement_options = _parse_transcription_enhancement_options(
+            config=config,
+            language=language,
+            hotwords=hotwords,
+            translate_mode=translate_mode,
+            target_language=target_language,
+            cleanup_level=cleanup_level,
+            cleanup_text_emotion=cleanup_text_emotion,
+            hotwords_builtin=hotwords_builtin,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    effective_language = language or ""
+    effective_hotwords = _parse_csv(hotwords)
+    if enhancement_options is not None:
+        effective_language = (
+            "" if enhancement_options.language == "auto" else enhancement_options.language
+        )
+        effective_hotwords = enhancement_options.glossary
     resolved_hotword_pool_id = _resolve_hotword_pool_id(
         hotword_pool_id,
         cfg,
@@ -1454,9 +1548,10 @@ async def asr_transcription_create(
         job = await store.submit(
             pcm_i16,
             duration_sec=duration_sec,
-            language=language,
-            hotwords=_parse_csv(hotwords),
+            language=effective_language,
+            hotwords=effective_hotwords,
             hotword_pool_id=resolved_hotword_pool_id,
+            enhancement_options=enhancement_options,
             cfg=cfg,
         )
     except JobQueueFullError as exc:
@@ -1593,6 +1688,7 @@ async def audio_analyze(
         query_emotion_model(
             emotion_wav_b64,
             mode="ser",
+            language=language,
             base_url=cfg.emotion_vllm_base_url,
             model_name=cfg.emotion_vllm_model_name,
             timeout=cfg.emotion_request_timeout,
@@ -1602,6 +1698,7 @@ async def audio_analyze(
         query_emotion_model(
             emotion_wav_b64,
             mode="sec",
+            language=language,
             base_url=cfg.emotion_vllm_base_url,
             model_name=cfg.emotion_vllm_model_name,
             timeout=cfg.emotion_request_timeout,

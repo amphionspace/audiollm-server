@@ -764,6 +764,7 @@ async def test_emotion_engine_emits_final_emotion_ser(monkeypatch):
         audio_wav_base64,
         *,
         mode="ser",
+        language="",
         base_url=None,
         model_name=None,
         timeout=None,
@@ -820,6 +821,7 @@ async def test_emotion_engine_emits_final_emotion_sec(monkeypatch):
         audio_wav_base64,
         *,
         mode="ser",
+        language="",
         base_url=None,
         model_name=None,
         timeout=None,
@@ -865,6 +867,7 @@ async def test_emotion_engine_falls_back_to_config_mode(monkeypatch):
         audio_wav_base64,
         *,
         mode="ser",
+        language="",
         base_url=None,
         model_name=None,
         timeout=None,
@@ -941,6 +944,7 @@ async def test_emotion_engine_streaming_mode_emits_per_segment(monkeypatch):
         audio_wav_base64,
         *,
         mode="ser",
+        language="",
         base_url=None,
         model_name=None,
         timeout=None,
@@ -1499,11 +1503,16 @@ def test_emotion_prompt_constants_match_amphion():
         SEC_PROMPT,
         SER_PROMPT,
         SER_TAXONOMY,
+        get_prompt,
         normalize_mode,
     )
 
     assert SER_PROMPT == "Classify the emotion of the following audio:"
     assert SEC_PROMPT == "Describe the paralinguistic emotion cues of the following audio:"
+    assert get_prompt("sec", "zh") == f"{SEC_PROMPT} Respond in Simplified Chinese only."
+    assert get_prompt("sec", "en") == f"{SEC_PROMPT} Respond in English only."
+    assert get_prompt("sec", "auto") == SEC_PROMPT
+    assert get_prompt("ser", "zh") == SER_PROMPT
     assert SER_TAXONOMY == (
         "Neutral",
         "Happy",
@@ -1518,6 +1527,17 @@ def test_emotion_prompt_constants_match_amphion():
     assert normalize_mode("sec") == "sec"
     with pytest.raises(ValueError, match="mode must be ser or sec"):
         normalize_mode("???")
+
+
+def test_sec_language_translation_detection():
+    from backend.emotion.client import _needs_sec_language_translation
+
+    assert _needs_sec_language_translation("The speaker sounds angry.", "zh") is True
+    assert _needs_sec_language_translation("说话人听起来很生气。", "zh") is False
+    assert _needs_sec_language_translation("说话人感到 distress。", "zh") is True
+    assert _needs_sec_language_translation("说话人听起来很生气。", "en") is True
+    assert _needs_sec_language_translation("The speaker sounds angry.", "en") is False
+    assert _needs_sec_language_translation("The speaker sounds angry.", "auto") is False
 
 
 # ---------------------------------------------------------------------------

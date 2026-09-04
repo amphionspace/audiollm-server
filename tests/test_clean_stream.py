@@ -122,6 +122,27 @@ def test_emotion_refine_prompt_uses_semantic_and_emotional_few_shots() -> None:
     assert messages[-1]["content"].startswith('{"asr_text": "继续努力！"')
 
 
+def test_translation_emotion_prompt_uses_target_language_few_shots() -> None:
+    options = clean_stream.SessionOptions(
+        language="en",
+        translate_mode=True,
+        target_language="zh",
+        text_emotion=True,
+    )
+    messages = clean_stream._refine_prompt(
+        "I am absolutely furious!",
+        options,
+        {"mode": "sec", "text": "angry and tense"},
+    )
+
+    assert "append at most one" in messages[0]["content"]
+    assert messages[1]["content"].startswith('{"asr_text": "Keep going!"')
+    assert messages[2]["content"] == "继续加油！💪"
+    assert messages[-1]["content"].startswith(
+        '{"asr_text": "I am absolutely furious!"'
+    )
+
+
 def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
     class FakeSegmentingStream:
         def __init__(self, *, enable_partial):

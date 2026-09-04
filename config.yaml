@@ -188,7 +188,7 @@ services:
   recall: triton_recall
   recall_management: rag_asr_management
   text_cleanup: dashscope_cleanup
-  clean_stream_refine: volcano_cleanup
+  speech_refine: volcano_cleanup
   clean_stream_asr: qwen3_clean_asr
 
 # REST/HTTP 路由的上游绑定: upstreams 是所有 REST 接口的共享默认,

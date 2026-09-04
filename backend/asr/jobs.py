@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..clean_stream import SessionOptions
 from ..config import Config, load_transcribe_config
 from ..jobstore import (
     JOB_STATUS_FAILED,
@@ -52,6 +53,7 @@ class TranscriptionJob(BaseJob):
     hotword_pool_id: str = ""
     pcm_i16: bytes = field(default=b"", repr=False)
     duration_sec: float = 0.0
+    enhancement_options: SessionOptions | None = None
     segments_total: int | None = None
     segments_done: int = 0
 
@@ -96,6 +98,7 @@ class TranscriptionJobStore(JobStore[TranscriptionJob]):
         language: str = "",
         hotwords: list[str] | None = None,
         hotword_pool_id: str = "",
+        enhancement_options: SessionOptions | None = None,
         cfg: Config | None = None,
     ) -> TranscriptionJob:
         if cfg is not None:
@@ -114,6 +117,7 @@ class TranscriptionJobStore(JobStore[TranscriptionJob]):
             hotword_pool_id=hotword_pool_id,
             pcm_i16=pcm_i16,
             duration_sec=duration_sec,
+            enhancement_options=enhancement_options,
         )
         return await self.enqueue(job)
 
@@ -134,6 +138,7 @@ class TranscriptionJobStore(JobStore[TranscriptionJob]):
             language=job.language,
             hotwords=job.hotwords,
             hotword_pool_id=job.hotword_pool_id,
+            enhancement_options=job.enhancement_options,
             on_segments_planned=on_planned,
             on_segment_done=on_done,
             # Segments hold their own PCM copies once cut; drop the full

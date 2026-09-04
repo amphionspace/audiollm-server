@@ -100,7 +100,7 @@ AST v3 角色/声纹路由速览：
 | 方法 | 路径 | 任务 | 表单字段 |
 |---|---|---|---|
 | POST | `/api/asr/upload` | 上传整段音频做 ASR（短音频，尾截 60 秒） | `audio`、`language`、`hotwords`、`hotword_pool_id`、`enrollment_id` |
-| POST | `/api/asr/transcriptions` | 异步长音频离线转写（202 + 轮询，会议纪要场景） | `audio`、`language`、`hotwords`、`hotword_pool_id` |
+| POST | `/api/asr/transcriptions` | 异步长音频增强转写（202 + 轮询，支持精修、翻译、情绪和内置热词） | `audio`、`language`、`hotwords`、`hotword_pool_id`、`config` 及展开的增强字段 |
 | GET | `/api/asr/transcriptions/{job_id}` | 查询转写任务状态、进度与分段结果 | — |
 | POST | `/api/asr/enrollment` | 上传目标说话人音频（5-10 秒）注册 | `audio` |
 | POST | `/api/asr/speaker-identify` | 将一段会议角色音频与最多 4 个 enrollment 做声纹匹配 | `audio`、`candidate_enrollment_ids` |
@@ -115,6 +115,10 @@ AST v3 角色/声纹路由速览：
 | POST | `/api/emotion/jobs` | 异步整段情感识别（202 + 轮询）；SER 结果含 Top-3 标签与分数 | `audio`、`mode`、`language` |
 | GET | `/api/emotion/jobs/{job_id}` | 查询情感任务状态与结果 | — |
 | POST | `/api/audio/analyze` | 非实时聚合分析：ASR 原始结果、文本清洗、情感标签和情感描述 | `audio`、`language`、`hotwords`、`enrollment_id` |
+
+情感接口的 `language` 对 `sec` 表示描述文本的输出语言：`zh` 强制简体中文，
+`en` 强制英文；AmphionSPEC 未遵守语言提示时，服务端使用已配置的
+`speech_refine` LLM 翻译兜底。`ser` 固定返回分类标签，不受该字段影响。
 
 ## WebSocket 调用流程
 
@@ -315,7 +319,7 @@ python docs/examples/rest_upload.py asr sample.wav \
 
 ### 长音频离线转写（会议纪要）
 
-`POST /api/asr/transcriptions` 面向整段会议录音等长音频（默认上限 3 小时 / 512 MB，超时长直接 400 拒绝而非截断）。服务端先按与流式端点相同的 VAD 状态机把录音切成语音段（切段停顿阈值可经 `transcribe_silence_duration_ms` 独立调参、不影响实时端点；连续无停顿语音超过 `transcribe_max_segment_sec` 会强制切分），再对每段并行执行与 `/api/asr/upload` 相同的双模型转写（含 ITN / 车牌规范化），最后按时间序拼出全文。表单字段为 `audio`（WAV）、`language`、`hotwords`；不支持 `enrollment_id`（目标说话人过滤与多人会议语义相反）。
+`POST /api/asr/transcriptions` 面向整段会议录音等长音频（默认上限 3 小时 / 512 MB，超时长直接 400 拒绝而非截断）。服务端先按与流式端点相同的 VAD 状态机把录音切成语音段（切段停顿阈值可经 `transcribe_silence_duration_ms` 独立调参、不影响实时端点；连续无停顿语音超过 `transcribe_max_segment_sec` 会强制切分），再对每段并行执行与 `/api/asr/upload` 相同的 ASR 转写（含 ITN / 车牌规范化），最后按时间序拼出全文。除原有 `audio`（WAV）、`language`、`hotwords`、`hotword_pool_id` 外，接口还接受 JSON 字符串 `config`，支持 `translate_mode`、`target_language`、`cleanup.level`、`cleanup.text_emotion`、`hotwords.builtin` 和 `hotwords.custom`；也接受 APIHub 转发使用的展开字段 `cleanup_level`、`cleanup_text_emotion`、`hotwords_builtin`。不支持 `enrollment_id`（目标说话人过滤与多人会议语义相反）。
 
 ```bash
 curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
@@ -344,7 +348,7 @@ curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
 }
 ```
 
-`segments[*].start_ms` / `end_ms` 为段级近似时间戳（非词级对齐）。单段失败重试一次后以 `error` 占位、不拖垮整个任务；结果内存保留 `transcribe_job_ttl_sec`（默认 1 小时）。完整的请求/响应字段表、状态机、部分失败语义、错误码、`config.yaml` 调参（`defaults.transcribe` 分组）与切段停顿调参建议见 [长音频离线转写 API](api/transcription-jobs-api.md)，命令行客户端见 `docs/examples/http_transcribe_job.py`。
+`segments[*].start_ms` / `end_ms` 为段级近似时间戳（非词级对齐）。启用增强后，原始全文同时出现在 `text`，成功时返回 `cleaned_text` 或 `translated_text`；增强失败则返回 `degraded_raw_only`，原始 ASR 不受影响。单段 ASR 失败重试一次后以 `error` 占位、不拖垮整个任务；结果内存保留 `transcribe_job_ttl_sec`（默认 1 小时）。完整的请求/响应字段表、状态机、部分失败语义、错误码、`config.yaml` 调参（`defaults.transcribe` 分组）与切段停顿调参建议见 [长音频离线转写 API](api/transcription-jobs-api.md)，命令行客户端见 `docs/examples/http_transcribe_job.py`。
 
 ### 目标说话人注册
 

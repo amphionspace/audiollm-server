@@ -42,6 +42,7 @@ from backend.asr.transcribe import (  # noqa: E402
     transcribe_pcm_i16,
 )
 from backend.audio.utils import pcm_to_wav_base64, pcm_to_wav_bytes  # noqa: E402
+from backend.clean_stream import SessionOptions  # noqa: E402
 from backend.config import SAMPLE_RATE, load_config  # noqa: E402
 from backend.jobstore import JobExecutionError  # noqa: E402
 from backend.main import app  # noqa: E402
@@ -253,6 +254,135 @@ async def test_transcribe_no_speech_returns_empty_result(fake_vad):
 
 
 @pytest.mark.asyncio
+async def test_transcribe_cleanup_uses_hotwords_and_emotion(fake_vad, monkeypatch):
+    options = SessionOptions(
+        language="zh",
+        cleanup_level="light",
+        text_emotion=True,
+        builtin=["internet"],
+        custom=["Four Hz"],
+    )
+
+    async def fake_asr(wav_b64, **kwargs):
+        assert "OpenTelemetry" in kwargs["hotwords"]
+        assert "Four Hz" in kwargs["hotwords"]
+        return {"text": "欢迎使用安费恩！", "language": "zh"}
+
+    async def fake_emotion(pcm, received_options):
+        assert pcm
+        assert received_options is options
+        return {"mode": "sec", "text": "语气积极、欢迎"}
+
+    async def fake_refine(text, received_options, emotion):
+        assert text == "欢迎使用安费恩！"
+        assert received_options is options
+        assert emotion["mode"] == "sec"
+        return "欢迎使用 Amphion！🚀"
+
+    monkeypatch.setattr(transcribe_mod, "run_oneshot_asr", fake_asr)
+    monkeypatch.setattr(transcribe_mod, "infer_emotion", fake_emotion)
+    monkeypatch.setattr(transcribe_mod, "refine_text", fake_refine)
+
+    pcm = _pcm_i16(_silence(0.5), _tone(2.0), _silence(0.5))
+    result = await transcribe_pcm_i16(
+        pcm,
+        cfg=_cfg(),
+        language="zh",
+        hotwords=options.glossary,
+        enhancement_options=options,
+    )
+
+    assert result["text"] == "欢迎使用安费恩！"
+    assert result["cleaned_text"] == "欢迎使用 Amphion！🚀"
+    assert result["cleanup_status"] == "completed"
+    assert result["emotion_bucket_count"] == 1
+    assert result["builtin_hotword_lists"] == ["internet"]
+    assert result["custom_hotword_count"] == 1
+    assert not any(key.startswith("_") for key in result["segments"][0])
+
+
+@pytest.mark.asyncio
+async def test_transcribe_translation_returns_translated_text(fake_vad, monkeypatch):
+    options = SessionOptions(
+        language="zh",
+        translate_mode=True,
+        target_language="en",
+    )
+
+    async def fake_asr(wav_b64, **kwargs):
+        return {"text": "今天天气很好。", "language": "zh"}
+
+    async def fake_refine(text, received_options, emotion):
+        assert received_options.target_language == "en"
+        assert emotion is None
+        return "The weather is nice today."
+
+    monkeypatch.setattr(transcribe_mod, "run_oneshot_asr", fake_asr)
+    monkeypatch.setattr(transcribe_mod, "refine_text", fake_refine)
+
+    result = await transcribe_pcm_i16(
+        _pcm_i16(_silence(0.5), _tone(2.0), _silence(0.5)),
+        cfg=_cfg(),
+        language="zh",
+        enhancement_options=options,
+    )
+
+    assert result["translated_text"] == "The weather is nice today."
+    assert result["translation_status"] == "completed"
+    assert result["target_language"] == "en"
+    assert "cleanup_level" not in result
+
+
+@pytest.mark.asyncio
+async def test_transcribe_enhancement_failure_degrades_to_raw(fake_vad, monkeypatch):
+    async def fake_asr(wav_b64, **kwargs):
+        return {"text": "原始结果。", "language": "zh"}
+
+    async def fail_refine(*args, **kwargs):
+        raise RuntimeError("refine unavailable")
+
+    monkeypatch.setattr(transcribe_mod, "run_oneshot_asr", fake_asr)
+    monkeypatch.setattr(transcribe_mod, "refine_text", fail_refine)
+
+    result = await transcribe_pcm_i16(
+        _pcm_i16(_silence(0.5), _tone(2.0), _silence(0.5)),
+        cfg=_cfg(),
+        enhancement_options=SessionOptions(cleanup_level="light"),
+    )
+
+    assert result["text"] == "原始结果。"
+    assert result["cleanup_status"] == "degraded_raw_only"
+    assert "cleaned_text" not in result
+
+
+@pytest.mark.asyncio
+async def test_transcribe_cleanup_off_skips_refine_and_emotion(fake_vad, monkeypatch):
+    async def fake_asr(wav_b64, **kwargs):
+        return {"text": "原始结果。", "language": "zh"}
+
+    async def unexpected_call(*args, **kwargs):
+        raise AssertionError("cleanup off must not call enhancement models")
+
+    monkeypatch.setattr(transcribe_mod, "run_oneshot_asr", fake_asr)
+    monkeypatch.setattr(transcribe_mod, "infer_emotion", unexpected_call)
+    monkeypatch.setattr(transcribe_mod, "refine_text", unexpected_call)
+
+    result = await transcribe_pcm_i16(
+        _pcm_i16(_silence(0.5), _tone(2.0), _silence(0.5)),
+        cfg=_cfg(),
+        enhancement_options=SessionOptions(
+            cleanup_level="off",
+            text_emotion=True,
+        ),
+    )
+
+    assert result["text"] == "原始结果。"
+    assert result["emotion_bucket_count"] == 0
+    assert "cleaned_text" not in result
+    assert "cleanup_status" not in result
+
+
+@pytest.mark.asyncio
 async def test_oneshot_asr_removes_internal_silence_before_model(
     fake_vad,
     monkeypatch,
@@ -422,6 +552,31 @@ def _wav_upload_bytes(*parts: np.ndarray) -> bytes:
     return pcm_to_wav_bytes(np.concatenate(parts))
 
 
+def test_transcription_expanded_fields_override_config():
+    options = main_mod._parse_transcription_enhancement_options(
+        config=(
+            '{"language":"en","translate_mode":true,"target_language":"zh",'
+            '"cleanup":{"level":"standard","text_emotion":false},'
+            '"hotwords":{"builtin":["finance"],"custom":["old"]}}'
+        ),
+        language="zh",
+        hotwords="Four Hz,Four Hz",
+        translate_mode=False,
+        target_language=None,
+        cleanup_level="unexpected",
+        cleanup_text_emotion=True,
+        hotwords_builtin="internet",
+    )
+
+    assert options is not None
+    assert options.language == "zh"
+    assert options.translate_mode is False
+    assert options.cleanup_level == "light"
+    assert options.text_emotion is True
+    assert options.builtin == ["internet"]
+    assert options.custom == ["Four Hz"]
+
+
 def test_transcription_http_create_poll_succeeds(fake_vad, monkeypatch):
     async def fake_asr(wav_b64, **kwargs):
         assert kwargs["hotword_pool_id"] == "tenant-a"
@@ -466,6 +621,65 @@ def test_transcription_http_create_poll_succeeds(fake_vad, monkeypatch):
                 pytest.fail(str(data.get("error")))
             time.sleep(0.03)
         pytest.fail("poll timed out")
+
+
+def test_transcription_http_accepts_enhancement_config(fake_vad, monkeypatch):
+    async def fake_asr(wav_b64, **kwargs):
+        assert kwargs["language"] == "zh"
+        assert "AUM" in kwargs["hotwords"]
+        assert "ETF" in kwargs["hotwords"]
+        return {"text": "资产管理规模是一百。", "language": "zh"}
+
+    async def fake_refine(text, options, emotion):
+        assert options.translate_mode is True
+        assert options.target_language == "en"
+        return "Assets under management are one hundred."
+
+    monkeypatch.setattr(transcribe_mod, "run_oneshot_asr", fake_asr)
+    monkeypatch.setattr(transcribe_mod, "refine_text", fake_refine)
+
+    with TestClient(app) as client:
+        wav = _wav_upload_bytes(_silence(0.5), _tone(2.0), _silence(0.5))
+        create = client.post(
+            "/api/asr/transcriptions",
+            files={"audio": ("meeting.wav", wav, "audio/wav")},
+            data={
+                "config": (
+                    '{"language":"zh","translate_mode":true,'
+                    '"target_language":"en","hotwords":{'
+                    '"builtin":["finance"],"custom":["AUM","AUM"]}}'
+                )
+            },
+        )
+        assert create.status_code == 202
+        job_id = create.json()["job_id"]
+
+        for _ in range(100):
+            poll = client.get(f"/api/asr/transcriptions/{job_id}").json()
+            if poll["status"] == JOB_STATUS_SUCCEEDED:
+                result = poll["result"]
+                assert result["text"] == "资产管理规模是一百。"
+                assert result["translated_text"] == "Assets under management are one hundred."
+                assert result["translation_status"] == "completed"
+                assert result["builtin_hotword_lists"] == ["finance"]
+                assert result["custom_hotword_count"] == 1
+                return
+            if poll["status"] == JOB_STATUS_FAILED:
+                pytest.fail(str(poll.get("error")))
+            time.sleep(0.03)
+        pytest.fail("poll timed out")
+
+
+def test_transcription_http_rejects_invalid_enhancement_config():
+    client = TestClient(app)
+    wav = _wav_upload_bytes(_silence(0.1))
+    resp = client.post(
+        "/api/asr/transcriptions",
+        files={"audio": ("meeting.wav", wav, "audio/wav")},
+        data={"config": "not-json"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "config must be valid JSON."
 
 
 def test_transcription_http_rejects_overlong_audio(monkeypatch):

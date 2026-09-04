@@ -56,5 +56,13 @@ def normalize_mode(value: object) -> EmotionMode:
     raise ValueError("mode must be ser or sec")
 
 
-def get_prompt(mode: EmotionMode) -> str:
-    return PROMPTS[mode]
+def get_prompt(mode: EmotionMode, language: str = "") -> str:
+    prompt = PROMPTS[mode]
+    if mode != "sec":
+        return prompt
+    normalized = str(language or "").strip().lower()
+    if normalized in {"zh", "zh-cn", "cn", "chinese"}:
+        return f"{prompt} Respond in Simplified Chinese only."
+    if normalized in {"en", "en-us", "en-gb", "english"}:
+        return f"{prompt} Respond in English only."
+    return prompt

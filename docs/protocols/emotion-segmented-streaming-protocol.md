@@ -22,7 +22,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `language` | string | 否 | 透传语言字段，如 `zh`、`en`、`id`、`th`；服务端会在结果中回填 |
+| `language` | string | 否 | `sec` 描述输出语言；`zh` 强制简体中文，`en` 强制英文，其他值不强制；同时在结果中回填。`ser` 固定返回分类标签，不受影响 |
 
 ## 与整段情感接口的区别
 
@@ -78,7 +78,7 @@ Client                                      Server
 | `sample_rate_hz` | integer | 否 | 固定为 `16000` |
 | `channels` | integer | 否 | 固定为 `1` |
 | `mode` | string | 否 | 仅支持 `ser` 或 `sec`，不传使用服务端默认 `sec` |
-| `language` | string | 否 | 透传语言字段；也可通过 query 参数传入 |
+| `language` | string | 否 | `sec` 描述输出语言；`zh` 强制简体中文，`en` 强制英文，其他值不强制；也可通过 query 参数传入 |
 | `config` | object | 否 | 当前连接的服务端配置覆写 |
 
 若 `mode` 不是 `ser` 或 `sec`，服务端返回

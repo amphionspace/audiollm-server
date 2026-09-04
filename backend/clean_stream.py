@@ -69,7 +69,7 @@ def _pcm_to_wav(pcm: bytes) -> bytes:
     return output.getvalue()
 
 
-def _parse_options(message: dict[str, Any]) -> SessionOptions:
+def parse_options(message: dict[str, Any]) -> SessionOptions:
     language = str(message.get("language") or "auto").strip().lower()
     cleanup = message.get("cleanup") or {}
     hotwords = message.get("hotwords") or {}
@@ -101,7 +101,9 @@ def _parse_options(message: dict[str, Any]) -> SessionOptions:
         translate_mode=translate,
         target_language=target,
         builtin=builtin,
-        custom=[str(item).strip() for item in custom if str(item).strip()][:100],
+        custom=list(
+            dict.fromkeys(str(item).strip() for item in custom if str(item).strip())
+        )[:100],
     )
 
 
@@ -132,6 +134,12 @@ def _refine_prompt(
             f"Translate the ASR transcript faithfully into {options.target_language}. "
             "Return only the translation. Do not explain or add information."
         )
+        if emotion:
+            instruction += (
+                " Preserve the meaning while reflecting clearly supported tone in punctuation."
+                " Based on the source meaning and emotion context, append at most one natural,"
+                " common matching emoji; do not force an emoji for neutral or unclear speech."
+            )
     else:
         instructions = [
             "你是实时语音识别结果的保守清洗器。",
@@ -175,20 +183,35 @@ def _refine_prompt(
         "emotion": emotion or {},
     }
     messages = [{"role": "system", "content": instruction}]
-    if emotion and not options.translate_mode:
-        examples = [
-            ("加油！", "语气平静但带有鼓励意味", "加油！💪"),
-            ("恭喜你通过考试！", "语气真诚、喜悦", "恭喜你通过考试！🎉"),
-            ("太让人难过了。", "语气低落、悲伤", "太让人难过了。😢"),
-            ("你怎么能这样做！", "语气愤怒、强烈不满", "你怎么能这样做！😠"),
-            ("门外好像有人。", "语气害怕、紧张", "门外好像有人。😨"),
-            ("原来你也在这里？", "语气惊讶、意外", "原来你也在这里？😮"),
-            ("会议将在下午三点开始。", "语气中性、客观", "会议将在下午三点开始。"),
-        ]
+    if emotion:
+        if options.translate_mode and options.target_language == "zh":
+            examples = [
+                ("Keep going!", "encouraging and determined", "继续加油！💪"),
+                ("This is heartbreaking.", "sad and subdued", "这太令人心碎了。😢"),
+                ("The meeting starts at three.", "neutral and factual", "会议三点开始。"),
+            ]
+        elif options.translate_mode and options.target_language == "en":
+            examples = [
+                ("加油！", "语气鼓励、坚定", "Keep going! 💪"),
+                ("太让人难过了。", "语气低落、悲伤", "This is heartbreaking. 😢"),
+                ("会议将在下午三点开始。", "语气中性、客观", "The meeting starts at three."),
+            ]
+        elif options.translate_mode:
+            examples = []
+        else:
+            examples = [
+                ("加油！", "语气平静但带有鼓励意味", "加油！💪"),
+                ("恭喜你通过考试！", "语气真诚、喜悦", "恭喜你通过考试！🎉"),
+                ("太让人难过了。", "语气低落、悲伤", "太让人难过了。😢"),
+                ("你怎么能这样做！", "语气愤怒、强烈不满", "你怎么能这样做！😠"),
+                ("门外好像有人。", "语气害怕、紧张", "门外好像有人。😨"),
+                ("原来你也在这里？", "语气惊讶、意外", "原来你也在这里？😮"),
+                ("会议将在下午三点开始。", "语气中性、客观", "会议将在下午三点开始。"),
+            ]
         for example_text, example_emotion, example_output in examples:
             example_payload = {
                 "asr_text": example_text,
-                "language": "zh",
+                "language": options.language if options.translate_mode else "zh",
                 "glossary": [],
                 "emotion": {
                     "mode": "sec",
@@ -303,7 +326,7 @@ def evaluate_cleanup_result(
 
 
 async def refine_text(text: str, options: SessionOptions, emotion: dict[str, Any] | None) -> str:
-    upstream = get_service_upstream("clean_stream_refine")
+    upstream = get_service_upstream("speech_refine")
     if upstream is None or not upstream.api_key:
         raise RuntimeError("text_cleanup upstream is not configured")
     payload: dict[str, Any] = {
@@ -502,7 +525,7 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                     await send_error("invalid_state", "session.update may only be sent once.")
                     continue
                 try:
-                    options = _parse_options(message)
+                    options = parse_options(message)
                 except ValueError as exc:
                     await send_error("invalid_request", str(exc))
                     continue

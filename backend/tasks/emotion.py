@@ -76,6 +76,7 @@ class EmotionTaskEngine(BaseTaskEngine):
         result = await query_emotion_model(
             wav_b64,
             mode=self._mode,
+            language=ctx.language,
             base_url=cfg.emotion_vllm_base_url,
             model_name=cfg.emotion_vllm_model_name,
             timeout=cfg.emotion_request_timeout,

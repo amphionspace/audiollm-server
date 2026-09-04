@@ -470,7 +470,7 @@ ASR 热词偏置来自 `config.yaml -> services.recall` 指向的 Triton 召回�
 
 #### 长音频离线转写（`POST /api/asr/transcriptions`）
 
-接口说明见 [docs/api/transcription-jobs-api.md](docs/api/transcription-jobs-api.md)。推理用哪个模型、是否双模型融合由 `config.yaml` 的 `rest.routes.transcribe` 块独立声明（省略则跟随共享 `rest.upstreams` 绑定），下表为 `defaults.transcribe` 调参：
+接口说明见 [docs/api/transcription-jobs-api.md](docs/api/transcription-jobs-api.md)。任务支持通过 `config` 开启内置/自定义热词、文本精修、翻译和情绪增强；不传增强配置时保持原有纯转写行为。推理用哪个模型、是否双模型融合由 `config.yaml` 的 `rest.routes.transcribe` 块独立声明（省略则跟随共享 `rest.upstreams` 绑定），下表为 `defaults.transcribe` 调参：
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|

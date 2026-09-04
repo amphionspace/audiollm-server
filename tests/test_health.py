@@ -74,8 +74,8 @@ def test_readyz_returns_ok_when_configured_upstreams_are_ready(monkeypatch):
     assert body["status"] == "ok"
     assert "rest.primary:amphion_asr" in openai_checks
     assert "rest.secondary:qwen_asr" in openai_checks
-    assert "rest.emotion:amphion_emotion" in openai_checks
-    assert "rest.emotion_spec:amphion_spec" in openai_checks
+    assert "rest.emotion:amphion_spec" in openai_checks
+    assert openai_checks.count("rest.emotion:amphion_spec") == 1
     assert {check["name"] for check in body["checks"]} >= {
         "rag_asr_triton",
         "rag_asr_management",

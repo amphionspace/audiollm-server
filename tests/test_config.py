@@ -383,7 +383,7 @@ def test_resolve_real_tuling_primary_only() -> None:
 
 def test_get_service_upstream() -> None:
     assert get_service_upstream("text_cleanup").name == "dashscope_cleanup"
-    assert get_service_upstream("clean_stream_refine").name == "volcano_cleanup"
+    assert get_service_upstream("speech_refine").name == "volcano_cleanup"
     clean_asr = get_service_upstream("clean_stream_asr")
     assert clean_asr is not None
     assert clean_asr.name == "qwen3_clean_asr"

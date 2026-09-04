@@ -64,7 +64,7 @@ Client                                      Server
 |---|---|---|---|
 | `audio` | file | 是 | WAV 音频文件 |
 | `mode` | string | 否 | `ser` 或 `sec` |
-| `language` | string | 否 | 透传语言字段 |
+| `language` | string | 否 | `sec` 描述输出语言；`zh` 强制简体中文，`en` 强制英文，其他值不强制；同时在结果中回填。`ser` 固定返回分类标签，不受影响 |
 
 ### 成功响应（202）
 
