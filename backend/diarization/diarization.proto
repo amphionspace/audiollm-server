@@ -4,6 +4,7 @@ package diarization.v1;
 
 service DiarizationService {
   rpc Diarize(stream DiarizationRequest) returns (stream DiarizationEvent);
+  rpc ExtractSpeakerEmbedding(SpeakerEmbeddingRequest) returns (SpeakerEmbeddingResponse);
   rpc Healthz(HealthzRequest) returns (HealthzResponse);
 }
 
@@ -56,6 +57,18 @@ message SessionEnded {}
 message DiarizationError {
   string code = 1;
   string message = 2;
+}
+
+message SpeakerEmbeddingRequest {
+  bytes pcm_s16le = 1;
+  int32 sample_rate = 2;
+}
+
+message SpeakerEmbeddingResponse {
+  bytes embedding_f32 = 1;
+  int32 dimension = 2;
+  string model_name = 3;
+  string model_revision = 4;
 }
 
 message HealthzRequest {}

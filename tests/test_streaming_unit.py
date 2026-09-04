@@ -643,6 +643,23 @@ async def test_session_rejects_legacy_start_user_id():
 
 
 @pytest.mark.asyncio
+async def test_emotion_session_rejects_removed_mode():
+    stream = _ScriptedStream(feed_events=[], flush_events=[])
+    ws = FakeWebSocket([{"text": '{"type":"start","mode":"sepc"}'}])
+
+    session = StreamingSession(ws, stream=stream, engine=EmotionTaskEngine())
+    await session.run()
+    await session.cleanup()
+
+    assert {
+        "type": "error",
+        "code": "invalid_start",
+        "message": "mode must be ser or sec",
+    } in ws.sent
+    assert session._started is False
+
+
+@pytest.mark.asyncio
 async def test_session_dispatches_async_partial_text_and_segment():
     stream = _AsyncScriptedStream()
     engine = _RecorderEngine()
@@ -747,6 +764,7 @@ async def test_emotion_engine_emits_final_emotion_ser(monkeypatch):
         audio_wav_base64,
         *,
         mode="ser",
+        language="",
         base_url=None,
         model_name=None,
         timeout=None,
@@ -758,6 +776,12 @@ async def test_emotion_engine_emits_final_emotion_ser(monkeypatch):
             "label": "Happy",
             "text": "Happy",
             "raw_text": "Happy",
+            "top_emotions": [
+                {"label": "Happy", "score": 0.8},
+                {"label": "Neutral", "score": 0.2},
+            ],
+            "best_label": "Happy",
+            "best_score": 0.8,
         }
 
     monkeypatch.setattr("backend.tasks.emotion.query_emotion_model", _fake_query)
@@ -774,7 +798,9 @@ async def test_emotion_engine_emits_final_emotion_ser(monkeypatch):
     assert sent[0]["label"] == "Happy"
     assert sent[0]["text"] == "Happy"
     assert sent[0]["language"] == "zh"
-    assert "scores" not in sent[0]
+    assert sent[0]["top_emotions"][0] == {"label": "Happy", "score": 0.8}
+    assert sent[0]["best_label"] == "Happy"
+    assert sent[0]["best_score"] == 0.8
 
 
 @pytest.mark.asyncio
@@ -795,6 +821,7 @@ async def test_emotion_engine_emits_final_emotion_sec(monkeypatch):
         audio_wav_base64,
         *,
         mode="ser",
+        language="",
         base_url=None,
         model_name=None,
         timeout=None,
@@ -824,7 +851,7 @@ async def test_emotion_engine_emits_final_emotion_sec(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_emotion_engine_falls_back_to_config_mode(monkeypatch):
-    """When start has no mode, engine should pick Config.emotion_task_mode."""
+    """When start has no mode, engine should pick the configured public mode."""
     sent: list[dict] = []
 
     async def _send_json(payload):
@@ -840,6 +867,7 @@ async def test_emotion_engine_falls_back_to_config_mode(monkeypatch):
         audio_wav_base64,
         *,
         mode="ser",
+        language="",
         base_url=None,
         model_name=None,
         timeout=None,
@@ -916,6 +944,7 @@ async def test_emotion_engine_streaming_mode_emits_per_segment(monkeypatch):
         audio_wav_base64,
         *,
         mode="ser",
+        language="",
         base_url=None,
         model_name=None,
         timeout=None,
@@ -1415,6 +1444,39 @@ def test_emotion_parser_ser_unknown_returns_empty_label():
     assert out["label"] == ""
 
 
+def test_emotion_ser_logprobs_are_ranked_as_top_three_taxonomy_scores():
+    from backend.emotion.client import _rank_top_emotions
+
+    ranked = _rank_top_emotions(
+        {
+            "logprobs": {
+                "content": [
+                    {
+                        "top_logprobs": [
+                            {"token": "neutral", "logprob": -0.1},
+                            {"token": "happy", "logprob": -2.1},
+                            {"token": "other", "logprob": -4.1},
+                            {"token": "sad", "logprob": -5.1},
+                            {"token": "sur", "logprob": -6.1},
+                            {"token": "ang", "logprob": -7.1},
+                            {"token": "f", "logprob": -8.1},
+                            {"token": "dis", "logprob": -9.1},
+                        ]
+                    }
+                ]
+            }
+        }
+    )
+
+    assert [item["label"] for item in ranked[:3]] == [
+        "Neutral",
+        "Happy",
+        "Other/Complex",
+    ]
+    assert ranked[0]["score"] > ranked[1]["score"] > ranked[2]["score"]
+    assert abs(sum(float(item["score"]) for item in ranked) - 1.0) < 1e-5
+
+
 def test_emotion_parser_sec_returns_freeform_text():
     from backend.emotion.client import parse_emotion_output
 
@@ -1441,11 +1503,16 @@ def test_emotion_prompt_constants_match_amphion():
         SEC_PROMPT,
         SER_PROMPT,
         SER_TAXONOMY,
+        get_prompt,
         normalize_mode,
     )
 
     assert SER_PROMPT == "Classify the emotion of the following audio:"
-    assert SEC_PROMPT == "Describe the emotion of the following audio:"
+    assert SEC_PROMPT == "Describe the paralinguistic emotion cues of the following audio:"
+    assert get_prompt("sec", "zh") == f"{SEC_PROMPT} Respond in Simplified Chinese only."
+    assert get_prompt("sec", "en") == f"{SEC_PROMPT} Respond in English only."
+    assert get_prompt("sec", "auto") == SEC_PROMPT
+    assert get_prompt("ser", "zh") == SER_PROMPT
     assert SER_TAXONOMY == (
         "Neutral",
         "Happy",
@@ -1458,7 +1525,19 @@ def test_emotion_prompt_constants_match_amphion():
     )
     assert normalize_mode("SER") == "ser"
     assert normalize_mode("sec") == "sec"
-    assert normalize_mode("???") == "ser"  # default fallback
+    with pytest.raises(ValueError, match="mode must be ser or sec"):
+        normalize_mode("???")
+
+
+def test_sec_language_translation_detection():
+    from backend.emotion.client import _needs_sec_language_translation
+
+    assert _needs_sec_language_translation("The speaker sounds angry.", "zh") is True
+    assert _needs_sec_language_translation("说话人听起来很生气。", "zh") is False
+    assert _needs_sec_language_translation("说话人感到 distress。", "zh") is True
+    assert _needs_sec_language_translation("说话人听起来很生气。", "en") is True
+    assert _needs_sec_language_translation("The speaker sounds angry.", "en") is False
+    assert _needs_sec_language_translation("The speaker sounds angry.", "auto") is False
 
 
 # ---------------------------------------------------------------------------

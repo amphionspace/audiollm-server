@@ -188,7 +188,8 @@ def test_shipped_config_projects_rest_bindings() -> None:
     assert cfg.vllm_prompt_template == "amphion_asr_1.7b"
     assert cfg.vllm_prompt_template in VALID_PRIMARY_PROMPT_TEMPLATES
     assert cfg.secondary_vllm_base_url == "http://localhost:8001"
-    assert cfg.emotion_vllm_base_url == "http://localhost:8222"
+    assert cfg.emotion_vllm_base_url == "http://localhost:9001"
+    assert cfg.emotion_vllm_model_name == "AmphionSPEC"
     assert cfg.emotion_spec_vllm_base_url == "http://localhost:9001"
     assert cfg.asr_request_timeout == 120
     assert cfg.emotion_request_timeout == 30
@@ -198,8 +199,8 @@ def test_shipped_config_projects_rest_bindings() -> None:
     assert cfg.pseudo_stream_first_partial_ms == 200
     assert cfg.enable_dual_asr_fusion is False
     assert cfg.enable_secondary_asr is True
-    assert cfg.emotion_task_mode == "ser"
-    assert cfg.emotion_spec_task_mode == "sepc"
+    assert cfg.emotion_task_mode == "sec"
+    assert cfg.emotion_spec_task_mode == "sec"
     assert cfg.enable_asr_repetition_fix is True
     assert cfg.k2_enabled is True
     assert cfg.k2_target == "localhost:50051"
@@ -382,6 +383,12 @@ def test_resolve_real_tuling_primary_only() -> None:
 
 def test_get_service_upstream() -> None:
     assert get_service_upstream("text_cleanup").name == "dashscope_cleanup"
+    assert get_service_upstream("speech_refine").name == "volcano_cleanup"
+    clean_asr = get_service_upstream("clean_stream_asr")
+    assert clean_asr is not None
+    assert clean_asr.name == "qwen3_clean_asr"
+    assert clean_asr.base_url == "http://localhost:8011"
+    assert clean_asr.model_name == "/data/models/Qwen3-ASR-1.7B"
     assert get_service_upstream("hotword").name == "hotword_llm"
     assert get_service_upstream("recall").name == "triton_recall"
     assert get_service_upstream("nonexistent") is None
@@ -561,9 +568,19 @@ def test_diarization_invariants_apply_to_direct_construction() -> None:
     invalid_timeouts = Config(
         diarization_connect_timeout_sec=0,
         diarization_result_timeout_sec=-1,
+        speaker_identity_timeout_sec=0,
+        speaker_identity_min_audio_sec=8,
+        speaker_identity_max_audio_sec=3,
+        speaker_identity_match_threshold=2,
+        speaker_identity_match_margin=-1,
     )
     assert invalid_timeouts.diarization_connect_timeout_sec == 2.0
     assert invalid_timeouts.diarization_result_timeout_sec == 2.0
+    assert invalid_timeouts.speaker_identity_timeout_sec == 2.0
+    assert invalid_timeouts.speaker_identity_min_audio_sec == 3.0
+    assert invalid_timeouts.speaker_identity_max_audio_sec == 10.0
+    assert invalid_timeouts.speaker_identity_match_threshold == 0.70
+    assert invalid_timeouts.speaker_identity_match_margin == 0.10
 
 
 def test_diarization_infrastructure_is_not_client_overridable() -> None:
@@ -572,6 +589,11 @@ def test_diarization_infrastructure_is_not_client_overridable() -> None:
         "diarization_target",
         "diarization_connect_timeout_sec",
         "diarization_result_timeout_sec",
+        "speaker_identity_timeout_sec",
+        "speaker_identity_min_audio_sec",
+        "speaker_identity_max_audio_sec",
+        "speaker_identity_match_threshold",
+        "speaker_identity_match_margin",
     }
     assert not fields & CLIENT_OVERRIDABLE_FIELDS
 
@@ -581,11 +603,21 @@ def test_diarization_infrastructure_is_not_client_overridable() -> None:
         diarization_target="attacker.invalid:1234",
         diarization_connect_timeout_sec=99,
         diarization_result_timeout_sec=99,
+        speaker_identity_timeout_sec=99,
+        speaker_identity_min_audio_sec=0.1,
+        speaker_identity_max_audio_sec=99,
+        speaker_identity_match_threshold=0.1,
+        speaker_identity_match_margin=0.9,
     )
     assert out.diarization_enabled == cfg.diarization_enabled
     assert out.diarization_target == cfg.diarization_target
     assert out.diarization_connect_timeout_sec == cfg.diarization_connect_timeout_sec
     assert out.diarization_result_timeout_sec == cfg.diarization_result_timeout_sec
+    assert out.speaker_identity_timeout_sec == cfg.speaker_identity_timeout_sec
+    assert out.speaker_identity_min_audio_sec == cfg.speaker_identity_min_audio_sec
+    assert out.speaker_identity_max_audio_sec == cfg.speaker_identity_max_audio_sec
+    assert out.speaker_identity_match_threshold == cfg.speaker_identity_match_threshold
+    assert out.speaker_identity_match_margin == cfg.speaker_identity_match_margin
 
 
 def test_asr_segment_voice_gate_is_server_enforced() -> None:

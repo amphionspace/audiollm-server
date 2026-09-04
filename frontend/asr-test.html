@@ -132,6 +132,10 @@
                     <span data-i18n="asrtest.mode.diarization">Speaker roles</span>
                   </label>
                   <label class="recognition-mode-option">
+                    <input type="radio" name="recognition-mode" value="meeting" />
+                    <span data-i18n="asrtest.mode.meeting">Meeting</span>
+                  </label>
+                  <label class="recognition-mode-option">
                     <input type="radio" name="recognition-mode" value="target" />
                     <span data-i18n="asrtest.mode.target">Target speaker</span>
                   </label>
@@ -193,6 +197,20 @@
                 <p id="enroll-hint" class="text-[11px] text-faint mt-2" hidden></p>
               </div>
 
+              <div id="meeting-roster-card" class="settings-section meeting-roster" hidden>
+                <div class="meeting-roster-heading">
+                  <div>
+                    <span class="text-[13px] font-semibold"
+                          data-i18n="asrtest.meeting.title">Meeting speakers</span>
+                    <p class="text-xs text-muted mt-1"
+                       data-i18n="asrtest.meeting.tip">Register 1–4 speaker IDs before starting.</p>
+                  </div>
+                  <span id="meeting-roster-status" class="status-pill" data-state="waiting"></span>
+                </div>
+                <div id="meeting-roster-list" class="meeting-roster-list"></div>
+                <p id="meeting-roster-hint" class="text-[11px] text-faint mt-2" aria-live="polite"></p>
+              </div>
+
               <div class="hotword-manager">
                 <div class="hotword-manager-header">
                   <span id="hotword-count" class="text-xs text-muted">0 hotwords</span>
@@ -229,6 +247,7 @@
   <script src="app.js"></script>
   <script src="emotion-app.js"></script>
   <script src="app-test.js"></script>
+  <script src="enhanced-asr.js"></script>
   <script src="sidebar.js"></script>
   <script src="router.js"></script>
 </body>

@@ -2,15 +2,11 @@
  * Emotion recognition panel (independent of the main ASR pipeline).
  *
  * Flow: click Start -> record 16 kHz PCM in the browser -> click Stop ->
- * POST /api/emotion-spec/jobs (async) -> poll until final_emotion.
+ * POST /api/emotion/jobs (async) -> poll until final_emotion.
  *
  * Backend selection: this page targets the AmphionSPEC checkpoint
- * (cfg.emotion_spec_vllm_*) via /api/emotion-spec/jobs. It exposes ``ser``
- * (8-way classification) and ``sepc`` (free-form paralinguistic
- * description) modes. The legacy ``/api/emotion/jobs`` endpoint and the
- * older SEC mode are still available server-side (used by
- * /api/audio/analyze and the ASR-page emotion overlay) but no longer
- * accessible from this UI.
+ * internally while the public protocol exposes only ``ser`` (8-way
+ * classification) and ``sec`` (free-form paralinguistic description).
  *
  * Capture warm-up (mic + AudioContext + worklet) is kept alive across
  * sessions so successive Start clicks skip getUserMedia / worklet load. An
@@ -20,10 +16,7 @@
 (() => {
   'use strict';
 
-  // The emotion page now targets the AmphionSPEC backend. Kept as a
-  // module-level constant so both the live-mic and upload flows agree
-  // on which queue they're feeding.
-  const EMOTION_ENDPOINT = '/api/emotion-spec/jobs';
+  const EMOTION_ENDPOINT = '/api/emotion/jobs';
 
   // Emotion demo page module.
   //
@@ -39,10 +32,7 @@
     const onLangChange = (fn) => (i18n ? i18n.onChange(fn) : () => {});
     let i18nUnsub = null;
 
-  // SER stays as the 8-way taxonomy label; SEPC replaces the legacy SEC
-  // mode because the AmphionSPEC backend (which this page now targets) is
-  // trained with the literal ``sepc`` prompt token (see backend/emotion_spec).
-  const MODE_LABEL_KEYS = { ser: 'emotion.mode.tag.ser', sepc: 'emotion.mode.tag.sepc' };
+  const MODE_LABEL_KEYS = { ser: 'emotion.mode.tag.ser', sec: 'emotion.mode.tag.sec' };
   const modeTag = (mode) => t(MODE_LABEL_KEYS[mode] || 'emotion.mode.tag.ser', {
     defaultValue: (mode || 'ser').toUpperCase(),
   });
@@ -189,13 +179,14 @@
     const mode = data.mode || modeSelect.value || 'ser';
     const label = String(data.label || '').trim();
     const text = String(data.text || '').trim();
+    const topEmotions = Array.isArray(data.top_emotions) ? data.top_emotions : [];
     const duration = typeof data.duration_sec === 'number' ? data.duration_sec : 0;
 
     const tag = modeTag(mode);
     const durTag = duration > 0 ? duration.toFixed(2) + 's' : '—';
 
     let body = '';
-    if (mode === 'sepc') {
+    if (mode === 'sec') {
       const caption = text || t('emotion.result.empty');
       const labelHint = label
         ? '<div class="mt-2 text-[11px] text-muted">'
@@ -211,6 +202,15 @@
         '<div class="flex items-center gap-2">'
         + '<span class="text-base font-semibold">' + escapeHtml(displayLabel) + '</span>'
         + '</div>';
+      if (topEmotions.length) {
+        body += '<div class="mt-2 text-[11px] text-muted">'
+          + topEmotions.map((item) => {
+            const score = Number(item && item.score);
+            const suffix = Number.isFinite(score) ? ' ' + (score * 100).toFixed(1) + '%' : '';
+            return escapeHtml(String((item && item.label) || '')) + suffix;
+          }).join(' · ')
+          + '</div>';
+      }
       if (!label && text && text !== label) {
         body += '<div class="mt-1 text-[11px] text-muted">'
           + escapeHtml(t('emotion.result.raw', { text }))
@@ -256,7 +256,7 @@
       const ss = String(entry.ts.getSeconds()).padStart(2, '0');
       const tag = modeTag(entry.mode);
       const durTag = entry.duration > 0 ? entry.duration.toFixed(2) + 's' : '—';
-      const primary = entry.mode === 'sepc'
+      const primary = entry.mode === 'sec'
         ? (entry.text || t('emotion.result.empty'))
         : (entry.label || entry.text || t('emotion.result.unparsed'));
       return (

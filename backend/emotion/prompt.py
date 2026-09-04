@@ -35,24 +35,34 @@ SER_TAXONOMY: tuple[str, ...] = (
 )
 
 SER_PROMPT = "Classify the emotion of the following audio:"
-SEC_PROMPT = "Describe the emotion of the following audio:"
+SEC_PROMPT = "Describe the paralinguistic emotion cues of the following audio:"
 
 PROMPTS: dict[str, str] = {
     "ser": SER_PROMPT,
     "sec": SEC_PROMPT,
 }
 
-DEFAULT_MODE: EmotionMode = "ser"
+DEFAULT_MODE: EmotionMode = "sec"
 
 
 def normalize_mode(value: object) -> EmotionMode:
-    """Coerce a user-supplied mode string to one of the supported modes."""
+    """Validate the public emotion mode; only ``ser`` and ``sec`` exist."""
     if isinstance(value, str):
         lowered = value.strip().lower()
         if lowered in PROMPTS:
             return lowered  # type: ignore[return-value]
-    return DEFAULT_MODE
+        if not lowered:
+            return DEFAULT_MODE
+    raise ValueError("mode must be ser or sec")
 
 
-def get_prompt(mode: EmotionMode) -> str:
-    return PROMPTS[mode]
+def get_prompt(mode: EmotionMode, language: str = "") -> str:
+    prompt = PROMPTS[mode]
+    if mode != "sec":
+        return prompt
+    normalized = str(language or "").strip().lower()
+    if normalized in {"zh", "zh-cn", "cn", "chinese"}:
+        return f"{prompt} Respond in Simplified Chinese only."
+    if normalized in {"en", "en-us", "en-gb", "english"}:
+        return f"{prompt} Respond in English only."
+    return prompt

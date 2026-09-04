@@ -19,6 +19,7 @@ from backend.emotion.jobs import (
     EmotionJobStore,
     JobQueueFullError,
 )
+from backend.emotion.prompt import normalize_mode
 from backend.emotion.service import build_final_emotion_payload, empty_final_emotion
 from backend.main import app
 
@@ -69,13 +70,25 @@ async def test_job_store_queue_full():
 
 def test_build_final_emotion_payload():
     payload = build_final_emotion_payload(
-        {"label": "Happy", "text": "Happy"},
+        {
+            "label": "Happy",
+            "text": "Happy",
+            "top_emotions": [
+                {"label": "Happy", "score": 0.8},
+                {"label": "Neutral", "score": 0.2},
+            ],
+            "best_label": "Happy",
+            "best_score": 0.8,
+        },
         mode="ser",
         duration_sec=1.5,
         language="zh",
     )
     assert payload["type"] == "final_emotion"
     assert payload["label"] == "Happy"
+    assert payload["best_label"] == "Happy"
+    assert payload["best_score"] == 0.8
+    assert len(payload["top_emotions"]) == 2
     assert payload["language"] == "zh"
 
 
@@ -123,3 +136,21 @@ def test_emotion_jobs_http_404():
     client = TestClient(app)
     resp = client.get("/api/emotion/jobs/em_missing123456")
     assert resp.status_code == 404
+
+
+def test_emotion_protocol_only_accepts_ser_and_sec():
+    assert normalize_mode("ser") == "ser"
+    assert normalize_mode("sec") == "sec"
+    for removed_mode in ("spec", "sepc", "para", "paralinguistic"):
+        with pytest.raises(ValueError, match="mode must be ser or sec"):
+            normalize_mode(removed_mode)
+
+
+def test_emotion_spec_job_route_is_removed():
+    client = TestClient(app)
+    response = client.post(
+        "/api/emotion-spec/jobs",
+        files={"audio": ("t.wav", _make_wav_bytes(), "audio/wav")},
+        data={"mode": "sec"},
+    )
+    assert response.status_code in {404, 405}

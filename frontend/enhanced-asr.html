@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title data-i18n-doc-title="enhanced.titleTag" data-i18n="enhanced.titleTag">Enhanced Speech Recognition</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Source+Serif+4:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="tailwind.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body data-page="enhanced-asr">
+  <div class="app-shell">
+    <main class="app-main">
+      <header class="page-header">
+        <div>
+          <h1 class="page-title" data-i18n="enhanced.title">Enhanced Speech Recognition</h1>
+          <p class="page-sub" data-i18n="enhanced.subtitle">Qwen3-ASR with hotword correction, text refinement, translation and emotion.</p>
+        </div>
+        <span class="enhanced-model-badge">Qwen3-ASR · 1.7B</span>
+      </header>
+
+      <div class="page-content">
+        <div class="flex-1 min-h-0 flex flex-col lg:flex-row gap-5">
+          <section class="flex-1 min-h-0 flex flex-col">
+            <div id="enhanced-chat-area" class="enhanced-chat-area flex-1 min-h-0 overflow-y-auto pr-1 mb-4" aria-live="polite">
+              <div class="chat-row chat-row-ai chat-bubble-float">
+                <div class="flex gap-3 max-w-2xl items-start">
+                  <div class="chat-avatar flex-shrink-0">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3zM19 11a7 7 0 01-14 0M12 18v3M8 21h8"/>
+                    </svg>
+                  </div>
+                  <div class="chat-bubble chat-bubble-ai leading-relaxed" data-i18n-html="enhanced.greeting.html">
+                    Choose the enhancements you need, then start speaking.
+                    <br/><br/><span class="text-muted">Raw recognition appears first; the refined result follows as it is generated.</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex-shrink-0 flex flex-col items-center pb-4 pt-2">
+              <div class="mic-btn-wrapper">
+                <div class="pulse-ring"></div>
+                <div class="pulse-ring"></div>
+                <div class="pulse-ring"></div>
+                <button id="enhanced-mic-btn" class="mic-btn" type="button" data-i18n-attr-aria-label="enhanced.mic.aria" aria-label="Toggle enhanced recognition microphone">
+                  <svg id="enhanced-mic-icon" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                  </svg>
+                </button>
+              </div>
+              <p id="enhanced-mic-status" class="mic-status-label" data-i18n="enhanced.mic.start">Click to start</p>
+            </div>
+          </section>
+
+          <aside class="lg:w-[380px] xl:w-[420px] flex-shrink-0 min-h-0">
+            <div class="paper-card p-4 h-full flex flex-col enhanced-settings-card">
+              <div class="hotword-panel-header">
+                <div class="hotword-panel-heading">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[13px] font-semibold" data-i18n="enhanced.settings.title">Recognition enhancements</span>
+                    <span id="enhanced-status-pill" class="status-pill" data-state="waiting" data-i18n="enhanced.status.idle">Ready</span>
+                  </div>
+                  <p class="text-xs text-muted mt-1" data-i18n="enhanced.settings.tip">Settings apply to the next recording.</p>
+                </div>
+              </div>
+
+              <div class="hotword-context-grid enhanced-context-grid">
+                <div class="hotword-field">
+                  <label for="enhanced-language" data-i18n="enhanced.language">Speech language</label>
+                  <select id="enhanced-language" class="asr-lang-select">
+                    <option value="auto" data-i18n="enhanced.language.auto">Auto detect</option>
+                    <option value="zh" data-i18n="enhanced.language.zh">Chinese</option>
+                    <option value="en" data-i18n="enhanced.language.en">English</option>
+                    <option value="ja" data-i18n="enhanced.language.ja">Japanese</option>
+                    <option value="ko" data-i18n="enhanced.language.ko">Korean</option>
+                  </select>
+                </div>
+                <div class="hotword-field">
+                  <label for="enhanced-cleanup-level" data-i18n="enhanced.cleanup">Refine level</label>
+                  <select id="enhanced-cleanup-level" class="asr-lang-select">
+                    <option value="off" data-i18n="enhanced.cleanup.off">Off</option>
+                    <option value="light" selected data-i18n="enhanced.cleanup.light">Light</option>
+                    <option value="standard" data-i18n="enhanced.cleanup.standard">Standard</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="settings-row">
+                <div class="min-w-0">
+                  <span class="text-[13px] font-semibold" data-i18n="enhanced.emotion">Emotion enhancement</span>
+                  <p class="text-xs text-muted mt-1" data-i18n="enhanced.emotion.tip">Use AmphionSPEC emotion cues during refine.</p>
+                </div>
+                <label for="enhanced-emotion" class="hotword-switch">
+                  <input id="enhanced-emotion" type="checkbox" />
+                  <span class="hotword-switch-track"></span>
+                  <span id="enhanced-emotion-label" class="hotword-switch-label" data-i18n="enhanced.off">OFF</span>
+                </label>
+              </div>
+
+              <div class="settings-row">
+                <div class="min-w-0">
+                  <span class="text-[13px] font-semibold" data-i18n="enhanced.translation">Translate result</span>
+                  <p class="text-xs text-muted mt-1" data-i18n="enhanced.translation.tip">Translate the full transcript instead of refining it.</p>
+                </div>
+                <label for="enhanced-translate" class="hotword-switch">
+                  <input id="enhanced-translate" type="checkbox" />
+                  <span class="hotword-switch-track"></span>
+                  <span id="enhanced-translate-label" class="hotword-switch-label" data-i18n="enhanced.off">OFF</span>
+                </label>
+              </div>
+
+              <div id="enhanced-target-row" class="enhanced-field settings-section" hidden>
+                <label for="enhanced-target-language" data-i18n="enhanced.targetLanguage">Target language</label>
+                <select id="enhanced-target-language" class="asr-lang-select">
+                  <option value="zh" data-i18n="enhanced.language.zh">Chinese</option>
+                  <option value="en" selected data-i18n="enhanced.language.en">English</option>
+                  <option value="ja" data-i18n="enhanced.language.ja">Japanese</option>
+                  <option value="ko" data-i18n="enhanced.language.ko">Korean</option>
+                </select>
+              </div>
+
+              <div class="enhanced-field settings-section">
+                <label for="enhanced-builtin-hotwords" data-i18n="enhanced.builtin">Built-in terminology</label>
+                <select id="enhanced-builtin-hotwords" class="asr-lang-select">
+                  <option value="" data-i18n="enhanced.builtin.none">None</option>
+                  <option value="finance" data-i18n="enhanced.builtin.finance">Finance</option>
+                  <option value="education" data-i18n="enhanced.builtin.education">Education</option>
+                  <option value="internet" data-i18n="enhanced.builtin.internet">Internet</option>
+                </select>
+              </div>
+
+              <div class="enhanced-field settings-section enhanced-hotwords-field">
+                <label for="enhanced-custom-hotwords" data-i18n="enhanced.custom">Custom hotwords</label>
+                <textarea id="enhanced-custom-hotwords" class="hotword-textarea" rows="3" data-i18n-attr-placeholder="enhanced.custom.placeholder" placeholder="Amphion, Qwen3-ASR"></textarea>
+                <p data-i18n="enhanced.custom.tip">Separate terms with commas or new lines.</p>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="i18n.js"></script>
+  <script src="audio-upload.js"></script>
+  <script src="streaming-text.js"></script>
+  <script src="enrollment.js"></script>
+  <script src="app.js"></script>
+  <script src="emotion-app.js"></script>
+  <script src="app-test.js"></script>
+  <script src="enhanced-asr.js"></script>
+  <script src="sidebar.js"></script>
+  <script src="router.js"></script>
+</body>
+</html>

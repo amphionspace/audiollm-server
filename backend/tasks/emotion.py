@@ -13,7 +13,7 @@ The same engine class powers two endpoints with different stream strategies:
 
 The task variant (``ser`` for classification, ``sec`` for free-form caption)
 is selected per session via the ``mode`` field on the ``start`` control
-message; if absent, ``Config.emotion_task_mode`` (default ``"ser"``) is used.
+message; if absent, ``Config.emotion_task_mode`` (default ``"sec"``) is used.
 """
 
 from __future__ import annotations
@@ -76,6 +76,7 @@ class EmotionTaskEngine(BaseTaskEngine):
         result = await query_emotion_model(
             wav_b64,
             mode=self._mode,
+            language=ctx.language,
             base_url=cfg.emotion_vllm_base_url,
             model_name=cfg.emotion_vllm_model_name,
             timeout=cfg.emotion_request_timeout,
@@ -128,6 +129,11 @@ class EmotionTaskEngine(BaseTaskEngine):
         raw_text = result.get("raw_text", "")
         if raw_text and raw_text != payload["text"]:
             payload["raw_text"] = raw_text
+        top_emotions = result.get("top_emotions")
+        if self._mode == "ser" and isinstance(top_emotions, list) and top_emotions:
+            payload["top_emotions"] = top_emotions
+            payload["best_label"] = result.get("best_label", payload["label"])
+            payload["best_score"] = result.get("best_score", 0.0)
         if ctx.language:
             payload["language"] = ctx.language
         return payload

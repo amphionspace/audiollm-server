@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11\x64iarization.proto\x12\x0e\x64iarization.v1\"\xc1\x01\n\x12\x44iarizationRequest\x12\x37\n\x0esession_config\x18\x01 \x01(\x0b\x32\x1d.diarization.v1.SessionConfigH\x00\x12\x31\n\x0b\x61udio_chunk\x18\x02 \x01(\x0b\x32\x1a.diarization.v1.AudioChunkH\x00\x12\x34\n\rend_of_stream\x18\x03 \x01(\x0b\x32\x1b.diarization.v1.EndOfStreamH\x00\x42\t\n\x07payload\"r\n\rSessionConfig\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x10\n\x08trace_id\x18\x02 \x01(\t\x12\x13\n\x0bsample_rate\x18\x03 \x01(\x05\x12\x10\n\x08\x63hannels\x18\x04 \x01(\x05\x12\x14\n\x0cmax_speakers\x18\x05 \x01(\x05\"\x1f\n\nAudioChunk\x12\x11\n\tpcm_s16le\x18\x01 \x01(\x0c\"\r\n\x0b\x45ndOfStream\"\xfd\x01\n\x10\x44iarizationEvent\x12\x39\n\x0fsession_started\x18\x01 \x01(\x0b\x32\x1e.diarization.v1.SessionStartedH\x00\x12\x39\n\x0fturns_finalized\x18\x02 \x01(\x0b\x32\x1e.diarization.v1.TurnsFinalizedH\x00\x12\x35\n\rsession_ended\x18\x03 \x01(\x0b\x32\x1c.diarization.v1.SessionEndedH\x00\x12\x31\n\x05\x65rror\x18\x04 \x01(\x0b\x32 .diarization.v1.DiarizationErrorH\x00\x42\t\n\x07payload\"\x10\n\x0eSessionStarted\"F\n\x0bSpeakerTurn\x12\x10\n\x08start_ms\x18\x01 \x01(\x03\x12\x0e\n\x06\x65nd_ms\x18\x02 \x01(\x03\x12\x15\n\rspeaker_index\x18\x03 \x01(\x05\"Z\n\x0eTurnsFinalized\x12\x1c\n\x14\x66inalized_through_ms\x18\x01 \x01(\x03\x12*\n\x05turns\x18\x02 \x03(\x0b\x32\x1b.diarization.v1.SpeakerTurn\"\x0e\n\x0cSessionEnded\"1\n\x10\x44iarizationError\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"\x10\n\x0eHealthzRequest\"\xab\x01\n\x0fHealthzResponse\x12\x36\n\x06status\x18\x01 \x01(\x0e\x32&.diarization.v1.HealthzResponse.Status\x12\x17\n\x0f\x61\x63tive_sessions\x18\x02 \x01(\x03\x12\x12\n\nmodel_name\x18\x03 \x01(\t\"3\n\x06Status\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\x32\xb5\x01\n\x12\x44iarizationService\x12S\n\x07\x44iarize\x12\".diarization.v1.DiarizationRequest\x1a .diarization.v1.DiarizationEvent(\x01\x30\x01\x12J\n\x07Healthz\x12\x1e.diarization.v1.HealthzRequest\x1a\x1f.diarization.v1.HealthzResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11\x64iarization.proto\x12\x0e\x64iarization.v1\"\xc1\x01\n\x12\x44iarizationRequest\x12\x37\n\x0esession_config\x18\x01 \x01(\x0b\x32\x1d.diarization.v1.SessionConfigH\x00\x12\x31\n\x0b\x61udio_chunk\x18\x02 \x01(\x0b\x32\x1a.diarization.v1.AudioChunkH\x00\x12\x34\n\rend_of_stream\x18\x03 \x01(\x0b\x32\x1b.diarization.v1.EndOfStreamH\x00\x42\t\n\x07payload\"r\n\rSessionConfig\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x10\n\x08trace_id\x18\x02 \x01(\t\x12\x13\n\x0bsample_rate\x18\x03 \x01(\x05\x12\x10\n\x08\x63hannels\x18\x04 \x01(\x05\x12\x14\n\x0cmax_speakers\x18\x05 \x01(\x05\"\x1f\n\nAudioChunk\x12\x11\n\tpcm_s16le\x18\x01 \x01(\x0c\"\r\n\x0b\x45ndOfStream\"\xfd\x01\n\x10\x44iarizationEvent\x12\x39\n\x0fsession_started\x18\x01 \x01(\x0b\x32\x1e.diarization.v1.SessionStartedH\x00\x12\x39\n\x0fturns_finalized\x18\x02 \x01(\x0b\x32\x1e.diarization.v1.TurnsFinalizedH\x00\x12\x35\n\rsession_ended\x18\x03 \x01(\x0b\x32\x1c.diarization.v1.SessionEndedH\x00\x12\x31\n\x05\x65rror\x18\x04 \x01(\x0b\x32 .diarization.v1.DiarizationErrorH\x00\x42\t\n\x07payload\"\x10\n\x0eSessionStarted\"F\n\x0bSpeakerTurn\x12\x10\n\x08start_ms\x18\x01 \x01(\x03\x12\x0e\n\x06\x65nd_ms\x18\x02 \x01(\x03\x12\x15\n\rspeaker_index\x18\x03 \x01(\x05\"Z\n\x0eTurnsFinalized\x12\x1c\n\x14\x66inalized_through_ms\x18\x01 \x01(\x03\x12*\n\x05turns\x18\x02 \x03(\x0b\x32\x1b.diarization.v1.SpeakerTurn\"\x0e\n\x0cSessionEnded\"1\n\x10\x44iarizationError\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\"A\n\x17SpeakerEmbeddingRequest\x12\x11\n\tpcm_s16le\x18\x01 \x01(\x0c\x12\x13\n\x0bsample_rate\x18\x02 \x01(\x05\"p\n\x18SpeakerEmbeddingResponse\x12\x15\n\rembedding_f32\x18\x01 \x01(\x0c\x12\x11\n\tdimension\x18\x02 \x01(\x05\x12\x12\n\nmodel_name\x18\x03 \x01(\t\x12\x16\n\x0emodel_revision\x18\x04 \x01(\t\"\x10\n\x0eHealthzRequest\"\xab\x01\n\x0fHealthzResponse\x12\x36\n\x06status\x18\x01 \x01(\x0e\x32&.diarization.v1.HealthzResponse.Status\x12\x17\n\x0f\x61\x63tive_sessions\x18\x02 \x01(\x03\x12\x12\n\nmodel_name\x18\x03 \x01(\t\"3\n\x06Status\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x0b\n\x07SERVING\x10\x01\x12\x0f\n\x0bNOT_SERVING\x10\x02\x32\xa3\x02\n\x12\x44iarizationService\x12S\n\x07\x44iarize\x12\".diarization.v1.DiarizationRequest\x1a .diarization.v1.DiarizationEvent(\x01\x30\x01\x12l\n\x17\x45xtractSpeakerEmbedding\x12\'.diarization.v1.SpeakerEmbeddingRequest\x1a(.diarization.v1.SpeakerEmbeddingResponse\x12J\n\x07Healthz\x12\x1e.diarization.v1.HealthzRequest\x1a\x1f.diarization.v1.HealthzResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -51,12 +51,16 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_SESSIONENDED']._serialized_end=849
   _globals['_DIARIZATIONERROR']._serialized_start=851
   _globals['_DIARIZATIONERROR']._serialized_end=900
-  _globals['_HEALTHZREQUEST']._serialized_start=902
-  _globals['_HEALTHZREQUEST']._serialized_end=918
-  _globals['_HEALTHZRESPONSE']._serialized_start=921
-  _globals['_HEALTHZRESPONSE']._serialized_end=1092
-  _globals['_HEALTHZRESPONSE_STATUS']._serialized_start=1041
-  _globals['_HEALTHZRESPONSE_STATUS']._serialized_end=1092
-  _globals['_DIARIZATIONSERVICE']._serialized_start=1095
-  _globals['_DIARIZATIONSERVICE']._serialized_end=1276
+  _globals['_SPEAKEREMBEDDINGREQUEST']._serialized_start=902
+  _globals['_SPEAKEREMBEDDINGREQUEST']._serialized_end=967
+  _globals['_SPEAKEREMBEDDINGRESPONSE']._serialized_start=969
+  _globals['_SPEAKEREMBEDDINGRESPONSE']._serialized_end=1081
+  _globals['_HEALTHZREQUEST']._serialized_start=1083
+  _globals['_HEALTHZREQUEST']._serialized_end=1099
+  _globals['_HEALTHZRESPONSE']._serialized_start=1102
+  _globals['_HEALTHZRESPONSE']._serialized_end=1273
+  _globals['_HEALTHZRESPONSE_STATUS']._serialized_start=1222
+  _globals['_HEALTHZRESPONSE_STATUS']._serialized_end=1273
+  _globals['_DIARIZATIONSERVICE']._serialized_start=1276
+  _globals['_DIARIZATIONSERVICE']._serialized_end=1567
 # @@protoc_insertion_point(module_scope)

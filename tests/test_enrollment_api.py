@@ -15,8 +15,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import backend.main as main_mod  # noqa: E402
+from backend.asr.speaker_identity import (  # noqa: E402
+    get_speaker_identity_store,
+    reset_speaker_identity_store_for_tests,
+)
 from backend.audio.utils import pcm_to_wav_base64  # noqa: E402
 from backend.config import SAMPLE_RATE, Config  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_speaker_identity_store():
+    reset_speaker_identity_store_for_tests()
+    yield
+    reset_speaker_identity_store_for_tests()
 
 
 def _wav_bytes(seconds: float = 5.2) -> bytes:
@@ -117,12 +128,14 @@ def test_enrollment_status_local_found_and_not_found(monkeypatch):
         "enrollment_id": enrollment_id,
         "available": True,
         "reason": "ok",
+        "speaker_identity_available": False,
     }
     assert missing.status_code == 200
     assert missing.json() == {
         "enrollment_id": "missing-speaker",
         "available": False,
         "reason": "not_found",
+        "speaker_identity_available": False,
     }
 
 
@@ -157,6 +170,7 @@ def test_enrollment_status_triton_store(monkeypatch):
         "enrollment_id": "speaker-1",
         "available": True,
         "reason": "ok",
+        "speaker_identity_available": False,
     }
 
 
@@ -179,6 +193,7 @@ def test_enrollment_status_triton_upstream_unavailable(monkeypatch):
         "enrollment_id": "speaker-1",
         "available": False,
         "reason": "upstream_unavailable",
+        "speaker_identity_available": False,
     }
 
 
@@ -206,3 +221,100 @@ def test_enrollment_api_accepts_mp3(monkeypatch):
     # MP3 decoder output includes codec delay/padding, so assert it lands in
     # the valid enrollment window rather than requiring sample-exact duration.
     assert 5.0 <= resp.json()["duration_sec"] <= 5.5
+
+
+def test_enrollment_generates_meeting_speaker_embedding(monkeypatch):
+    async def fake_extract(_cfg, _pcm):
+        return np.array([1.0, 0.0], dtype=np.float32)
+
+    monkeypatch.setattr(main_mod, "load_config", lambda: Config())
+    monkeypatch.setattr(main_mod, "extract_speaker_embedding", fake_extract)
+
+    with TestClient(main_mod.app) as client:
+        response = client.post(
+            "/api/asr/enrollment",
+            files={"audio": ("speaker.wav", _wav_bytes(), "audio/wav")},
+        )
+        payload = response.json()
+        status = client.get(f"/api/asr/enrollment/{payload['enrollment_id']}")
+        client.delete(f"/api/asr/enrollment/{payload['enrollment_id']}")
+        deleted_status = client.get(f"/api/asr/enrollment/{payload['enrollment_id']}")
+
+    assert response.status_code == 200
+    assert payload["speaker_identity_available"] is True
+    assert status.json()["speaker_identity_available"] is True
+    assert deleted_status.json()["speaker_identity_available"] is False
+
+
+def test_speaker_identify_matches_best_candidate(monkeypatch):
+    store = get_speaker_identity_store()
+    store.put("speaker-a", np.array([1.0, 0.0], dtype=np.float32))
+    store.put("speaker-b", np.array([0.0, 1.0], dtype=np.float32))
+
+    async def fake_extract(_cfg, _pcm):
+        return np.array([0.98, 0.02], dtype=np.float32)
+
+    monkeypatch.setattr(main_mod, "load_config", lambda: Config())
+    monkeypatch.setattr(main_mod, "extract_speaker_embedding", fake_extract)
+
+    with TestClient(main_mod.app) as client:
+        response = client.post(
+            "/api/asr/speaker-identify",
+            files={"audio": ("role.wav", _wav_bytes(3.2), "audio/wav")},
+            data={"candidate_enrollment_ids": '["speaker-a", "speaker-b"]'},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "matched"
+    assert response.json()["enrollment_id"] == "speaker-a"
+
+
+def test_speaker_identify_keeps_ambiguous_voice_unknown(monkeypatch):
+    store = get_speaker_identity_store()
+    store.put("speaker-a", np.array([1.0, 0.0], dtype=np.float32))
+    store.put("speaker-b", np.array([0.99, 0.01], dtype=np.float32))
+
+    async def fake_extract(_cfg, _pcm):
+        return np.array([1.0, 0.0], dtype=np.float32)
+
+    monkeypatch.setattr(main_mod, "load_config", lambda: Config())
+    monkeypatch.setattr(main_mod, "extract_speaker_embedding", fake_extract)
+
+    with TestClient(main_mod.app) as client:
+        response = client.post(
+            "/api/asr/speaker-identify",
+            files={"audio": ("role.wav", _wav_bytes(3.2), "audio/wav")},
+            data={"candidate_enrollment_ids": '["speaker-a", "speaker-b"]'},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "unknown"
+    assert response.json()["reason"] == "ambiguous"
+
+
+def test_speaker_identify_rejects_missing_candidate_embedding(monkeypatch):
+    monkeypatch.setattr(main_mod, "load_config", lambda: Config())
+
+    with TestClient(main_mod.app) as client:
+        response = client.post(
+            "/api/asr/speaker-identify",
+            files={"audio": ("role.wav", _wav_bytes(3.2), "audio/wav")},
+            data={"candidate_enrollment_ids": '["missing"]'},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "speaker_embeddings_unavailable"
+
+
+def test_speaker_identify_rejects_duplicate_candidates(monkeypatch):
+    monkeypatch.setattr(main_mod, "load_config", lambda: Config())
+
+    with TestClient(main_mod.app) as client:
+        response = client.post(
+            "/api/asr/speaker-identify",
+            files={"audio": ("role.wav", _wav_bytes(3.2), "audio/wav")},
+            data={"candidate_enrollment_ids": '["same", "same"]'},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "invalid_candidates"

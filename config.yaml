@@ -28,6 +28,10 @@ upstreams:
     base_url: http://localhost:8001
     model_name: Qwen/Qwen3-ASR-1.7B
     timeout: 120
+  qwen3_clean_asr:
+    base_url: http://localhost:8011
+    model_name: /data/models/Qwen3-ASR-1.7B
+    timeout: 120
   amphion_emotion:
     base_url: http://localhost:8222
     model_name: AmphionSE
@@ -36,6 +40,12 @@ upstreams:
     base_url: http://localhost:9001
     model_name: AmphionSPEC
     timeout: 30
+  volcano_cleanup:
+    base_url: https://ark.cn-beijing.volces.com/api/v3
+    model_name: doubao-seed-2-0-lite-260215
+    api_key: ${ARK_APIKEY}
+    timeout: 30
+    max_tokens: 1024
   dashscope_cleanup:
     base_url: https://dashscope.aliyuncs.com/compatible-mode
     model_name: qwen2.5-32b-instruct
@@ -109,6 +119,11 @@ defaults:
     diarization_target: localhost:50052
     diarization_connect_timeout_sec: 2.0
     diarization_result_timeout_sec: 2.0   # 单段最多等待角色结果，超时后本会话永久降级
+    speaker_identity_timeout_sec: 2.0     # 单次 TitaNet embedding RPC 超时；失败不影响 ASR
+    speaker_identity_min_audio_sec: 3.0   # 会议角色累计到该时长后才尝试身份匹配
+    speaker_identity_max_audio_sec: 10.0  # 单次身份匹配最多使用最近该时长音频
+    speaker_identity_match_threshold: 0.70 # 最佳 cosine similarity 最低门槛
+    speaker_identity_match_margin: 0.10   # 多候选时最佳分相对第二名的最低差值
   fusion:
     fusion_similarity_threshold: 0.85
     fusion_min_primary_score: 0.55
@@ -152,13 +167,13 @@ defaults:
                                           # (实测 350ms: 636 段 p50 1.5s; 800ms: 303 段
                                           #  p50 3.2s, e2e 还快 11%)
   emotion:
-    emotion_task_mode: ser
+    emotion_task_mode: sec
     emotion_max_audio_seconds: 20.0
     emotion_max_concurrent_jobs: 8        # 进程级 job 背压
     emotion_job_queue_max: 64
     emotion_job_ttl_sec: 3600
   emotion_spec:
-    emotion_spec_task_mode: sepc
+    emotion_spec_task_mode: sec
     emotion_spec_max_audio_seconds: 20.0
     emotion_spec_max_concurrent_jobs: 8
     emotion_spec_job_queue_max: 64
@@ -173,6 +188,8 @@ services:
   recall: triton_recall
   recall_management: rag_asr_management
   text_cleanup: dashscope_cleanup
+  speech_refine: volcano_cleanup
+  clean_stream_asr: qwen3_clean_asr
 
 # REST/HTTP 路由的上游绑定: upstreams 是所有 REST 接口的共享默认,
 # routes.<name> 是单接口覆写(省略 = 全部跟随共享默认与 defaults 全局开关)。
@@ -180,7 +197,7 @@ rest:
   upstreams:                     # 共享绑定(/api/asr/upload、/api/audio/analyze、情感 jobs)
     primary: amphion_asr
     secondary: qwen_asr
-    emotion: amphion_emotion
+    emotion: amphion_spec
     emotion_spec: amphion_spec
   routes:
     transcribe:                  # 长音频离线转写 (POST /api/asr/transcriptions) 专属推理配置
@@ -211,4 +228,4 @@ endpoints:
   - path: /emotion-segmented-streaming
     protocol: native
     task: emotion
-    upstreams: { emotion: amphion_emotion }
+    upstreams: { emotion: amphion_spec }

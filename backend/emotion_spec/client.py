@@ -1,7 +1,7 @@
 """vLLM (OpenAI-compatible) client for the AmphionSPEC paralinguistic model.
 
 Mirrors :mod:`backend.emotion.client` but points at an independent base
-URL/model name and uses the SPEC prompt set (``ser`` / ``sepc``). All
+URL/model name and uses the emotion prompt set (``ser`` / ``sec``). All
 post-hoc parsing helpers (``_content_to_text``, ``_strip_code_fence``,
 ``_match_taxonomy``, SER taxonomy itself) are model-agnostic — we import
 them from :mod:`backend.emotion.client` instead of duplicating, so any
@@ -31,8 +31,8 @@ class EmotionSpecResult(TypedDict):
     """Normalized SPEC-model output.
 
     Same shape as :class:`backend.emotion.client.EmotionResult` so the
-    frontend can render either result through one code path. ``mode``
-    carries ``ser`` or ``sepc`` to disambiguate the payload.
+    frontend can render either result through one code path. The public
+    ``mode`` is always ``ser`` or ``sec``.
     """
 
     mode: EmotionSpecMode
@@ -85,8 +85,8 @@ def _parse_ser(raw: str) -> EmotionSpecResult:
     return EmotionSpecResult(mode="ser", label=label, text=label, raw_text=raw)
 
 
-def _parse_sepc(raw: str) -> EmotionSpecResult:
-    """Parse SEPC output: free-form paralinguistic description.
+def _parse_sec(raw: str) -> EmotionSpecResult:
+    """Parse SEC output: free-form paralinguistic description.
 
     Also harvests an SER taxonomy hint from the summary on a best-effort
     basis so the frontend can show a small classification chip alongside
@@ -109,7 +109,7 @@ def _parse_sepc(raw: str) -> EmotionSpecResult:
         pass
 
     label = _match_taxonomy(summary)
-    return EmotionSpecResult(mode="sepc", label=label, text=summary, raw_text=raw)
+    return EmotionSpecResult(mode="sec", label=label, text=summary, raw_text=raw)
 
 
 def parse_emotion_spec_output(
@@ -119,8 +119,8 @@ def parse_emotion_spec_output(
     raw = str(raw_text or "")
     if not raw.strip():
         return EmotionSpecResult(mode=mode, label="", text="", raw_text="")
-    if mode == "sepc":
-        return _parse_sepc(raw)
+    if mode == "sec":
+        return _parse_sec(raw)
     return _parse_ser(raw)
 
 

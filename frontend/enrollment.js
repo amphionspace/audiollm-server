@@ -94,9 +94,11 @@
     const isMicRecording = opts.isMicRecording || (() => false);
     const t = opts.t || ((k) => k);
     const onChange = opts.onChange || (() => {});
+    const requireSpeakerIdentity = Boolean(opts.requireSpeakerIdentity);
 
     let enrollmentId = null;
     let durationSec = null;
+    let speakerIdentityAvailable = false;
     let inFlight = false;
     let mediaRecorder = null;
     let recordStream = null;
@@ -196,18 +198,28 @@
       lastWavBlobUrl = URL.createObjectURL(blob);
     }
 
-    function setEnrollment(id, dur) {
+    function setEnrollment(id, dur, identityAvailable = false) {
       enrollmentId = id || null;
       durationSec = typeof dur === 'number' ? dur : null;
+      speakerIdentityAvailable = Boolean(enrollmentId && identityAvailable);
       if (enrollmentId) {
-        setStatus('asr.enroll.status.ready', { sec: durationSec.toFixed(1) });
-        setHint(null);
+        if (requireSpeakerIdentity && !speakerIdentityAvailable) {
+          setStatus('asr.enroll.status.error');
+          setHint('asr.enroll.error.identityUnavailable');
+        } else {
+          setStatus('asr.enroll.status.ready', {
+            sec: durationSec == null ? '?' : durationSec.toFixed(1),
+          });
+          setHint(null);
+        }
       } else {
         setStatus('asr.enroll.status.idle');
         revokePlaybackUrl();
       }
       refreshButtons();
-      try { onChange({ id: enrollmentId, durationSec }); } catch (_) { /* ignore */ }
+      try {
+        onChange({ id: enrollmentId, durationSec, speakerIdentityAvailable });
+      } catch (_) { /* ignore */ }
     }
 
     async function uploadWavBytes(wavBytes, pcm) {
@@ -246,12 +258,13 @@
         const dur = (result && typeof result.duration_sec === 'number')
           ? result.duration_sec
           : null;
+        const identityAvailable = Boolean(result && result.speaker_identity_available);
         if (!id) throw new Error('server returned no enrollment_id');
         // Keep the WAV around for replay BEFORE flipping the visible
         // state so the play button shows up in the same paint as the
         // "Enrolled (Xs)" pill.
         stashPlaybackWav(wavBytes);
-        setEnrollment(id, dur);
+        setEnrollment(id, dur, identityAvailable);
       } catch (err) {
         // The backend serialises validation errors as
         // {detail: {code, message}}. The audio-upload helper has
@@ -266,7 +279,10 @@
         setHint(key, { raw });
         enrollmentId = null;
         durationSec = null;
-        try { onChange({ id: null, durationSec: null }); } catch (_) { /* ignore */ }
+        speakerIdentityAvailable = false;
+        try {
+          onChange({ id: null, durationSec: null, speakerIdentityAvailable: false });
+        } catch (_) { /* ignore */ }
       } finally {
         inFlight = false;
         refreshButtons();
@@ -417,7 +433,7 @@
 
     async function clearEnrollment() {
       const prev = enrollmentId;
-      setEnrollment(null, null);
+      setEnrollment(null, null, false);
       setHint(null);
       if (!prev) return;
       try {
@@ -496,11 +512,20 @@
     if (els.clearBtn) els.clearBtn.addEventListener('click', onClearClick);
     if (els.playBtn) els.playBtn.addEventListener('click', onPlayClick);
 
-    setEnrollment(null, null);
+    const initial = opts.initialState || {};
+    setEnrollment(
+      initial.id || null,
+      typeof initial.durationSec === 'number' ? initial.durationSec : null,
+      Boolean(initial.speakerIdentityAvailable),
+    );
 
     return {
       getEnrollmentId() { return enrollmentId; },
       getDurationSec() { return durationSec; },
+      isSpeakerIdentityAvailable() { return speakerIdentityAvailable; },
+      restoreEnrollment(id, dur, identityAvailable) {
+        setEnrollment(id, dur, identityAvailable);
+      },
       isBusy() { return inFlight || !!mediaRecorder; },
       refresh: refreshButtons,
       refreshLabels() {

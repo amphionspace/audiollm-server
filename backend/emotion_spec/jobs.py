@@ -98,7 +98,7 @@ class EmotionSpecJobStore(JobStore[EmotionSpecJob]):
         return await self.enqueue(job)
 
     async def run_job_payload(self, job: EmotionSpecJob) -> dict[str, Any]:
-        chosen_mode = job.mode or getattr(self._cfg, "emotion_spec_task_mode", "sepc")
+        chosen_mode = job.mode or getattr(self._cfg, "emotion_spec_task_mode", "sec")
         try:
             return await infer_emotion_spec_from_wav(
                 job.wav_bytes,

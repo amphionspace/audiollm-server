@@ -49,6 +49,16 @@
         + ' d="M9 10h.01M15 10h.01M9 15c.9.8 1.9 1.2 3 1.2s2.1-.4 3-1.2"/>',
     },
     {
+      key: 'enhanced-asr',
+      href: 'enhanced-asr.html',
+      i18nKey: 'nav.enhancedAsr',
+      icon:
+        '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"'
+        + ' d="M12 3a3 3 0 00-3 3v6a3 3 0 006 0V6a3 3 0 00-3-3zM19 11a7 7 0 01-14 0M12 18v3"/>'
+        + '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"'
+        + ' d="M18.5 3.5v4M16.5 5.5h4"/>',
+    },
+    {
       key: 'asr-test',
       href: 'asr-test.html',
       i18nKey: 'nav.asrTest',
@@ -80,6 +90,8 @@
     if (fromBody) return fromBody;
     const path = (location.pathname || '').toLowerCase();
     if (path.endsWith('emotion.html')) return 'emotion';
+    if (path.endsWith('enhanced-asr.html')) return 'enhanced-asr';
+    if (path.endsWith('asr-test.html')) return 'asr-test';
     return 'asr';
   }
 

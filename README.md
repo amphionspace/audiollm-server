@@ -7,9 +7,10 @@
 
 - 实时语音转写（双 ASR 模型 Amphion + Qwen 并行推理 + 归一化质量评估 + 风险感知融合，可选在每条转写旁附上情感/语气）
 - AST v3 实时角色分离（独立 NVIDIA Streaming Sortformer sidecar，最多 4 位会话内匿名说话人，故障时自动回退普通 ASR）
+- AST v3 前端会议模式（最多注册 4 位业务用户，以 TitaNet 声纹将匿名角色绑定为会话内用户 ID）
 - 情感识别（SER 8 分类 / SEC 自由文本描述，整段语音推理）
 
-前端两个 Demo 页面（ASR / 情感）共享同一套侧边栏导航与 EN / 中文 实时语言切换。
+前端四个 Demo 页面（实时 ASR / 增强 ASR / AST v3 测试 / 情感）共享同一套侧边栏导航与 EN / 中文实时语言切换。
 
 ---
 
@@ -45,6 +46,11 @@
 | `diarization_target` | string | `localhost:50052` | Sortformer gRPC sidecar 地址 |
 | `diarization_connect_timeout_sec` | float | `2.0` | 建立 sidecar 会话的最长等待时间 |
 | `diarization_result_timeout_sec` | float | `2.0` | 每个 ASR 段等待 finalized turns 的最长时间；超时后本会话永久降级 |
+| `speaker_identity_timeout_sec` | float | `2.0` | 单次 TitaNet embedding RPC 超时；失败不影响 ASR |
+| `speaker_identity_min_audio_sec` | float | `3.0` | 会议角色开始声纹匹配前需累计的音频时长 |
+| `speaker_identity_max_audio_sec` | float | `10.0` | 单次声纹匹配最多使用的最近音频时长 |
+| `speaker_identity_match_threshold` | float | `0.70` | 最佳 cosine similarity 最低门槛 |
+| `speaker_identity_match_margin` | float | `0.10` | 多候选时最佳分与第二名的最低差值 |
 
 ## 快速开始
 
@@ -68,7 +74,8 @@ bash start.sh
 | 页面 | 路径 | 说明 |
 |---|---|---|
 | 实时语音转写 | / 或 /index.html | 双 ASR 模型并行 + 融合；右侧面板可开启"情感识别"开关，在每条 final 转写下附上情绪与语气 |
-| AST v3 实时语音识别（测试用） | /asr-test.html | 右侧可选择“角色分离 / 目标说话人 / 普通识别”三种互斥模式，并可注册目标说话人声纹；设置在下一次会话首帧生效 |
+| 增强语音识别 | /enhanced-asr.html | 通过 Gateway clean-stream 接入 Qwen3-ASR-1.7B，支持热词纠正、文本精修、翻译与情感增强 |
+| AST v3 实时语音识别（测试用） | /asr-test.html | 右侧可选择“角色分离 / 会议模式 / 目标说话人 / 普通识别”；会议模式可注册最多 4 个业务用户 ID，并在角色语音足够后更新气泡身份 |
 | 情感识别 | /emotion.html | 整段语音 SER / SEC |
 
 页面右上角的 EN / 中 切换会持久化到浏览器 localStorage，下次访问保持上次的选择。
@@ -79,7 +86,7 @@ bash start.sh
 
 ## 前端样式重建（Tailwind）
 
-前端三个 Demo 页面共用一份 **预编译** 的 Tailwind 工具类样式 `frontend/tailwind.css`（已入仓），运行时不再依赖 `cdn.tailwindcss.com` 的 JIT 脚本，跨页切换不会再有"重新跑一遍 Tailwind 编译"的卡顿。
+前端四个 Demo 页面共用一份 **预编译** 的 Tailwind 工具类样式 `frontend/tailwind.css`（已入仓），运行时不再依赖 `cdn.tailwindcss.com` 的 JIT 脚本，跨页切换不会再有"重新跑一遍 Tailwind 编译"的卡顿。
 
 仅当你修改了 `frontend/*.html` 或 `frontend/*.js` 中使用的 Tailwind 类名（包括 JS 字符串里拼接出来的 `lg:w-[380px]` 等动态类）后，需要重新生成一次：
 
@@ -129,9 +136,10 @@ graph LR
 | 端点 | 任务 | VAD | 输出 | 协议文档 |
 |---|---|---|---|---|
 | `/transcribe-streaming` | 个性化语音识别 | 是 | partial / final（每段语音一条） | [docs/protocols/transcribe-streaming-protocol.md](docs/protocols/transcribe-streaming-protocol.md) |
+| `/asr/v1/clean-stream` | Qwen3-ASR 增强识别 | 累计快照伪流式 | transcription.delta / emotion.bucket / postprocess.delta / transcription.done | [docs/protocols/clean-stream-protocol.md](docs/protocols/clean-stream-protocol.md) |
 | `/emotion-segmented-streaming` | 按段流式情感识别（同模型，逐段返回） | 是 | final_emotion（每个 VAD 段一条） | [docs/protocols/emotion-segmented-streaming-protocol.md](docs/protocols/emotion-segmented-streaming-protocol.md) |
 
-新增任务的命名约定：每个任务一个独立 WebSocket 端点（`/<task>-streaming`），共享同一套 `start` / `stop` / `update_hotwords` 控制消息与 `config` 覆写机制；任务专属字段（如 ASR 的 `language`/`hotwords`、情感的输出标签集）只出现在对应端点的协议文档中。
+原生任务的命名约定：每个任务一个独立 WebSocket 端点（`/<task>-streaming`），共享同一套 `start` / `stop` / `update_hotwords` 控制消息与 `config` 覆写机制；任务专属字段只出现在对应端点的协议文档中。`/asr/v1/clean-stream` 为兼容接入方的独立 JSON/base64 协议，不适用这套约定，详见其协议文档。
 
 ### `/transcribe-streaming` 协议
 
@@ -462,7 +470,7 @@ ASR 热词偏置来自 `config.yaml -> services.recall` 指向的 Triton 召回�
 
 #### 长音频离线转写（`POST /api/asr/transcriptions`）
 
-接口说明见 [docs/api/transcription-jobs-api.md](docs/api/transcription-jobs-api.md)。推理用哪个模型、是否双模型融合由 `config.yaml` 的 `rest.routes.transcribe` 块独立声明（省略则跟随共享 `rest.upstreams` 绑定），下表为 `defaults.transcribe` 调参：
+接口说明见 [docs/api/transcription-jobs-api.md](docs/api/transcription-jobs-api.md)。任务支持通过 `config` 开启内置/自定义热词、文本精修、翻译和情绪增强；不传增强配置时保持原有纯转写行为。推理用哪个模型、是否双模型融合由 `config.yaml` 的 `rest.routes.transcribe` 块独立声明（省略则跟随共享 `rest.upstreams` 绑定），下表为 `defaults.transcribe` 调参：
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -479,11 +487,11 @@ ASR 热词偏置来自 `config.yaml -> services.recall` 指向的 Triton 召回�
 
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `emotion_vllm_base_url` | string | `http://localhost:8222` | 情感识别模型的 vLLM 服务地址；`config.yaml` 默认独立部署在 8222（`config.py` 内置默认则复用主 ASR 后端） |
-| `emotion_vllm_model_name` | string | `AmphionSE` | 情感识别模型名称；独立的 AmphionSE 检查点 |
+| `emotion_vllm_base_url` | string | `http://localhost:9001` | 情感识别模型的 vLLM 服务地址；当前部署 AmphionSPEC |
+| `emotion_vllm_model_name` | string | `AmphionSPEC` | 服务端内部模型名，不进入公开协议 |
 | `emotion_request_timeout` | float | `30.0` | 情感推理 HTTP 请求总超时（秒） |
 | `emotion_max_audio_seconds` | float | `20.0` | 单次推理处理的最长音频秒数；超过则保留尾部，贴合 Amphion SER/SEC 训练时 1-20s 的 utterance 上限 |
-| `emotion_task_mode` | string | `ser` | 缺省任务变体：`ser` 输出 8 分类标签，`sec` 输出自由文本描述 |
+| `emotion_task_mode` | string | `sec` | 缺省任务变体：`ser` 输出 8 分类标签，`sec` 输出自由文本描述；公开协议只接受这两个值 |
 | `emotion_max_concurrent_jobs` | int | `8` | 异步 HTTP 任务同时调 vLLM 的上限 |
 | `emotion_job_queue_max` | int | `64` | 异步任务排队上限，超出返回 503 |
 | `emotion_job_ttl_sec` | float | `3600` | 已完成任务元数据保留秒数 |
@@ -530,7 +538,7 @@ backend/
   emotion/                   # 情感模型交互
     client.py                #   vLLM API 调用与输出解析
     prompt.py                #   情感识别 Prompt 与标签集
-frontend/                    # 静态 Web 前端（两个 Demo 页面 + 共享侧边栏 + EN/中文 i18n）
+frontend/                    # 静态 Web 前端（四个 Demo 页面 + 共享侧边栏 + EN/中文 i18n）
   index.html / app.js        #   实时 ASR 主页
   emotion.html / emotion-app.js  # 情感识别演示
   sidebar.js                 #   注入侧边栏导航与 EN/中 语言切换

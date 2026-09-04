@@ -125,6 +125,11 @@ class Config:
     diarization_target: str = ""
     diarization_connect_timeout_sec: float = 2.0
     diarization_result_timeout_sec: float = 2.0
+    speaker_identity_timeout_sec: float = 2.0
+    speaker_identity_min_audio_sec: float = 3.0
+    speaker_identity_max_audio_sec: float = 10.0
+    speaker_identity_match_threshold: float = 0.70
+    speaker_identity_match_margin: float = 0.10
 
     # ---- ASR: per-endpoint primary override (/tuling/ast/v3) -------------
     # The AST v3 endpoint serves a *different* primary model than the global
@@ -319,19 +324,18 @@ class Config:
     transcribe_silence_duration_ms: int = 0
 
     # ---- Emotion recognition: vLLM endpoint ------------------------------
-    # The Amphion multi-task model is trained to handle SER/SEC alongside ASR
-    # via different text prompts, so by default we point the emotion endpoint
-    # at the same backend as the primary ASR. Override
-    # ``emotion_vllm_base_url`` if you serve a dedicated emotion model.
-    emotion_vllm_base_url: str = "http://localhost:8000"
-    emotion_vllm_model_name: str = "Amphion/AmphionASR-4.3B"
+    # Public emotion endpoints expose SER/SEC and currently route both modes
+    # to the dedicated AmphionSPEC deployment. The model identity stays an
+    # internal configuration detail.
+    emotion_vllm_base_url: str = "http://localhost:9001"
+    emotion_vllm_model_name: str = "AmphionSPEC"
     emotion_request_timeout: float = 30.0
     # Amphion SER/SEC training uses 1-20s utterances, so we cap longer audio
     # to the trailing 20 seconds (where the most recent speech lives).
     emotion_max_audio_seconds: float = 20.0
     # Default task variant when the client doesn't specify one in start.mode.
     # "ser" -> single label classification; "sec" -> free-form caption.
-    emotion_task_mode: str = "ser"
+    emotion_task_mode: str = "sec"
     # Whole-utterance HTTP job API backpressure (in-process store).
     emotion_max_concurrent_jobs: int = 8
     emotion_job_queue_max: int = 64
@@ -340,7 +344,7 @@ class Config:
     # ---- Paralinguistic emotion model (AmphionSPEC) ----------------------
     # Independent vLLM endpoint that serves the AmphionSPEC checkpoint. It
     # is trained with two prompts: ``ser`` (same 8-way label set as the
-    # baseline emotion model) and ``sepc`` (free-form description of
+    # baseline emotion model) and ``sec`` (free-form description of
     # paralinguistic emotion cues — prosody, tempo, voice quality, etc.).
     # Configuration mirrors the emotion knobs so it can scale and back-off
     # independently from the baseline emotion store.
@@ -348,9 +352,8 @@ class Config:
     emotion_spec_vllm_model_name: str = "AmphionSPEC"
     emotion_spec_request_timeout: float = 30.0
     emotion_spec_max_audio_seconds: float = 20.0
-    # Default mode when the client omits ``mode``; the prompt label
-    # ``sepc`` is the literal training token (do not rename to ``spec``).
-    emotion_spec_task_mode: str = "sepc"
+    # Default public mode when the client omits ``mode``.
+    emotion_spec_task_mode: str = "sec"
     emotion_spec_max_concurrent_jobs: int = 8
     emotion_spec_job_queue_max: int = 64
     emotion_spec_job_ttl_sec: float = 3600.0
@@ -436,6 +439,17 @@ class Config:
             object.__setattr__(self, "diarization_connect_timeout_sec", 2.0)
         if self.diarization_result_timeout_sec <= 0:
             object.__setattr__(self, "diarization_result_timeout_sec", 2.0)
+        if self.speaker_identity_timeout_sec <= 0:
+            object.__setattr__(self, "speaker_identity_timeout_sec", 2.0)
+        if self.speaker_identity_min_audio_sec <= 0:
+            object.__setattr__(self, "speaker_identity_min_audio_sec", 3.0)
+        if self.speaker_identity_max_audio_sec < self.speaker_identity_min_audio_sec:
+            object.__setattr__(self, "speaker_identity_min_audio_sec", 3.0)
+            object.__setattr__(self, "speaker_identity_max_audio_sec", 10.0)
+        if not 0 <= self.speaker_identity_match_threshold <= 1:
+            object.__setattr__(self, "speaker_identity_match_threshold", 0.70)
+        if not 0 <= self.speaker_identity_match_margin <= 1:
+            object.__setattr__(self, "speaker_identity_match_margin", 0.10)
         if self.asr_segment_voice_gate_threshold < 0:
             object.__setattr__(self, "asr_segment_voice_gate_threshold", 0.0)
         elif self.asr_segment_voice_gate_threshold > 1:
@@ -556,9 +570,6 @@ CLIENT_OVERRIDABLE_FIELDS: frozenset[str] = frozenset(
         "emotion_task_mode",
         "emotion_request_timeout",
         "emotion_max_audio_seconds",
-        "emotion_spec_task_mode",
-        "emotion_spec_request_timeout",
-        "emotion_spec_max_audio_seconds",
     }
 )
 

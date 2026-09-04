@@ -10,7 +10,7 @@
 |---|---|
 | 创建任务 | `POST /api/emotion/jobs` |
 | 查询任务 | `GET /api/emotion/jobs/{job_id}` |
-| Base URL | `http://172.16.0.3:8082` |
+| Base URL | `https://playground.amphion.top` |
 | 鉴权 | 无内置鉴权 |
 | 音频输入 | `multipart/form-data` 字段 `audio`（WAV 文件） |
 | 中间结果 | 不支持 |
@@ -23,7 +23,9 @@
 | `ser` | Speech Emotion Recognition | 8 分类情感标签 |
 | `sec` | Speech Emotion Captioning | 自由文本情感描述，并尽量给出匹配标签 |
 
-`mode` 不传时使用服务端配置 `emotion_task_mode`，通常为 `ser`。
+`mode` 不传时使用服务端配置 `emotion_task_mode`，当前为 `sec`。公开协议只接受
+`ser` / `sec`；模型名称不会出现在路径、mode 或响应字段中。其他值返回 `400`：
+`{"detail":"mode must be ser or sec"}`。
 
 ### SER 标签集
 
@@ -62,7 +64,7 @@ Client                                      Server
 |---|---|---|---|
 | `audio` | file | 是 | WAV 音频文件 |
 | `mode` | string | 否 | `ser` 或 `sec` |
-| `language` | string | 否 | 透传语言字段 |
+| `language` | string | 否 | `sec` 描述输出语言；`zh` 强制简体中文，`en` 强制英文，其他值不强制；同时在结果中回填。`ser` 固定返回分类标签，不受影响 |
 
 ### 成功响应（202）
 
@@ -106,11 +108,30 @@ Client                                      Server
     "mode": "ser",
     "label": "Happy",
     "text": "Happy",
+    "top_emotions": [
+      {"label": "Happy", "score": 0.873421},
+      {"label": "Neutral", "score": 0.102314},
+      {"label": "Surprise", "score": 0.018205}
+    ],
+    "best_label": "Happy",
+    "best_score": 0.873421,
     "duration_sec": 3.21,
     "language": "zh"
   }
 }
 ```
+
+`ser` 成功结果会额外返回 Top-3：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `top_emotions` | array | 按 `score` 从高到低排列的 Top-3 情绪标签 |
+| `best_label` | string | 最佳标签，与 `label` 保持一致 |
+| `best_score` | number | 最佳标签分数，范围 `0–1` |
+
+`score` 来自 AmphionSPEC SER 首个输出 token 在 8 类情绪候选中的归一化后验，
+适合排序和阈值判断，但不是经过独立数据集校准的统计置信度。`sec` 是自由文本描述，
+不返回上述三个字段。
 
 ### 失败
 
@@ -145,7 +166,7 @@ Client                                      Server
 pip install requests
 
 python docs/examples/http_emotion_job.py sample.wav \
-  --base-url http://172.16.0.3:8082 \
+  --base-url https://playground.amphion.top \
   --mode ser \
   --language zh
 ```
@@ -153,7 +174,7 @@ python docs/examples/http_emotion_job.py sample.wav \
 ## 部署说明
 
 - Job 状态保存在 **进程内存** 中；`uvicorn --workers N` 且 N>1 时，创建与轮询必须命中同一 worker，或后续引入 Redis 等共享存储。
-- 单 worker systemd 部署（`172.16.0.3:8082`）下可直接使用本 API。
+- 当前公网部署使用单 worker，创建和轮询可直接使用同一 Base URL。
 
 ## 相关文档
 

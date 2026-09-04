@@ -53,9 +53,27 @@ curl -fsS http://172.16.0.3:8082/readyz
 | 接口 | 任务 | 适用场景 | 结果消息 |
 |---|---|---|---|
 | `/transcribe-streaming` | 通用流式 ASR | 实时语音转写、Triton 热词召回转写 | `partial` / `partial_asr`、`final` / `final_asr` |
+| `/asr/v1/clean-stream` | 增强语音识别（免鉴权） | Qwen3-ASR-1.7B 伪流式识别、热词 refine、翻译、AmphionSPEC 情感增强 | `transcription.delta` / `emotion.bucket` / `postprocess.delta` / `transcription.done` |
 | `/emotion-segmented-streaming` | 分段情感识别 | 长连接中按 VAD 语音段持续返回情感 | 多条 `final_emotion` |
 | `/tuling/ast/v3` | 通用流式 ASR（讯飞图灵 AST v3 协议） | 对接讯飞 tuling-ast-sdk 或按 AST v3 信封集成 | `payload.result` 词图（msgtype sentence / Progressive） |
 | `/astv3-test-proxy` | AST v3 旧测试代理 | 兼容旧测试客户端，透明转发到写死的远程 AST v3 后端；当前测试页不再使用 | 同 `/tuling/ast/v3`（透明转发） |
+
+`/asr/v1/clean-stream` 使用独立 JSON/base64 协议，不采用下文通用任务型 WS 的
+二进制 `start`/`stop` 流程。它不连接 Gateway，不要求客户端 API Key，只使用本机
+Qwen3-ASR-1.7B，且不使用 k2 或副模型。录音期间每个 VAD final 都会异步启动
+情感与 refine/翻译并下发带 `segment_index` 的结果，最终 commit 只负责 flush 和
+drain。完整协议见
+[增强语音识别 WebSocket 协议](protocols/clean-stream-protocol.md)。
+
+公开情感协议统一只使用 `ser` / `sec`：`ser` 返回分类标签，`sec` 返回自由文本情感
+描述。AmphionSPEC 是服务端内部模型名，不作为 route、mode 或响应字段暴露；不提供
+`/api/emotion-spec/jobs`，传入 `spec` / `sepc` 等 mode 返回参数错误。
+
+clean-stream 不设置 60 秒会话硬上限。cleanup 使用保守 prompt，并在下发前检查
+相似度、长度、数字、英文缩写及 glossary 术语；情感增强通过 few-shot 示例综合文本
+语义、交际意图和语音情感，可在句末新增最多一个匹配 emoji，但不得删除或替换原标点。
+中性或信号不明确时不添加 emoji。不可信结果回退原始 ASR，最终
+`cleanup_status=degraded_raw_only`。
 
 `/transcribe-streaming` 的 `final` / `final_asr` 消息除文本外会带实际送入 LLM ASR 的 `audio_b64`（WAV base64）、`duration_sec` 和 `effective_hotwords`（本段音频经 RAG-ASR/Triton 实际召回的热词列表，不含临时请求热词），主前端用音频字段做分段回放、可用 `effective_hotwords` 展示本段召回命中。k2 模式下原始段仍来自 endpoint 对应的本地缓冲，不由本地 VAD 重新决定端点；但 `audio_b64` 会反映送模前 `asr_segment_voice_filter_*` 的裁剪结果。完整字段见 [实时转写 WebSocket 协议](protocols/transcribe-streaming-protocol.md)。服务端开启 `debug_dump_enabled`（`defaults.debug`，运维级、不在客户端覆写白名单）后，`ready` 带 `session_id`/`dump_dir`、`final` 带 `dump_id`，并把每段音频+元信息落盘到 `<dump_dir>/<session_id>/<seg_id>.{wav,json}`，前端在气泡上显示可复制的 `dump_id`，用于回放/最终结果对账，详见协议文档“调试落盘”小节。
 
@@ -73,7 +91,7 @@ AST v3 角色/声纹路由速览：
 
 `Progressive` 始终不返回 `cw[].rl`。完整的字段存在性、声纹状态和 sidecar 故障矩阵见 [AST v3 协议“角色分离与声纹行为矩阵”](protocols/tuling-ast-v3-protocol.md#角色分离与声纹行为矩阵)。
 
-「实时语音识别（测试用）」页面直接连接同源 `/tuling/ast/v3`：HTTPS 页面使用 `wss://`，HTTP/localhost 使用 `ws://`，不再经过第二层远程代理。页面将容易冲突的角色/声纹开关收敛为三个互斥模式，并在下一次会话首帧显式映射为：角色分离（`enable_role_separation=true`、忽略 enrollment）、目标说话人（`enable_role_separation=false`、`enrollment_enable=true`、携带已注册的 `enrollment_id`）、普通识别（两个能力均关闭）。目标说话人模式没有可用 ID 时，前端阻止开始录音并引导先完成注册；声纹注册入口始终可用，不因当前模式隐藏。`/astv3-test-proxy` 仅保留给旧测试客户端，仍透明转发到历史远端；新客户端和外部集成都应直接使用 `/tuling/ast/v3`。
+「实时语音识别（测试用）」页面直接连接同源 `/tuling/ast/v3`：HTTPS 页面使用 `wss://`，HTTP/localhost 使用 `ws://`。页面提供四个互斥模式：角色分离、会议模式、目标说话人和普通识别。会议模式的 AST 首帧与角色分离相同，前端另用 `/api/asr/speaker-identify` 将最多 4 个注册 enrollment 映射为浏览器会话内业务 ID；业务 ID 不进入 AST 协议或服务端存储。`/astv3-test-proxy` 仅保留给旧测试客户端。
 
 该测试页默认开启 ASR pipeline debug 卡片，同时保留最新一条 `Progressive` 流式中间结果和 AudioLLM `sentence` 终稿，避免终稿覆盖中间结果后无法对照。k2 关闭或 fallback 时，`Progressive` 可来自本地伪流式 AudioLLM，因此页面不标注具体来源。气泡的客户端分段回放按 AST `bg` / `ed` 从录音中截取，受协议段级时间误差影响，仅供近似对照而非精确词级音频。debug 展示只消费现有协议消息，不新增线上字段。
 
@@ -82,9 +100,10 @@ AST v3 角色/声纹路由速览：
 | 方法 | 路径 | 任务 | 表单字段 |
 |---|---|---|---|
 | POST | `/api/asr/upload` | 上传整段音频做 ASR（短音频，尾截 60 秒） | `audio`、`language`、`hotwords`、`hotword_pool_id`、`enrollment_id` |
-| POST | `/api/asr/transcriptions` | 异步长音频离线转写（202 + 轮询，会议纪要场景） | `audio`、`language`、`hotwords`、`hotword_pool_id` |
+| POST | `/api/asr/transcriptions` | 异步长音频增强转写（202 + 轮询，支持精修、翻译、情绪和内置热词） | `audio`、`language`、`hotwords`、`hotword_pool_id`、`config` 及展开的增强字段 |
 | GET | `/api/asr/transcriptions/{job_id}` | 查询转写任务状态、进度与分段结果 | — |
 | POST | `/api/asr/enrollment` | 上传目标说话人音频（5-10 秒）注册 | `audio` |
+| POST | `/api/asr/speaker-identify` | 将一段会议角色音频与最多 4 个 enrollment 做声纹匹配 | `audio`、`candidate_enrollment_ids` |
 | GET | `/api/asr/enrollment/{enrollment_id}` | 查询声纹 ID 是否可用于后续 ASR | — |
 | DELETE | `/api/asr/enrollment/{enrollment_id}` | 删除注册音频 | — |
 | GET | `/api/asr/hotword-pool` | 查询热词池 | `hotword_pool_id`、`query`、`limit`、`offset` |
@@ -93,9 +112,13 @@ AST v3 角色/声纹路由速览：
 | POST | `/api/asr/hotword-pool/delete` | 从热词池删除热词，兼容不稳定支持 DELETE body 的客户端 | JSON `hotword_pool_id`、`hotwords` |
 | POST | `/api/asr/hotword-pool/clear` | 清空指定热词池 | JSON 或 query `hotword_pool_id` |
 | POST | `/api/asr/hotword-pool/reload` | 让 RAG-ASR 从热词池文件 reload 热词 | JSON 或 query `hotword_pool_id` |
-| POST | `/api/emotion/jobs` | 异步整段情感识别（202 + 轮询） | `audio`、`mode`、`language` |
+| POST | `/api/emotion/jobs` | 异步整段情感识别（202 + 轮询）；SER 结果含 Top-3 标签与分数 | `audio`、`mode`、`language` |
 | GET | `/api/emotion/jobs/{job_id}` | 查询情感任务状态与结果 | — |
 | POST | `/api/audio/analyze` | 非实时聚合分析：ASR 原始结果、文本清洗、情感标签和情感描述 | `audio`、`language`、`hotwords`、`enrollment_id` |
+
+情感接口的 `language` 对 `sec` 表示描述文本的输出语言：`zh` 强制简体中文，
+`en` 强制英文；AmphionSPEC 未遵守语言提示时，服务端使用已配置的
+`speech_refine` LLM 翻译兜底。`ser` 固定返回分类标签，不受该字段影响。
 
 ## WebSocket 调用流程
 
@@ -146,7 +169,7 @@ bytes_per_ms = 16000 * 1 * 2 / 1000 = 32
 | 融合阈值 | fusion_similarity_threshold、fusion_min_primary_score、fusion_max_repetition_ratio、fusion_disagreement_threshold、fusion_hotword_boost、fusion_primary_score_margin |
 | 热词召回 | enable_hotword_recall、recall_top_k |
 | TS-ASR | asr_enrollment_min_sec、asr_enrollment_max_sec、asr_enrollment_ttl_sec |
-| 情感（仅情感端点有效） | emotion_task_mode、emotion_request_timeout、emotion_max_audio_seconds、emotion_spec_task_mode、emotion_spec_request_timeout、emotion_spec_max_audio_seconds |
+| 情感（仅情感端点有效） | emotion_task_mode、emotion_request_timeout、emotion_max_audio_seconds |
 
 `pseudo_stream_first_partial_ms` 是每段语音首个 partial（伪流式中间结果）的触发门槛，只对会输出 partial 的端点生效：`/transcribe-streaming` 与 `/tuling/ast/v3`。`/emotion-segmented-streaming` 不产 partial（服务端固定关闭），传入无效。它与 `vad_start_frames` 一起按 max 决定本地伪流式首字延迟；调低只让首字更早出，不改变 final 段的短噪声过滤（仍由 `min_segment_duration_ms` 控制，不变量 `pseudo_stream_first_partial_ms ≤ min_segment_duration_ms`）。
 
@@ -182,6 +205,11 @@ final 文本规范化开关（enable_asr_itn、asr_itn_enable_0_to_9、enable_as
 | `diarization_target` | `localhost:50052` | gRPC sidecar 地址 |
 | `diarization_connect_timeout_sec` | `2.0` | sidecar 建连/启动超时 |
 | `diarization_result_timeout_sec` | `2.0` | 每段等待 finalized turns 的超时；触发后本会话 fail-open |
+| `speaker_identity_timeout_sec` | `2.0` | 单次 speaker embedding RPC 超时 |
+| `speaker_identity_min_audio_sec` | `3.0` | 身份匹配音频最短时长 |
+| `speaker_identity_max_audio_sec` | `10.0` | 身份匹配音频最长时长，超出尾截 |
+| `speaker_identity_match_threshold` | `0.70` | 最佳 cosine similarity 最低门槛 |
+| `speaker_identity_match_margin` | `0.10` | 最佳候选相对第二名的最低差值 |
 
 ASR 模型组合开关的语义矩阵（`enable_dual_asr_fusion=true` 但 `enable_secondary_asr=false` 会在 load 时自动降级为 false）：
 
@@ -291,7 +319,7 @@ python docs/examples/rest_upload.py asr sample.wav \
 
 ### 长音频离线转写（会议纪要）
 
-`POST /api/asr/transcriptions` 面向整段会议录音等长音频（默认上限 3 小时 / 512 MB，超时长直接 400 拒绝而非截断）。服务端先按与流式端点相同的 VAD 状态机把录音切成语音段（切段停顿阈值可经 `transcribe_silence_duration_ms` 独立调参、不影响实时端点；连续无停顿语音超过 `transcribe_max_segment_sec` 会强制切分），再对每段并行执行与 `/api/asr/upload` 相同的双模型转写（含 ITN / 车牌规范化），最后按时间序拼出全文。表单字段为 `audio`（WAV）、`language`、`hotwords`；不支持 `enrollment_id`（目标说话人过滤与多人会议语义相反）。
+`POST /api/asr/transcriptions` 面向整段会议录音等长音频（默认上限 3 小时 / 512 MB，超时长直接 400 拒绝而非截断）。服务端先按与流式端点相同的 VAD 状态机把录音切成语音段（切段停顿阈值可经 `transcribe_silence_duration_ms` 独立调参、不影响实时端点；连续无停顿语音超过 `transcribe_max_segment_sec` 会强制切分），再对每段并行执行与 `/api/asr/upload` 相同的 ASR 转写（含 ITN / 车牌规范化），最后按时间序拼出全文。除原有 `audio`（WAV）、`language`、`hotwords`、`hotword_pool_id` 外，接口还接受 JSON 字符串 `config`，支持 `translate_mode`、`target_language`、`cleanup.level`、`cleanup.text_emotion`、`hotwords.builtin` 和 `hotwords.custom`；也接受 APIHub 转发使用的展开字段 `cleanup_level`、`cleanup_text_emotion`、`hotwords_builtin`。不支持 `enrollment_id`（目标说话人过滤与多人会议语义相反）。
 
 ```bash
 curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
@@ -320,7 +348,7 @@ curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
 }
 ```
 
-`segments[*].start_ms` / `end_ms` 为段级近似时间戳（非词级对齐）。单段失败重试一次后以 `error` 占位、不拖垮整个任务；结果内存保留 `transcribe_job_ttl_sec`（默认 1 小时）。完整的请求/响应字段表、状态机、部分失败语义、错误码、`config.yaml` 调参（`defaults.transcribe` 分组）与切段停顿调参建议见 [长音频离线转写 API](api/transcription-jobs-api.md)，命令行客户端见 `docs/examples/http_transcribe_job.py`。
+`segments[*].start_ms` / `end_ms` 为段级近似时间戳（非词级对齐）。启用增强后，原始全文同时出现在 `text`，成功时返回 `cleaned_text` 或 `translated_text`；增强失败则返回 `degraded_raw_only`，原始 ASR 不受影响。单段 ASR 失败重试一次后以 `error` 占位、不拖垮整个任务；结果内存保留 `transcribe_job_ttl_sec`（默认 1 小时）。完整的请求/响应字段表、状态机、部分失败语义、错误码、`config.yaml` 调参（`defaults.transcribe` 分组）与切段停顿调参建议见 [长音频离线转写 API](api/transcription-jobs-api.md)，命令行客户端见 `docs/examples/http_transcribe_job.py`。
 
 ### 目标说话人注册
 
@@ -337,7 +365,9 @@ curl -X POST http://172.16.0.3:8082/api/asr/enrollment \
 ```json
 {
   "enrollment_id": "ule8QilVjZql30Q9oy9kiQ",
-  "duration_sec": 6.0
+  "duration_sec": 6.0,
+  "speaker_identity_available": true,
+  "speaker_identity_reason": "ok"
 }
 ```
 
@@ -359,9 +389,21 @@ curl -X POST http://172.16.0.3:8082/api/asr/enrollment \
 
 `enrollment_id` 不可用（demo 本地缓存过期 / 重启 / 被 LRU 淘汰 / 删除，或 RAG-ASR 下沉链路缺失对应落盘文件、embedding 与当前模型/adapter 不兼容）后再被使用时，默认兼容语义是回退为普通 ASR：AST v3 结果返回 `enrollment_applied=false` 并尽量给出 `enrollment_fallback_reason`，REST `/api/asr/upload` 响应 `enrollment_used=false`。集成方应对失效有预期，必要时重新注册并更新所携带的 id。
 
-`GET /api/asr/enrollment/{enrollment_id}` 可查询该 ID 当前是否可直接用于后续 ASR。响应固定为 `{ "enrollment_id": "...", "available": true/false, "reason": "ok|not_found|incompatible|deleted|upstream_unavailable" }`，不返回原始注册音频、PCM、embedding 或其他声纹敏感材料。该接口只负责诊断，不保证查询后的实际识别一定应用声纹；最终仍以本次 AST v3 结果中的 `enrollment_applied` 或 REST 响应中的 `enrollment_used` 为准。
+`speaker_identity_available` 表示本次注册是否同时生成了会议身份识别所需的 TitaNet embedding。该生成失败不影响原 TS-ASR enrollment；会议前端会要求重新注册。`GET /api/asr/enrollment/{enrollment_id}` 的状态响应也包含此字段，但不返回原始音频、PCM 或 embedding。
 
 `asr_enrollment_min_sec` / `asr_enrollment_max_sec` / `asr_enrollment_ttl_sec` 虽在客户端覆写白名单内（见“临时配置覆写”），但注册是独立的 REST 调用、恒按服务端默认执行；流式端点首帧覆写这些值不会改变已注册 id 的行为。通用流式端点的 `start.enrollment_id` / `update_hotwords.enrollment_id` 用法与 TS-ASR 双音频 prompt 模板见 [通用流式 ASR WebSocket](protocols/transcribe-streaming-protocol.md)；AST v3 集成只需按本节注册，并按 [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md) 发送 `enable_role_separation=false`、`enrollment_enable=true` 和 `enrollment_id`。
+
+### 会议说话人身份匹配
+
+`POST /api/asr/speaker-identify` 仅供测试页会议模式使用。请求为 `multipart/form-data`：`audio` 是 3～10 秒 WAV/MP3/16 kHz mono s16le PCM，`candidate_enrollment_ids` 是包含 1～4 个唯一 enrollment ID 的 JSON 数组。业务 `user_id` 由浏览器维护，不发送到该接口。
+
+```bash
+curl -X POST http://172.16.0.3:8082/api/asr/speaker-identify \
+  -F 'audio=@role_1.wav' \
+  -F 'candidate_enrollment_ids=["enr_a","enr_b"]'
+```
+
+匹配成功返回 `{ "status": "matched", "enrollment_id": "...", "similarity": 0.82, "reason": "matched" }`；最佳分低于阈值或与第二名差距不足时返回 `status=unknown` 与 `reason=below_threshold|ambiguous`。候选 embedding 已过期返回 409 `speaker_embeddings_unavailable`，sidecar 不可用返回 503 `speaker_identity_unavailable`。以上失败都不影响 AST 转写和匿名角色展示。
 
 ### 热词池管理
 
@@ -453,7 +495,7 @@ python docs/examples/rest_upload.py emotion sample.wav \
 
 ```bash
 python tests/test_emotion_ws_client.py sample.wav \
-  --url ws://172.16.0.3:8082/emotion-segmented-streaming \
+  --url wss://playground.amphion.top/emotion-segmented-streaming \
   --segmented \
   --language zh
 ```
@@ -518,6 +560,7 @@ REST 接口使用标准 HTTP 状态码：
 - [非实时音频分析 API](api/audio-analyze-api.md)
 - [长音频离线转写 API](api/transcription-jobs-api.md)
 - [通用流式 ASR WebSocket](protocols/transcribe-streaming-protocol.md)
+- [增强语音识别 WebSocket](protocols/clean-stream-protocol.md)
 - [实时转写 AST v3 WebSocket](protocols/tuling-ast-v3-protocol.md)
 - [整段情感识别 HTTP（异步）](protocols/emotion-streaming-protocol.md)
 - [分段情感识别 WebSocket](protocols/emotion-segmented-streaming-protocol.md)

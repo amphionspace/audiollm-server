@@ -144,14 +144,15 @@ class Config:
 | `@app.websocket("/tuling/ast/v3")` | `docs/protocols/tuling-ast-v3-protocol.md` + `docs/api-reference.md` 速览 |
 | `@app.websocket("/astv3-test-proxy")` | `docs/api-reference.md` |
 | `@app.websocket("/emotion-segmented-streaming")` | `docs/protocols/emotion-segmented-streaming-protocol.md` + `docs/api-reference.md` 速览 |
+| `@router.websocket("/asr/v1/clean-stream")` | `docs/protocols/clean-stream-protocol.md` + `docs/api-reference.md` 速览 |
 | `@app.post("/api/asr/upload")` | `docs/api-reference.md` |
 | `@app.post("/api/asr/transcriptions")` + `@app.get("/api/asr/transcriptions/{job_id}")` | `docs/api/transcription-jobs-api.md` + `docs/api-reference.md` 速览 |
 | `@app.post("/api/asr/enrollment")` | `docs/api-reference.md` + `docs/protocols/transcribe-streaming-protocol.md` 注册接口章节 |
 | `@app.delete("/api/asr/enrollment/{id}")` | 同上 |
+| `@app.post("/api/asr/speaker-identify")` | `docs/api-reference.md` |
 | `@app.get("/api/asr/hotword-pool")` + `@app.post("/api/asr/hotword-pool")` + `@app.delete("/api/asr/hotword-pool")` + `@app.post("/api/asr/hotword-pool/reload")` | `docs/api-reference.md` |
 | `@app.post("/api/audio/analyze")` | `docs/api/audio-analyze-api.md` + `docs/api/public-audio-analyze-api.md` |
 | `@app.post("/api/emotion/jobs")` + `@app.get("/api/emotion/jobs/{job_id}")` | `docs/api-reference.md` |
-| `@app.post("/api/emotion-spec/jobs")` + `@app.get("/api/emotion-spec/jobs/{job_id}")` | 已知漂移，见下节 |
 
 新增路由时，必须至少在 `docs/api-reference.md` 添加一节，并更新本表。
 
@@ -177,7 +178,3 @@ rg "POST|GET|DELETE|WebSocket" docs/ -n
 ```
 
 如果代码中存在文档未描述的路由，或文档字段在代码中不存在，就是契约漂移。
-
-### 已知存量漂移
-
-`POST /api/emotion-spec/jobs` 与 `GET /api/emotion-spec/jobs/{job_id}` 在 `docs/` 中没有对应描述。下次修改这两个路由时，必须先在 `docs/api-reference.md` 补充对应章节，再做功能改动。

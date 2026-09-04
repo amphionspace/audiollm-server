@@ -1,6 +1,6 @@
 # 长音频离线转写 API（会议纪要）
 
-`POST /api/asr/transcriptions` 面向整段长录音（会议、访谈等）的离线转写：上传完整 WAV，服务端异步完成 VAD 切分与逐段双模型转写，客户端轮询取回带段级时间戳的分段转写稿。
+`POST /api/asr/transcriptions` 面向整段长录音（会议、访谈等）的离线转写：上传完整 WAV，服务端异步完成 VAD 切分与逐段 ASR，客户端轮询取回带段级时间戳的分段转写稿。可选的增强配置会在每个分段识别后执行热词纠正、文本精修或翻译，并可结合语音情绪调整标点和添加匹配的 emoji。
 
 与其他 ASR 入口的分工：
 
@@ -30,8 +30,41 @@
 | `language` | string | 否 | 语言提示，如 `zh`、`en`；空为自动检测 |
 | `hotword_pool_id` | string | 否 | 推荐字段，热词池隔离 ID，默认 `default`；每段 ASR 都使用该热词池召回 |
 | `hotwords` | string | 否 | 临时请求热词；每段 ASR 会把去重后的前 `recall_custom_hotword_limit` 个优先注入 prompt，并覆盖精确重复或整词同音（忽略声调）的 RAG-ASR 召回热词，不写入热词池 |
+| `config` | JSON string | 否 | 增强配置，结构见下文。只传旧字段且不传任何增强字段时保持原有行为，不调用 refine LLM |
+| `translate_mode` | boolean | 否 | `config.translate_mode` 的展开形式，显式传入时优先 |
+| `target_language` | string | 翻译时必填 | `config.target_language` 的展开形式，不能为 `auto` |
+| `cleanup_level` | string | 否 | `config.cleanup.level` 的展开形式：`off`、`light`、`standard` |
+| `cleanup_text_emotion` | boolean | 否 | `config.cleanup.text_emotion` 的展开形式 |
+| `hotwords_builtin` | string | 否 | `config.hotwords.builtin` 的展开形式，逗号分隔；最多一个：`finance`、`education`、`internet` |
 
 不支持 `enrollment_id`：目标说话人过滤只保留单一说话人的语音，与多人会议转写语义相反。
+
+### 增强配置
+
+`config` 是一个 JSON 字符串，可直接承接对外增强型非流式 ASR 的配置：
+
+```json
+{
+  "language": "zh",
+  "translate_mode": false,
+  "target_language": "en",
+  "cleanup": {
+    "level": "light",
+    "text_emotion": true
+  },
+  "hotwords": {
+    "builtin": ["finance"],
+    "custom": ["AUM", "OpenTelemetry"]
+  }
+}
+```
+
+- 默认是 cleanup 模式；`translate_mode=true` 时必须指定 `target_language`，并跳过 cleanup。
+- `cleanup.level=off` 时只返回原始转写；`light` 做保守纠错，`standard` 还可清理明显口语噪声；未知值按 `light` 处理。
+- `cleanup.text_emotion=true` 时逐段提取情绪上下文，供 cleanup 或翻译使用。情绪模型不可用不会影响 ASR 和普通后处理。
+- 内置热词和自定义热词会同时进入 ASR 与 refine 术语表；自定义热词去空、去重后最多 100 个。
+- 同时传入 `config` 和展开字段时，展开字段优先。`hotword_pool_id` 始终是独立字段。
+- 任一分段的 cleanup 或翻译失败、安全检查拒绝结果时，任务保留完整原始转写，不返回部分增强文本，并标记 `degraded_raw_only`。
 
 ### 约束
 
@@ -48,6 +81,14 @@ curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
   -F "audio=@meeting.wav" \
   -F "language=zh" \
   -F "hotwords=挚音科技,张硕"
+```
+
+增强转写示例：
+
+```bash
+curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
+  -F "audio=@meeting.wav" \
+  -F 'config={"language":"zh","cleanup":{"level":"light","text_emotion":true},"hotwords":{"builtin":["finance"],"custom":["AUM"]}}'
 ```
 
 受理响应（202）：
@@ -116,6 +157,21 @@ curl -X POST http://172.16.0.3:8082/api/asr/transcriptions \
 | `segments[*].language` | 该段检测语言（可选） |
 | `segments[*].error` | 仅失败段携带：推理错误信息（见下） |
 | `failed_segments` | 推理失败的段数 |
+
+启用增强时，`result` 还会包含以下字段：
+
+| 字段 | 说明 |
+|---|---|
+| `text` | 原始全文，与 `full_text` 相同 |
+| `cleaned_text` | cleanup 全部成功时出现 |
+| `translated_text` | 翻译全部成功时出现 |
+| `cleanup_status` / `translation_status` | `completed` 或 `degraded_raw_only` |
+| `translate_mode` / `postprocess_mode` | 当前后处理模式 |
+| `cleanup_level` | cleanup 模式使用的级别 |
+| `target_language` | 翻译模式的目标语言 |
+| `builtin_hotword_lists` | 实际使用的内置热词包 |
+| `custom_hotword_count` | 去重后的自定义热词数量 |
+| `emotion_bucket_count` | 开启情绪增强时成功生成的情绪分段数量 |
 
 ### 部分失败语义
 

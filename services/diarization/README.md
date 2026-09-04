@@ -4,6 +4,8 @@
 
 首期采用 NVIDIA [`diar_streaming_sortformer_4spk-v2.1`](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1)，固定 revision `fafaab5faa1617a0ca52d38dd3dc4bd636800d3d`。它原生支持最多 4 位说话人和在线 speaker cache，适合 AST v3 的会话内匿名角色编号；不承担跨会话身份识别或声源分离。模型受 NVIDIA Open Model License 约束；本次部署流程不包含许可证审查步骤。
 
+会议模式另加载 NVIDIA [`speakerverification_en_titanet_large`](https://huggingface.co/nvidia/speakerverification_en_titanet_large)，固定 revision `d6ba06bff20c64d51c946b676f4ec9b21fc45935`。它只通过内部 unary gRPC 提取归一化 speaker embedding；加载或推理失败不会影响 Sortformer、AST v3 或普通 ASR。
+
 低延迟参数采用模型官方 streaming 配置：`chunk_len=6`、left context `1`、right context `7`，speaker FIFO/cache 长度 `188`、更新周期 `144`。每帧 80 ms，模型上下文需要约 `6 + 7 = 13` 帧（1.04 秒）；frontend 另保留 20 ms PCM guard，使分窗 Mel 与整段 Mel 对齐。小包输入时有效缓冲约 1.06 秒；使用建议的 80 ms 包时会量化为 1.12 秒。sidecar 每 480 ms 推进一次 finalized watermark，仍低于主服务 2 秒的结果等待上限。
 
 同卡并发使用有界动态 batching：最多等待 12 ms，只合并 PCM 窗口、streaming
@@ -40,6 +42,11 @@ uv run --project services/diarization hf download \
   diar_streaming_sortformer_4spk-v2.1.nemo \
   --revision fafaab5faa1617a0ca52d38dd3dc4bd636800d3d \
   --local-dir /home/ubuntu/models
+uv run --project services/diarization hf download \
+  nvidia/speakerverification_en_titanet_large \
+  speakerverification_en_titanet_large.nemo \
+  --revision d6ba06bff20c64d51c946b676f4ec9b21fc45935 \
+  --local-dir /home/ubuntu/models
 ```
 
 先前台验证：
@@ -47,6 +54,7 @@ uv run --project services/diarization hf download \
 ```bash
 HF_HUB_OFFLINE=1 \
 DIARIZATION_MODEL_PATH=/home/ubuntu/models/diar_streaming_sortformer_4spk-v2.1.nemo \
+SPEAKER_EMBEDDING_MODEL_PATH=/home/ubuntu/models/speakerverification_en_titanet_large.nemo \
 DIARIZATION_MAX_BATCH_SIZE=8 \
 DIARIZATION_BATCH_WAIT_MS=12 \
 uv run --project services/diarization python -m services.diarization.server

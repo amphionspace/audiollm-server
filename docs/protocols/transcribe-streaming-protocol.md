@@ -327,7 +327,9 @@ HTTP 200。
 ```json
 {
   "enrollment_id": "ule8QilVjZql30Q9oy9kiQ",
-  "duration_sec": 6.0
+  "duration_sec": 6.0,
+  "speaker_identity_available": true,
+  "speaker_identity_reason": "ok"
 }
 ```
 
@@ -335,6 +337,8 @@ HTTP 200。
 |---|---|---|
 | `enrollment_id` | string | 后续请求复用的不透明 id；demo 本地缓存 TTL 默认 3600 秒。RAG-ASR 下沉链路为本地磁盘持久化，无 TTL 自动过期 |
 | `duration_sec` | number | 最终注册音频时长（裁剪后）；下沉链路中该时长来自 RAG-ASR 元数据 |
+| `speaker_identity_available` | boolean | 是否同时生成了测试页会议模式使用的 TitaNet speaker embedding；失败不影响 TS-ASR enrollment |
+| `speaker_identity_reason` | string | `ok` 或 `upstream_unavailable`；会议 embedding 仅在 demo 进程内按 enrollment TTL 保存 |
 
 ### 错误响应
 

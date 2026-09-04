@@ -27,6 +27,12 @@ from typing import Callable
 import numpy as np
 
 from ..audio.utils import pcm_to_wav_base64
+from ..clean_stream import (
+    SessionOptions,
+    evaluate_cleanup_result,
+    infer_emotion,
+    refine_text,
+)
 from ..config import SAMPLE_RATE, Config
 from ..jobstore import JobExecutionError
 from ..streaming.audio_stream import VadSegmentedStream
@@ -131,6 +137,7 @@ async def transcribe_pcm_i16(
     language: str = "",
     hotwords: list[str] | None = None,
     hotword_pool_id: str | None = None,
+    enhancement_options: SessionOptions | None = None,
     on_segments_planned: Callable[[int], None] | None = None,
     on_segment_done: Callable[[int], None] | None = None,
     release_input: Callable[[], None] | None = None,
@@ -169,7 +176,7 @@ async def transcribe_pcm_i16(
         "Offline transcription: %.1fs audio -> %d segments", duration_sec, len(segments)
     )
 
-    base_result = {
+    base_result: dict = {
         "type": "transcription",
         "language": language or "",
         "duration_sec": round(duration_sec, 3),
@@ -177,7 +184,41 @@ async def transcribe_pcm_i16(
         "full_text": "",
         "failed_segments": 0,
     }
+    if enhancement_options is not None:
+        base_result.update(
+            {
+                "text": "",
+                "builtin_hotword_lists": enhancement_options.builtin,
+                "custom_hotword_count": len(enhancement_options.custom),
+                "translate_mode": enhancement_options.translate_mode,
+                "postprocess_mode": (
+                    "translation" if enhancement_options.translate_mode else "cleanup"
+                ),
+            }
+        )
+        if enhancement_options.translate_mode:
+            base_result["target_language"] = enhancement_options.target_language
+        else:
+            base_result["cleanup_level"] = enhancement_options.cleanup_level
     if not segments:
+        if enhancement_options is not None and enhancement_options.text_emotion:
+            base_result["emotion_bucket_count"] = 0
+        if enhancement_options is not None and (
+            enhancement_options.translate_mode
+            or enhancement_options.cleanup_level != "off"
+        ):
+            status_key = (
+                "translation_status"
+                if enhancement_options.translate_mode
+                else "cleanup_status"
+            )
+            text_key = (
+                "translated_text"
+                if enhancement_options.translate_mode
+                else "cleaned_text"
+            )
+            base_result[text_key] = ""
+            base_result[status_key] = "completed"
         return base_result
 
     semaphore = asyncio.Semaphore(max(1, int(cfg.transcribe_segment_concurrency)))
@@ -214,6 +255,50 @@ async def transcribe_pcm_i16(
                 entry["text"] = str(res.get("text") or "")
                 if res.get("language"):
                     entry["language"] = res["language"]
+                should_refine = bool(
+                    entry["text"]
+                    and enhancement_options is not None
+                    and (
+                        enhancement_options.translate_mode
+                        or enhancement_options.cleanup_level != "off"
+                    )
+                )
+                if should_refine:
+                    emotion = None
+                    if enhancement_options.text_emotion:
+                        try:
+                            emotion = await infer_emotion(
+                                float_pcm_to_i16_bytes(seg.pcm), enhancement_options
+                            )
+                            entry["_emotion_used"] = True
+                        except Exception as exc:  # noqa: BLE001 - optional enhancement
+                            logger.warning(
+                                "Transcription segment %d emotion inference failed: %s",
+                                seg.index,
+                                exc,
+                            )
+                    try:
+                        processed = await refine_text(
+                            entry["text"], enhancement_options, emotion
+                        )
+                        if not enhancement_options.translate_mode:
+                            accepted, reason = evaluate_cleanup_result(
+                                entry["text"],
+                                processed,
+                                enhancement_options.cleanup_level,
+                                enhancement_options.glossary,
+                                preserve_punctuation=bool(emotion),
+                            )
+                            if not accepted:
+                                raise ValueError(f"cleanup rejected: {reason}")
+                        entry["_processed_text"] = processed
+                    except Exception as exc:  # noqa: BLE001 - raw ASR remains usable
+                        logger.warning(
+                            "Transcription segment %d postprocess failed: %s",
+                            seg.index,
+                            exc,
+                        )
+                        entry["_postprocess_failed"] = True
             except Exception as exc:  # noqa: BLE001 - per-segment isolation
                 logger.warning(
                     "Transcription segment %d failed after retry: %s",
@@ -246,4 +331,41 @@ async def transcribe_pcm_i16(
     result["segments"] = kept
     result["full_text"] = "\n".join(e["text"] for e in kept if e.get("text"))
     result["failed_segments"] = len(failed)
+    if enhancement_options is not None:
+        result["text"] = result["full_text"]
+        if enhancement_options.text_emotion:
+            result["emotion_bucket_count"] = sum(
+                1 for entry in kept if entry.pop("_emotion_used", False)
+            )
+        should_refine = (
+            enhancement_options.translate_mode
+            or enhancement_options.cleanup_level != "off"
+        )
+        if should_refine:
+            status_key = (
+                "translation_status"
+                if enhancement_options.translate_mode
+                else "cleanup_status"
+            )
+            text_key = (
+                "translated_text"
+                if enhancement_options.translate_mode
+                else "cleaned_text"
+            )
+            postprocess_failed = False
+            processed_parts: list[str] = []
+            for entry in kept:
+                postprocess_failed = bool(
+                    entry.pop("_postprocess_failed", False)
+                ) or postprocess_failed
+                processed = entry.pop("_processed_text", "")
+                if entry.get("text"):
+                    processed_parts.append(processed)
+            if postprocess_failed or len(processed_parts) != sum(
+                1 for entry in kept if entry.get("text")
+            ):
+                result[status_key] = "degraded_raw_only"
+            else:
+                result[text_key] = "\n".join(processed_parts)
+                result[status_key] = "completed"
     return result

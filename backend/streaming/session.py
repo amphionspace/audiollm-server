@@ -458,6 +458,16 @@ class StreamingSession:
 
         try:
             await self.engine.on_start(ctrl, self.ctx)
+        except ValueError as exc:
+            self._started = False
+            logger.warning("engine.on_start rejected request: %s", exc)
+            await self._send_json(
+                {
+                    "type": "error",
+                    "code": "invalid_start",
+                    "message": str(exc),
+                }
+            )
         except Exception:
             logger.exception("engine.on_start failed")
 

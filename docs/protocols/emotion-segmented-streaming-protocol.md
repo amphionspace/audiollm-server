@@ -10,7 +10,8 @@
 |---|---|
 | 协议 | WebSocket |
 | 路径 | `/emotion-segmented-streaming` |
-| 完整 URL | `ws://172.16.0.3:8082/emotion-segmented-streaming?language=<lang>` |
+| 公网 URL | `wss://playground.amphion.top/emotion-segmented-streaming?language=<lang>` |
+| 内网 URL | `ws://172.16.0.3:8082/emotion-segmented-streaming?language=<lang>` |
 | 鉴权 | 无内置鉴权，无需自定义请求头 |
 | 音频输入 | 二进制 PCM 帧，16 kHz、mono、signed 16-bit little-endian |
 | 分段策略 | 服务端 VAD 自动切段 |
@@ -21,7 +22,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `language` | string | 否 | 透传语言字段，如 `zh`、`en`、`id`、`th`；服务端会在结果中回填 |
+| `language` | string | 否 | `sec` 描述输出语言；`zh` 强制简体中文，`en` 强制英文，其他值不强制；同时在结果中回填。`ser` 固定返回分类标签，不受影响 |
 
 ## 与整段情感接口的区别
 
@@ -76,9 +77,13 @@ Client                                      Server
 | `format` | string | 否 | 固定为 `pcm_s16le` |
 | `sample_rate_hz` | integer | 否 | 固定为 `16000` |
 | `channels` | integer | 否 | 固定为 `1` |
-| `mode` | string | 否 | `ser` 或 `sec`，不传使用服务端默认 |
-| `language` | string | 否 | 透传语言字段；也可通过 query 参数传入 |
+| `mode` | string | 否 | 仅支持 `ser` 或 `sec`，不传使用服务端默认 `sec` |
+| `language` | string | 否 | `sec` 描述输出语言；`zh` 强制简体中文，`en` 强制英文，其他值不强制；也可通过 query 参数传入 |
 | `config` | object | 否 | 当前连接的服务端配置覆写 |
+
+若 `mode` 不是 `ser` 或 `sec`，服务端返回
+`{"type":"error","code":"invalid_start","message":"mode must be ser or sec"}`，
+且不会启动该轮识别。
 
 ### 二进制音频帧
 
@@ -112,12 +117,19 @@ payload 与整段情感接口一致：
   "mode": "ser",
   "label": "Neutral",
   "text": "Neutral",
+  "top_emotions": [
+    {"label": "Neutral", "score": 0.903211},
+    {"label": "Happy", "score": 0.081422},
+    {"label": "Other/Complex", "score": 0.010351}
+  ],
+  "best_label": "Neutral",
+  "best_score": 0.903211,
   "duration_sec": 2.68,
   "language": "zh"
 }
 ```
 
-`final_emotion` 字段与 [整段情感 HTTP API](emotion-streaming-protocol.md#查询任务) 的 `result` 一致。此处 `duration_sec` 表示**当前 VAD 语音段**的推理时长，不是整段任务的累计时长。
+`final_emotion` 字段与 [整段情感 HTTP API](emotion-streaming-protocol.md#查询任务) 的 `result` 一致；`ser` 返回 Top-3，`sec` 不返回分数列表。此处 `duration_sec` 表示**当前 VAD 语音段**的推理时长，不是整段任务的累计时长。
 
 ### error
 
@@ -149,7 +161,7 @@ payload 与整段情感接口一致：
 pip install websockets numpy
 
 python tests/test_emotion_ws_client.py sample.wav \
-  --url ws://172.16.0.3:8082/emotion-segmented-streaming \
+  --url wss://playground.amphion.top/emotion-segmented-streaming \
   --mode ser \
 ```
 

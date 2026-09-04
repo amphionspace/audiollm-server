@@ -186,7 +186,7 @@ def _postprocess_asr_text(text: str) -> str:
     if not cleaned:
         return ""
     cleaned = re.sub(
-        r"^\s*language\s+[A-Za-z\u4e00-\u9fff_-]+\s*<asr_text>\s*",
+        r"language\s+[A-Za-z\u4e00-\u9fff_-]+\s*<asr_text>\s*",
         "",
         cleaned,
         flags=re.IGNORECASE,

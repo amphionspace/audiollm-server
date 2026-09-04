@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -53,6 +54,10 @@ from .asr.recall import (
 from .asr.recall import (
     upsert_enrollment as upsert_triton_enrollment,
 )
+from .asr.speaker_identity import (
+    get_speaker_identity_store,
+    match_speaker_embedding,
+)
 from .asr.transcribe import float_pcm_to_i16_bytes
 from .audio.utils import (
     mp3_bytes_to_pcm_16k_mono,
@@ -60,15 +65,19 @@ from .audio.utils import (
     wav_base64_to_pcm_16k_mono,
     wav_bytes_to_pcm_16k_mono,
 )
+from .clean_stream import SessionOptions, parse_options
+from .clean_stream import router as clean_stream_router
 from .config import SAMPLE_RATE, Upstream, load_config, load_parsed, load_transcribe_config
 from .diarization.client import (
+    SpeakerEmbeddingUnavailableError,
     close_diarization_channels,
+    extract_speaker_embedding,
     validate_diarization_server,
 )
 from .emotion.client import query_emotion_model
 from .emotion.jobs import JobQueueFullError, get_emotion_job_store
+from .emotion.prompt import normalize_mode as normalize_emotion_mode
 from .emotion.service import EmotionDecodeError, decode_wav_capped
-from .emotion_spec.jobs import get_emotion_spec_job_store
 from .http_client import close_client
 from .recall_user import HotwordPoolIdError, normalize_hotword_pool_id
 from .streaming import (
@@ -97,6 +106,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AudioLLM Server", lifespan=lifespan)
+app.include_router(clean_stream_router)
 
 
 def _health_check(
@@ -761,6 +771,30 @@ def _public_enrollment_status(
     }
 
 
+async def _store_speaker_identity_embedding(
+    *,
+    cfg,
+    enrollment_id: str,
+    pcm: np.ndarray,
+) -> tuple[bool, str]:
+    store = get_speaker_identity_store()
+    store.configure(
+        ttl_sec=cfg.asr_enrollment_ttl_sec,
+        max_entries=cfg.asr_enrollment_max_entries,
+    )
+    try:
+        embedding = await extract_speaker_embedding(cfg, float_pcm_to_i16_bytes(pcm))
+    except SpeakerEmbeddingUnavailableError as exc:
+        logger.warning(
+            "Speaker identity embedding unavailable for enrollment %s: %s",
+            enrollment_id,
+            exc,
+        )
+        return False, "upstream_unavailable"
+    store.put(enrollment_id, embedding)
+    return True, "ok"
+
+
 async def _run_dual_asr_upload(
     wav_b64: str,
     *,
@@ -820,9 +854,10 @@ async def asr_enrollment_create(audio: UploadFile = File(...)):
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
 
+    pcm = wav_base64_to_pcm_16k_mono(canonical_b64)
+
     if cfg.enable_triton_enrollment_store:
         enrollment_id = secrets.token_urlsafe(16)
-        pcm = wav_base64_to_pcm_16k_mono(canonical_b64)
         try:
             await upsert_triton_enrollment(
                 pcm,
@@ -839,9 +874,16 @@ async def asr_enrollment_create(audio: UploadFile = File(...)):
                     "message": str(exc),
                 },
             ) from exc
+        identity_available, identity_reason = await _store_speaker_identity_embedding(
+            cfg=cfg,
+            enrollment_id=enrollment_id,
+            pcm=pcm,
+        )
         return {
             "enrollment_id": enrollment_id,
             "duration_sec": round(duration_sec, 3),
+            "speaker_identity_available": identity_available,
+            "speaker_identity_reason": identity_reason,
         }
 
     store = get_enrollment_store()
@@ -850,9 +892,16 @@ async def asr_enrollment_create(audio: UploadFile = File(...)):
         max_entries=cfg.asr_enrollment_max_entries,
     )
     entry = store.put(canonical_b64, duration_sec)
+    identity_available, identity_reason = await _store_speaker_identity_embedding(
+        cfg=cfg,
+        enrollment_id=entry.enrollment_id,
+        pcm=pcm,
+    )
     return {
         "enrollment_id": entry.enrollment_id,
         "duration_sec": round(duration_sec, 3),
+        "speaker_identity_available": identity_available,
+        "speaker_identity_reason": identity_reason,
     }
 
 
@@ -874,6 +923,7 @@ async def asr_enrollment_delete(enrollment_id: str):
             logger.warning("Triton enrollment delete failed", exc_info=True)
     else:
         get_enrollment_store().delete(enrollment_id)
+    get_speaker_identity_store().delete(enrollment_id)
     return Response(status_code=204)
 
 
@@ -898,14 +948,120 @@ async def asr_enrollment_get(enrollment_id: str):
                 "enrollment_id": ident,
                 "available": False,
                 "reason": "upstream_unavailable",
+                "speaker_identity_available": False,
             }
-        return _public_enrollment_status(ident, summary)
+        payload = _public_enrollment_status(ident, summary)
+        payload["speaker_identity_available"] = (
+            get_speaker_identity_store().get(ident) is not None
+        )
+        return payload
 
     entry = get_enrollment_store().get(ident)
     return {
         "enrollment_id": ident,
         "available": entry is not None,
         "reason": "ok" if entry is not None else "not_found",
+        "speaker_identity_available": get_speaker_identity_store().get(ident) is not None,
+    }
+
+
+@app.post("/api/asr/speaker-identify")
+async def asr_speaker_identify(
+    audio: UploadFile = File(...),
+    candidate_enrollment_ids: str = Form(...),
+):
+    """Match one diarized role clip against at most four meeting candidates."""
+
+    try:
+        raw_candidates = json.loads(candidate_enrollment_ids)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_candidates",
+                "message": "candidate_enrollment_ids must be a JSON array",
+            },
+        ) from exc
+    if not isinstance(raw_candidates, list):
+        raw_candidates = []
+    candidates_ids = [str(value or "").strip() for value in raw_candidates]
+    if (
+        not 1 <= len(candidates_ids) <= 4
+        or any(not value for value in candidates_ids)
+        or len(set(candidates_ids)) != len(candidates_ids)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_candidates",
+                "message": "candidate_enrollment_ids must contain 1-4 unique non-empty ids",
+            },
+        )
+
+    cfg = load_config()
+    raw = await _read_audio_bytes(audio)
+    try:
+        query_b64, _ = decode_and_validate_audio_bytes(
+            raw,
+            audio_format=_infer_enrollment_audio_format(audio, raw),
+            min_sec=cfg.speaker_identity_min_audio_sec,
+            max_sec=cfg.speaker_identity_max_audio_sec,
+        )
+    except EnrollmentError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+    identity_store = get_speaker_identity_store()
+    identity_store.configure(
+        ttl_sec=cfg.asr_enrollment_ttl_sec,
+        max_entries=cfg.asr_enrollment_max_entries,
+    )
+    candidates = []
+    missing = []
+    for enrollment_id in candidates_ids:
+        entry = identity_store.get(enrollment_id)
+        if entry is None:
+            missing.append(enrollment_id)
+        else:
+            candidates.append(entry)
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "speaker_embeddings_unavailable",
+                "message": "one or more meeting speaker embeddings are unavailable",
+                "enrollment_ids": missing,
+            },
+        )
+
+    query_pcm = wav_base64_to_pcm_16k_mono(query_b64)
+    try:
+        query_embedding = await extract_speaker_embedding(
+            cfg,
+            float_pcm_to_i16_bytes(query_pcm),
+        )
+    except SpeakerEmbeddingUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "speaker_identity_unavailable",
+                "message": str(exc),
+            },
+        ) from exc
+
+    matched, similarity, reason = match_speaker_embedding(
+        query_embedding,
+        candidates,
+        threshold=cfg.speaker_identity_match_threshold,
+        margin=cfg.speaker_identity_match_margin,
+    )
+    return {
+        "status": "matched" if matched is not None else "unknown",
+        "enrollment_id": matched.enrollment_id if matched is not None else None,
+        "similarity": round(similarity, 6) if similarity is not None else None,
+        "reason": reason,
     }
 
 
@@ -1235,13 +1391,86 @@ async def asr_upload(
     }
 
 
+def _parse_transcription_enhancement_options(
+    *,
+    config: str | None,
+    language: str | None,
+    hotwords: str | None,
+    translate_mode: bool | None,
+    target_language: str | None,
+    cleanup_level: str | None,
+    cleanup_text_emotion: bool | None,
+    hotwords_builtin: str | None,
+) -> SessionOptions | None:
+    enhanced_fields_present = bool(config and config.strip()) or any(
+        value is not None
+        for value in (
+            translate_mode,
+            target_language,
+            cleanup_level,
+            cleanup_text_emotion,
+            hotwords_builtin,
+        )
+    )
+    if not enhanced_fields_present:
+        return None
+
+    payload: dict[str, Any] = {}
+    if config and config.strip():
+        try:
+            decoded = json.loads(config)
+        except json.JSONDecodeError as exc:
+            raise ValueError("config must be valid JSON.") from exc
+        if not isinstance(decoded, dict):
+            raise ValueError("config must be a JSON object.")
+        payload = decoded
+
+    if language is not None:
+        payload["language"] = language
+    if translate_mode is not None:
+        payload["translate_mode"] = translate_mode
+    if target_language is not None:
+        payload["target_language"] = target_language
+
+    cleanup = payload.get("cleanup") or {}
+    if not isinstance(cleanup, dict):
+        raise ValueError("cleanup and hotwords must be objects.")
+    cleanup = dict(cleanup)
+    if cleanup_level is not None:
+        cleanup["level"] = cleanup_level
+    if cleanup_text_emotion is not None:
+        cleanup["text_emotion"] = cleanup_text_emotion
+    requested_cleanup_level = str(cleanup.get("level") or "light").lower()
+    if requested_cleanup_level not in {"off", "light", "standard"}:
+        cleanup["level"] = "light"
+    payload["cleanup"] = cleanup
+
+    hotword_options = payload.get("hotwords") or {}
+    if not isinstance(hotword_options, dict):
+        raise ValueError("cleanup and hotwords must be objects.")
+    hotword_options = dict(hotword_options)
+    if hotwords is not None:
+        hotword_options["custom"] = _parse_csv(hotwords)
+    if hotwords_builtin is not None:
+        hotword_options["builtin"] = _parse_csv(hotwords_builtin)
+    payload["hotwords"] = hotword_options
+
+    return parse_options(payload)
+
+
 @app.post("/api/asr/transcriptions", status_code=202)
 async def asr_transcription_create(
     audio: UploadFile = File(...),
-    language: str = Form(""),
-    hotwords: str = Form(""),
+    language: str | None = Form(None),
+    hotwords: str | None = Form(None),
     hotword_pool_id: str = Form(""),
     user_id: str | None = Form(None),
+    config: str | None = Form(None),
+    translate_mode: bool | None = Form(None),
+    target_language: str | None = Form(None),
+    cleanup_level: str | None = Form(None),
+    cleanup_text_emotion: bool | None = Form(None),
+    hotwords_builtin: str | None = Form(None),
 ):
     """Enqueue offline transcription of a long recording (meeting minutes).
 
@@ -1264,6 +1493,26 @@ async def asr_transcription_create(
     # choice, fusion switch) layered over the shared REST defaults.
     cfg = load_transcribe_config()
     _reject_legacy_hotword_user_id(user_id)
+    try:
+        enhancement_options = _parse_transcription_enhancement_options(
+            config=config,
+            language=language,
+            hotwords=hotwords,
+            translate_mode=translate_mode,
+            target_language=target_language,
+            cleanup_level=cleanup_level,
+            cleanup_text_emotion=cleanup_text_emotion,
+            hotwords_builtin=hotwords_builtin,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    effective_language = language or ""
+    effective_hotwords = _parse_csv(hotwords)
+    if enhancement_options is not None:
+        effective_language = (
+            "" if enhancement_options.language == "auto" else enhancement_options.language
+        )
+        effective_hotwords = enhancement_options.glossary
     resolved_hotword_pool_id = _resolve_hotword_pool_id(
         hotword_pool_id,
         cfg,
@@ -1299,9 +1548,10 @@ async def asr_transcription_create(
         job = await store.submit(
             pcm_i16,
             duration_sec=duration_sec,
-            language=language,
-            hotwords=_parse_csv(hotwords),
+            language=effective_language,
+            hotwords=effective_hotwords,
             hotword_pool_id=resolved_hotword_pool_id,
+            enhancement_options=enhancement_options,
             cfg=cfg,
         )
     except JobQueueFullError as exc:
@@ -1341,6 +1591,10 @@ async def emotion_create_job(
     """Enqueue whole-utterance emotion inference; poll GET /api/emotion/jobs/{id}."""
     raw = await _read_audio_bytes(audio)
     cfg = load_config()
+    try:
+        normalized_mode = normalize_emotion_mode(mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     cap = float(getattr(cfg, "emotion_max_audio_seconds", 0.0))
     try:
         decode_wav_capped(raw, cap)
@@ -1352,7 +1606,7 @@ async def emotion_create_job(
     try:
         job = await store.submit(
             raw,
-            mode=mode,
+            mode=normalized_mode,
             language=language,
             cfg=cfg,
         )
@@ -1378,64 +1632,6 @@ async def emotion_create_job(
 async def emotion_get_job(job_id: str):
     """Poll async emotion job status and result."""
     store = get_emotion_job_store()
-    job = await store.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    return job.to_poll_dict()
-
-
-@app.post("/api/emotion-spec/jobs", status_code=202)
-async def emotion_spec_create_job(
-    audio: UploadFile = File(...),
-    mode: str = Form(""),
-    language: str = Form(""),
-):
-    """Enqueue whole-utterance AmphionSPEC inference; poll GET /api/emotion-spec/jobs/{id}.
-
-    Independent of ``/api/emotion/jobs`` — separate queue, separate
-    concurrency budget, separate vLLM endpoint (cfg.emotion_spec_vllm_*).
-    ``mode`` accepts ``ser`` or ``sepc`` (alias ``spec`` is normalized to
-    ``sepc``); empty falls back to ``cfg.emotion_spec_task_mode``.
-    """
-    raw = await _read_audio_bytes(audio)
-    cfg = load_config()
-    cap = float(getattr(cfg, "emotion_spec_max_audio_seconds", 0.0))
-    try:
-        decode_wav_capped(raw, cap)
-    except EmotionDecodeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    store = get_emotion_spec_job_store()
-    store.configure(cfg)
-    try:
-        job = await store.submit(
-            raw,
-            mode=mode,
-            language=language,
-            cfg=cfg,
-        )
-    except JobQueueFullError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=str(exc),
-            headers={"Retry-After": "5"},
-        ) from exc
-
-    poll_url = f"/api/emotion-spec/jobs/{job.job_id}"
-    return JSONResponse(
-        status_code=202,
-        content={
-            "job_id": job.job_id,
-            "status": job.status,
-            "poll_url": poll_url,
-        },
-    )
-
-
-@app.get("/api/emotion-spec/jobs/{job_id}")
-async def emotion_spec_get_job(job_id: str):
-    """Poll async AmphionSPEC job status and result."""
-    store = get_emotion_spec_job_store()
     job = await store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
@@ -1492,6 +1688,7 @@ async def audio_analyze(
         query_emotion_model(
             emotion_wav_b64,
             mode="ser",
+            language=language,
             base_url=cfg.emotion_vllm_base_url,
             model_name=cfg.emotion_vllm_model_name,
             timeout=cfg.emotion_request_timeout,
@@ -1501,6 +1698,7 @@ async def audio_analyze(
         query_emotion_model(
             emotion_wav_b64,
             mode="sec",
+            language=language,
             base_url=cfg.emotion_vllm_base_url,
             model_name=cfg.emotion_vllm_model_name,
             timeout=cfg.emotion_request_timeout,
