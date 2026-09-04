@@ -65,6 +65,10 @@ def test_docker_compose_builds_the_three_self_contained_services() -> None:
     assert "${AMPHION_SPEC_GPU_MEMORY_UTILIZATION:-0.10}" in services["amphion-spec"][
         "command"
     ]
+    assert services["qwen3-asr"]["depends_on"]["amphion-spec"]["condition"] == (
+        "service_healthy"
+    )
+    assert services["gateway"]["depends_on"]["qwen3-asr"]["condition"] == "service_healthy"
     gateway_env = services["gateway"]["environment"]
     assert gateway_env["QWEN3_ASR_BASE_URL"] == "http://qwen3-asr:8000"
     assert gateway_env["AMPHION_SPEC_BASE_URL"] == "http://amphion-spec:8000"

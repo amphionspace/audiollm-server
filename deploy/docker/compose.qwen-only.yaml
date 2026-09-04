@@ -21,6 +21,15 @@ services:
       - "32768"
     ports:
       - "${QWEN3_ASR_PORT:-8011}:8000"
+    depends_on:
+      amphion-spec:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
     restart: unless-stopped
 
   amphion-spec:
@@ -48,6 +57,12 @@ services:
       - "16384"
     ports:
       - "${AMPHION_SPEC_PORT:-9001}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 120
+      start_period: 10s
     restart: unless-stopped
 
   gateway:
@@ -70,6 +85,8 @@ services:
     ports:
       - "${GATEWAY_PORT:-8080}:8080"
     depends_on:
-      - qwen3-asr
-      - amphion-spec
+      qwen3-asr:
+        condition: service_healthy
+      amphion-spec:
+        condition: service_healthy
     restart: unless-stopped

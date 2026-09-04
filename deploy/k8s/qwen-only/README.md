@@ -33,6 +33,7 @@ docker compose --env-file /tmp/qwen-only.env \
 `GATEWAY_PORT`、`QWEN3_ASR_PORT`、`AMPHION_SPEC_PORT` 修改宿主机端口。
 Compose 默认按单张 H20 的实测值设置 Qwen/SPEC 显存比例为 `0.15`/`0.10`；可通过
 `QWEN3_ASR_GPU_MEMORY_UTILIZATION`、`AMPHION_SPEC_GPU_MEMORY_UTILIZATION` 调整。
+单卡启动时会先等待 SPEC 健康，再加载 Qwen，避免两个 vLLM 同时做显存 profiling。
 如果本机已有完全相同的 vLLM 0.18.0 基础镜像，可设置 `VLLM_IMAGE` 避免重新拉取。
 网络受限环境也可通过 `APT_DEBIAN_MIRROR` 和 `APT_SECURITY_MIRROR` 指定 Debian 镜像源。
 
