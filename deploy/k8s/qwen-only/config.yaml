@@ -1,0 +1,116 @@
+http_pool:
+  max_connections: 32
+  max_keepalive_connections: 16
+
+upstreams:
+  qwen3_asr:
+    base_url: http://qwen3-asr:8000
+    model_name: Qwen/Qwen3-ASR-1.7B
+    prompt_template: qwen3_asr
+    timeout: 120
+  amphion_spec:
+    base_url: http://amphion-spec:8000
+    model_name: AmphionSPEC
+    timeout: 30
+  refine_llm:
+    base_url: ${REFINE_BASE_URL}
+    model_name: ${REFINE_MODEL}
+    api_key: ${REFINE_API_KEY}
+    timeout: 30
+    max_tokens: 1024
+
+defaults:
+  vad:
+    vad_threshold: 0.65
+    silence_duration_ms: 1000
+    vad_smoothing_alpha: 0.3
+    vad_start_frames: 10
+    vad_pre_speech_ms: 500
+    vad_keep_tail_ms: 40
+    min_segment_duration_ms: 350
+  pseudo_stream:
+    enable_pseudo_stream: true
+    pseudo_stream_interval_ms: 800
+    pseudo_stream_first_partial_ms: 200
+  k2:
+    k2_enabled: false
+    k2_target: ""
+  asr:
+    enable_primary_asr: true
+    enable_secondary_asr: false
+    enable_dual_asr_fusion: false
+    enable_role_separation: false
+    primary_asr_timeout: 120
+    debug_show_dual_asr: false
+    asr_segment_voice_gate_enabled: true
+    asr_segment_voice_gate_threshold: 0.65
+    asr_segment_voice_gate_min_ratio: 0.05
+    asr_segment_voice_gate_min_ms: 120
+    asr_segment_voice_gate_min_rms: 0.001
+    asr_segment_voice_filter_enabled: true
+    asr_segment_voice_filter_threshold: 0.65
+    asr_segment_voice_filter_pre_ms: 160
+    asr_segment_voice_filter_tail_ms: 160
+    asr_silence_removal_threshold_sec: 0.0
+  diarization:
+    diarization_enabled: false
+    diarization_target: ""
+  recall:
+    enable_hotword_recall: false
+    enable_encoder_bypass: false
+  itn:
+    enable_asr_itn: true
+    asr_itn_enable_0_to_9: false
+    enable_asr_plate_normalize: true
+    enable_asr_repetition_fix: true
+  transcribe:
+    transcribe_max_concurrent_jobs: 2
+    transcribe_segment_concurrency: 4
+    transcribe_job_queue_max: 8
+    transcribe_job_ttl_sec: 3600
+    transcribe_max_segment_sec: 30.0
+    transcribe_max_upload_bytes: 536870912
+    transcribe_max_audio_sec: 10800
+    transcribe_silence_duration_ms: 800
+  emotion:
+    emotion_task_mode: sec
+    emotion_max_audio_seconds: 20.0
+    emotion_max_concurrent_jobs: 8
+    emotion_job_queue_max: 64
+    emotion_job_ttl_sec: 3600
+  emotion_spec:
+    emotion_spec_task_mode: sec
+    emotion_spec_max_audio_seconds: 20.0
+    emotion_spec_max_concurrent_jobs: 8
+    emotion_spec_job_queue_max: 64
+    emotion_spec_job_ttl_sec: 3600
+
+services:
+  speech_refine: refine_llm
+  clean_stream_asr: qwen3_asr
+
+rest:
+  upstreams:
+    primary: qwen3_asr
+    emotion: amphion_spec
+    emotion_spec: amphion_spec
+  routes:
+    transcribe:
+      upstreams:
+        primary: qwen3_asr
+      enable_dual_asr_fusion: false
+
+endpoints:
+  - path: /transcribe-streaming
+    protocol: native
+    task: asr
+    upstreams: {primary: qwen3_asr}
+    client_overridable: true
+    lock:
+      enable_secondary_asr: false
+      enable_dual_asr_fusion: false
+      enable_role_separation: false
+  - path: /emotion-segmented-streaming
+    protocol: native
+    task: emotion
+    upstreams: {emotion: amphion_spec}

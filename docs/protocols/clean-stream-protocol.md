@@ -52,10 +52,10 @@ Gateway。识别只使用本机 `Qwen3-ASR-1.7B` HTTP 非流式模型，以累�
 | `language` | `auto` | `auto` 或 `zh`、`en`、`ja`、`ko` 等语言码 |
 | `translate_mode` | `false` | 开启后执行翻译而非 cleanup |
 | `target_language` | 无 | 翻译开启时必填，不能为 `auto` |
-| `cleanup.level` | `light` | `off`、`light`、`standard` |
+| `cleanup.level` | `light` | `off`、`light`、`standard`；未知值回退到 `light` |
 | `cleanup.text_emotion` | `false` | 调用 AmphionSPEC `sec`；refine 可按文本语义、交际意图和语音情感补充最多一个匹配 emoji，但不能删除或替换原标点 |
 | `hotwords.builtin` | `[]` | 最多一个：`finance`、`education`、`internet` |
-| `hotwords.custom` | `[]` | 最多取前 100 个自定义术语 |
+| `hotwords.custom` | `[]` | 最多取前 100 个自定义术语；去重并忽略空值，每项不超过 64 字符 |
 
 Qwen3-ASR 本身不接热词。`cleanup.level` 非 `off` 时，热词作为 refine LLM 的
 glossary，用于术语纠错；`off` 不承诺热词生效。
@@ -73,10 +73,11 @@ glossary，用于术语纠错；`off` 不承诺热词生效。
 当前只支持 `final=true`。
 
 服务端在录音期间持续执行 VAD。每个 VAD 句段 final 会立即排队做 Qwen3-ASR，
-然后在后台异步执行情感与 refine/翻译；音频接收不会等待后处理完成。客户端因此可在
-发送最终 commit 之前收到带 `segment_index` 的 `emotion.bucket` 和
-`postprocess.delta`。最终 commit 只负责 flush 尾段、等待已提交任务 drain，并发送
-会话级 `transcription.done`。
+然后在后台异步执行情感和 cleanup 预览；音频接收不会等待后处理完成。客户端因此可在
+发送最终 commit 之前收到 `emotion.bucket` 和带 `segment_index` 的
+`postprocess.delta`。提交最终 commit 后，服务端还会对完整会话文本执行一次权威
+cleanup 或翻译，再发送 `transcription.done`。翻译模式不发送逐句翻译预览，避免
+逐句翻译破坏上下文。
 
 ## 服务端事件
 
@@ -89,7 +90,7 @@ glossary，用于术语纠错；`off` 不承诺热词生效。
 情感增强开启时返回（对外 mode 只有 `ser` / `sec`，本接口使用 `sec`）：
 
 ```json
-{"type":"emotion.bucket","segment_index":0,"emotion":{"mode":"sec","label":"happy","text":"语气轻快"}}
+{"type":"emotion.bucket","bucket_id":0,"segment_range":{"start":0,"end":0},"duration_seconds":2.4,"emotion":{"mode":"sec","label":"happy","text":"语气轻快"}}
 ```
 
 refine 或翻译结果：
@@ -101,10 +102,10 @@ refine 或翻译结果：
 cleanup 输出会经过保守 guardrail：检查与原文的相似度、长度、数字、英文缩写及已出现
 的 glossary 术语。情感增强使用 few-shot 示例引导 refine 综合文本语义、交际意图和
 语音情感，在句末添加最多一个自然匹配的 emoji；中性或信号不明确时不添加。它允许新增标点和 emoji，但会额外验证原文标点按原
-顺序完整保留。输出疑似改写、删除/替换原标点或丢失关键信息时，`text` 回退为原始句段，
-`guardrail_status` 为 `rejected:<reason>`，会话最终 `cleanup_status` 为
-`degraded_raw_only`。翻译模式不使用同语种 cleanup guardrail，状态为
-`not_applicable`。
+顺序完整保留。逐段预览疑似改写、删除/替换原标点或丢失关键信息时，`text` 回退为
+原始句段，`guardrail_status` 为 `rejected:<reason>`。最终整段 cleanup 单独执行并
+再次经过 guardrail；只有这个权威结果失败时，会话 `cleanup_status` 才是
+`degraded_raw_only`。翻译模式不使用同语种 cleanup guardrail。
 
 最终结果：
 
@@ -116,12 +117,17 @@ cleanup 输出会经过保守 guardrail：检查与原文的相似度、长度�
   "cleaned_text": "今天天气。",
   "usage": {"type": "duration", "seconds": 4.2},
   "language": "zh",
+  "builtin_hotword_lists": [],
+  "custom_hotword_count": 0,
+  "postprocess_mode": "cleanup",
+  "cleanup_level": "light",
   "cleanup_status": "completed"
 }
 ```
 
-翻译模式返回 `translated_text` / `translation_status`。refine 失败时仍返回原始
-`text`，状态为 `degraded_raw_only`。
+翻译模式返回 `translate_mode: true`、`target_language`、`translated_text` 和
+`translation_status`。启用情感时还返回 `emotion_bucket_count`。refine 失败时仍返回
+原始 `text`，状态为 `degraded_raw_only`。
 
 错误统一为 JSON：
 

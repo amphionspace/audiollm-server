@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audiollm-server
+  namespace: audiollm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: audiollm-server
+  template:
+    metadata:
+      labels:
+        app: audiollm-server
+    spec:
+      containers:
+        - name: gateway
+          image: registry.example.com/audiollm/server:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CONFIG_PATH
+              value: /etc/audiollm/config.yaml
+          envFrom:
+            - secretRef:
+                name: audiollm-refine
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/audiollm
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: audiollm-qwen-only-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: audiollm-server
+  namespace: audiollm
+spec:
+  selector:
+    app: audiollm-server
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

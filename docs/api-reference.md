@@ -61,8 +61,9 @@ curl -fsS http://172.16.0.3:8082/readyz
 `/asr/v1/clean-stream` 使用独立 JSON/base64 协议，不采用下文通用任务型 WS 的
 二进制 `start`/`stop` 流程。它不连接 Gateway，不要求客户端 API Key，只使用本机
 Qwen3-ASR-1.7B，且不使用 k2 或副模型。录音期间每个 VAD final 都会异步启动
-情感与 refine/翻译并下发带 `segment_index` 的结果，最终 commit 只负责 flush 和
-drain。完整协议见
+情感与 cleanup 预览并下发结果；最终 commit 会在 flush 和 drain 后，对完整会话文本
+执行一次权威 cleanup 或翻译。协议不包含 `hotword_pool_id`，只支持当前请求携带的
+内置词表和自定义热词。完整协议见
 [增强语音识别 WebSocket 协议](protocols/clean-stream-protocol.md)。
 
 公开情感协议统一只使用 `ser` / `sec`：`ser` 返回分类标签，`sec` 返回自由文本情感

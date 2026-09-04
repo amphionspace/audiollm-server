@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,51 @@ if str(ROOT) not in sys.path:
 
 import backend.asr.client as client_mod  # noqa: E402
 from backend.config import Config  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_qwen_primary_uses_transcription_api_and_forwards_language(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"text": "language Chinese<asr_text>测试文本", "language": "Chinese"}
+
+    class FakeClient:
+        async def post(self, url, **kwargs):
+            captured["url"] = url
+            captured.update(kwargs)
+            return FakeResponse()
+
+    monkeypatch.setattr(client_mod, "get_client", lambda: FakeClient())
+
+    result = await client_mod.query_audio_model(
+        base64.b64encode(b"wav-bytes").decode("ascii"),
+        src_lang="Chinese",
+        hotwords=["术语"],
+        runtime_config=Config(
+            vllm_base_url="http://qwen:8000",
+            vllm_model_name="Qwen/Qwen3-ASR-1.7B",
+            vllm_prompt_template="qwen3_asr",
+            enable_hotword_recall=False,
+            enable_secondary_asr=False,
+        ),
+    )
+
+    assert captured["url"] == "http://qwen:8000/v1/audio/transcriptions"
+    assert captured["data"] == {
+        "model": "Qwen/Qwen3-ASR-1.7B",
+        "language": "zh",
+    }
+    assert captured["files"] == {
+        "file": ("audio.wav", b"wav-bytes", "audio/wav")
+    }
+    assert result["transcription"] == "测试文本"
+    assert result["detected_language"] == "Chinese"
+    assert result["reported_hotwords"] == []
 
 
 def test_merge_recalled_and_custom_hotwords_prefers_and_limits_custom():

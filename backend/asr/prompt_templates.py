@@ -122,9 +122,37 @@ def _amphion_asr_1_7b(
     ]
 
 
+def _qwen3_asr(
+    target_wav_base64: str,
+    *,
+    hotwords: list[str] | None = None,
+    enrollment_wav_base64: str | None = None,
+    enrollment_audio_embeds_b64: str | None = None,
+    enrollment_audio_embeds_uuid: str | None = None,
+    audio_embeds_b64: str | None = None,
+    audio_embeds_uuid: str | None = None,
+) -> list[dict]:
+    """Official Qwen3-ASR format: one audio-only user turn.
+
+    Qwen3-ASR does not support prompt hotwords, target-speaker enrollment, or
+    Amphion's encoder-embedding bypass. Those values are intentionally ignored;
+    hotword correction for the Qwen-only deployment happens after recognition.
+    """
+    _ = (
+        hotwords,
+        enrollment_wav_base64,
+        enrollment_audio_embeds_b64,
+        enrollment_audio_embeds_uuid,
+        audio_embeds_b64,
+        audio_embeds_uuid,
+    )
+    return [{"role": "user", "content": [audio_item(target_wav_base64)]}]
+
+
 PRIMARY_PROMPT_BUILDERS = {
     "amphion_asr": _amphion_asr,
     "amphion_asr_1.7b": _amphion_asr_1_7b,
+    "qwen3_asr": _qwen3_asr,
 }
 
 if set(PRIMARY_PROMPT_BUILDERS) != VALID_PRIMARY_PROMPT_TEMPLATES:

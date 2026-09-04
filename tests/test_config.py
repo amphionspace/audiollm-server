@@ -225,6 +225,27 @@ def test_shipped_config_projects_rest_bindings() -> None:
     assert cfg.http_max_connections == 32
 
 
+def test_qwen_only_k8s_profile_excludes_secondary_k2_and_speaker_models() -> None:
+    profile = ROOT / "deploy" / "k8s" / "qwen-only" / "config.yaml"
+    parsed = load_parsed(profile)
+    cfg = parsed.default_config
+
+    assert cfg.vllm_model_name == "Qwen/Qwen3-ASR-1.7B"
+    assert cfg.vllm_prompt_template == "qwen3_asr"
+    assert cfg.enable_primary_asr is True
+    assert cfg.enable_secondary_asr is False
+    assert cfg.enable_dual_asr_fusion is False
+    assert cfg.k2_enabled is False
+    assert cfg.diarization_enabled is False
+    assert cfg.enable_role_separation is False
+    assert cfg.emotion_vllm_model_name == "AmphionSPEC"
+    assert cfg.enable_hotword_recall is False
+    assert {endpoint.path for endpoint in parsed.endpoints} == {
+        "/transcribe-streaming",
+        "/emotion-segmented-streaming",
+    }
+
+
 # --------------------------------------------------------------------------- #
 # endpoint parsing + validation
 # --------------------------------------------------------------------------- #

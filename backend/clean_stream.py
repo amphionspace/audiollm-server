@@ -32,6 +32,7 @@ router = APIRouter()
 SAMPLE_RATE = 16_000
 BYTES_PER_SECOND = SAMPLE_RATE * 2
 _ASCII_TOKEN = re.compile(r"\b[A-Z][A-Z0-9-]+\b")
+_LANGUAGE_TAG = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 
 BUILTIN_HOTWORDS: dict[str, list[str]] = {
     "finance": ["AUM", "ETF", "IPO", "净值", "市盈率"],
@@ -71,19 +72,23 @@ def _pcm_to_wav(pcm: bytes) -> bytes:
 
 def parse_options(message: dict[str, Any]) -> SessionOptions:
     language = str(message.get("language") or "auto").strip().lower()
+    if language != "auto" and not _LANGUAGE_TAG.fullmatch(language):
+        raise ValueError("language must be auto or a valid language tag.")
     cleanup = message.get("cleanup") or {}
     hotwords = message.get("hotwords") or {}
     if not isinstance(cleanup, dict) or not isinstance(hotwords, dict):
         raise ValueError("cleanup and hotwords must be objects.")
     level = str(cleanup.get("level") or "light").lower()
     if level not in {"off", "light", "standard"}:
-        raise ValueError("cleanup.level must be off, light, or standard.")
+        level = "light"
     translate = message.get("translate_mode", False)
     if not isinstance(translate, bool):
         raise ValueError("translate_mode must be boolean.")
     target = str(message.get("target_language") or "").strip().lower() or None
     if translate and (not target or target == "auto"):
         raise ValueError("target_language is required when translate_mode=true.")
+    if target and not _LANGUAGE_TAG.fullmatch(target):
+        raise ValueError("target_language must be a valid language tag.")
     builtin = hotwords.get("builtin") or []
     custom = hotwords.get("custom") or []
     if not isinstance(builtin, list) or not isinstance(custom, list):
@@ -94,6 +99,9 @@ def parse_options(message: dict[str, Any]) -> SessionOptions:
     text_emotion = cleanup.get("text_emotion", False)
     if not isinstance(text_emotion, bool):
         raise ValueError("cleanup.text_emotion must be boolean.")
+    custom = list(dict.fromkeys(str(item).strip() for item in custom if str(item).strip()))
+    if any(len(item) > 64 for item in custom):
+        raise ValueError("each hotwords.custom item must be at most 64 characters.")
     return SessionOptions(
         language=language,
         cleanup_level=level,
@@ -101,9 +109,7 @@ def parse_options(message: dict[str, Any]) -> SessionOptions:
         translate_mode=translate,
         target_language=target,
         builtin=builtin,
-        custom=list(
-            dict.fromkeys(str(item).strip() for item in custom if str(item).strip())
-        )[:100],
+        custom=custom[:100],
     )
 
 
@@ -400,7 +406,7 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
     postprocess_tasks: list[asyncio.Task[None]] = []
     send_lock = asyncio.Lock()
     raw_segments: list[str] = []
-    processed_segments: dict[int, str] = {}
+    segment_emotions: dict[int, dict[str, Any]] = {}
     postprocess_failed = False
     emitted_text = ""
     total_audio_bytes = 0
@@ -414,47 +420,48 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
         await send({"type": "error", "session_id": session_id, "code": code, "message": message})
 
     async def postprocess_segment(index: int, text: str, pcm: bytes) -> None:
-        nonlocal postprocess_failed
         assert options is not None
         emotion: dict[str, Any] | None = None
         try:
             if options.text_emotion:
                 emotion = await infer_emotion(pcm, options)
-                await send({"type": "emotion.bucket", "segment_index": index, "emotion": emotion})
-            if options.translate_mode or options.cleanup_level != "off":
+                segment_emotions[index] = emotion
+                await send(
+                    {
+                        "type": "emotion.bucket",
+                        "bucket_id": index,
+                        "segment_range": {"start": index, "end": index},
+                        "duration_seconds": round(len(pcm) / BYTES_PER_SECOND, 3),
+                        "emotion": emotion,
+                    }
+                )
+            # Translation is authoritative only at session completion. Cleanup may
+            # emit a per-segment asynchronous preview before the final full pass.
+            if not options.translate_mode and options.cleanup_level != "off":
                 processed = await refine_text(text, options, emotion)
-                guardrail_status = "not_applicable"
-                if not options.translate_mode:
-                    accepted, reason = evaluate_cleanup_result(
-                        text,
-                        processed,
-                        options.cleanup_level,
-                        options.glossary,
-                        preserve_punctuation=bool(emotion),
+                accepted, reason = evaluate_cleanup_result(
+                    text,
+                    processed,
+                    options.cleanup_level,
+                    options.glossary,
+                    preserve_punctuation=bool(emotion),
+                )
+                if not accepted:
+                    logger.warning(
+                        "clean-stream segment %d cleanup preview rejected: %s", index, reason
                     )
-                    if not accepted:
-                        logger.warning(
-                            "clean-stream segment %d cleanup rejected: %s", index, reason
-                        )
-                        postprocess_failed = True
-                        processed = text
-                        guardrail_status = f"rejected:{reason}"
-                    else:
-                        guardrail_status = "accepted"
-                processed_segments[index] = processed
+                    processed = text
                 await send(
                     {
                         "type": "postprocess.delta",
-                        "postprocess_mode": "translation" if options.translate_mode else "cleanup",
+                        "postprocess_mode": "cleanup",
                         "delta": processed,
                         "text": processed,
                         "segment_index": index,
-                        "guardrail_status": guardrail_status,
+                        "guardrail_status": "accepted" if accepted else f"rejected:{reason}",
                     }
                 )
         except Exception as exc:
-            postprocess_failed = True
-            processed_segments[index] = text
             logger.exception("clean-stream segment %d postprocess failed: %s", index, exc)
 
     async def process_events() -> None:
@@ -532,25 +539,25 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                 stream = VadSegmentedStream(enable_partial=True)
                 stream.configure(load_config())
                 worker = asyncio.create_task(process_events())
-                await websocket.send_json(
-                    {
-                        "type": "session.updated",
-                        "session": {"id": session_id},
-                        "language": options.language,
-                        "cleanup": {
-                            "level": options.cleanup_level,
-                            "text_emotion": options.text_emotion,
-                        },
-                        "translate_mode": options.translate_mode,
-                        "postprocess_mode": "translation" if options.translate_mode else "cleanup",
-                        "target_language": options.target_language,
-                        "hotwords": {
-                            "builtin": options.builtin,
-                            "custom_count": len(options.custom),
-                        },
-                        "fallback_active": False,
-                    }
-                )
+                updated: dict[str, Any] = {
+                    "type": "session.updated",
+                    "session": {"id": session_id},
+                    "language": options.language,
+                    "cleanup": {
+                        "level": options.cleanup_level,
+                        "text_emotion": options.text_emotion,
+                    },
+                    "translate_mode": options.translate_mode,
+                    "postprocess_mode": "translation" if options.translate_mode else "cleanup",
+                    "hotwords": {
+                        "builtin": options.builtin,
+                        "custom_count": len(options.custom),
+                    },
+                    "fallback_active": False,
+                }
+                if options.translate_mode:
+                    updated["target_language"] = options.target_language
+                await websocket.send_json(updated)
                 continue
             if options is None:
                 await send_error("invalid_state", "Send session.update before streaming audio.")
@@ -589,6 +596,40 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                 if postprocess_tasks:
                     await asyncio.gather(*postprocess_tasks)
                 final_text = _join_segments(raw_segments)
+                final_processed: str | None = None
+                final_status = "completed"
+                if options.translate_mode or options.cleanup_level != "off":
+                    emotion_context: dict[str, Any] | None = None
+                    ordered_emotions = [
+                        segment_emotions[index] for index in sorted(segment_emotions)
+                    ]
+                    if ordered_emotions:
+                        emotion_context = {
+                            "mode": "sec",
+                            "label": "; ".join(
+                                str(item.get("label") or "") for item in ordered_emotions
+                            ).strip("; "),
+                            "text": "\n".join(
+                                str(item.get("text") or "") for item in ordered_emotions
+                            ).strip(),
+                        }
+                    try:
+                        final_processed = await refine_text(final_text, options, emotion_context)
+                        if not options.translate_mode:
+                            accepted, reason = evaluate_cleanup_result(
+                                final_text,
+                                final_processed,
+                                options.cleanup_level,
+                                options.glossary,
+                                preserve_punctuation=bool(emotion_context),
+                            )
+                            if not accepted:
+                                raise ValueError(f"cleanup rejected: {reason}")
+                    except Exception as exc:
+                        postprocess_failed = True
+                        final_processed = final_text
+                        final_status = "degraded_raw_only"
+                        logger.warning("clean-stream final postprocess failed: %s", exc)
                 result: dict[str, Any] = {
                     "type": "transcription.done",
                     "session_id": session_id,
@@ -600,23 +641,22 @@ async def clean_stream_ws(websocket: WebSocket) -> None:
                     "language": options.language,
                     "builtin_hotword_lists": options.builtin,
                     "custom_hotword_count": len(options.custom),
-                    "translate_mode": options.translate_mode,
                     "postprocess_mode": "translation" if options.translate_mode else "cleanup",
-                    "cleanup_level": options.cleanup_level,
-                    "asr_fallback_used": False,
                 }
+                if options.text_emotion:
+                    result["emotion_bucket_count"] = len(segment_emotions)
                 if options.translate_mode or options.cleanup_level != "off":
                     status_key = (
                         "translation_status" if options.translate_mode else "cleanup_status"
                     )
                     text_key = "translated_text" if options.translate_mode else "cleaned_text"
-                    result[text_key] = _join_segments(
-                        [
-                            processed_segments.get(index, text)
-                            for index, text in enumerate(raw_segments)
-                        ]
-                    )
-                    result[status_key] = "degraded_raw_only" if postprocess_failed else "completed"
+                    result[text_key] = final_processed
+                    result[status_key] = "degraded_raw_only" if postprocess_failed else final_status
+                if options.translate_mode:
+                    result["translate_mode"] = True
+                    result["target_language"] = options.target_language
+                else:
+                    result["cleanup_level"] = options.cleanup_level
                 await websocket.send_json(result)
                 return
             await send_error("invalid_request", "Unknown message type.")

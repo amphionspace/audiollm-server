@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen3-asr
+  namespace: audiollm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen3-asr
+  template:
+    metadata:
+      labels:
+        app: qwen3-asr
+    spec:
+      containers:
+        - name: qwen3-asr
+          image: qwenllm/qwen3-asr:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - qwen-asr-serve
+          args:
+            - Qwen/Qwen3-ASR-1.7B
+            - --served-model-name
+            - Qwen/Qwen3-ASR-1.7B
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+            - --gpu-memory-utilization
+            - "0.70"
+            - --max-model-len
+            - "32768"
+          ports:
+            - name: http
+              containerPort: 8000
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: 32Gi
+              nvidia.com/gpu: "1"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 120
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3-asr
+  namespace: audiollm
+spec:
+  selector:
+    app: qwen3-asr
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

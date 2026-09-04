@@ -406,7 +406,11 @@ print(r.json())
 
 ## ASR Prompt 模板
 
-后端按主模型 upstream 的 `prompt_template` 选择 prompt 结构。热词偏置来自当前 `hotword_pool_id` 的 RAG-ASR 热词池召回 top-K 结果，以及优先进入 prompt 的少量请求临时 `hotwords`（默认最多 8 个，去重后不写入热词池）；与临时热词精确重复或整词同音（忽略声调）的召回词会被过滤。模板选择是服务端模型配置，不可客户端覆写。两套模板都支持普通 ASR、召回热词、TS-ASR、TS-ASR + 召回热词。
+后端按主模型 upstream 的 `prompt_template` 选择请求结构。热词来源包括当前 `hotword_pool_id` 的 RAG-ASR top-K 召回结果，以及少量请求临时 `hotwords`（默认最多 8 个，去重后不写入热词池）；与临时热词精确重复或整词同音（忽略声调）的召回词会被过滤。模板选择是服务端模型配置，不可客户端覆写。Amphion 模板把热词直接注入模型 prompt；`qwen3_asr` 模板使用官方 transcription API，模型本身不接热词，服务端在 final 发出前调用配置的 Refine LLM 做保守术语纠正。Refine 失败时保留原始 ASR final。
+
+### `qwen3_asr`（官方 Qwen3-ASR）
+
+请求发送到 `/v1/audio/transcriptions`，支持透传指定语种或让模型自动识别语种。该模板只接受单段目标音频，不支持目标说话人、双音频 prompt 或 encoder embeds。使用该模板的精简部署应关闭 secondary、k2、diarization 和 encoder bypass；部署示例见 [`deploy/k8s/qwen-only/README.md`](../../deploy/k8s/qwen-only/README.md)。
 
 ### `amphion_asr`（Amphion 4B）
 

@@ -138,12 +138,32 @@ def test_translation_emotion_prompt_uses_target_language_few_shots() -> None:
     assert "append at most one" in messages[0]["content"]
     assert messages[1]["content"].startswith('{"asr_text": "Keep going!"')
     assert messages[2]["content"] == "继续加油！💪"
-    assert messages[-1]["content"].startswith(
-        '{"asr_text": "I am absolutely furious!"'
+    assert messages[-1]["content"].startswith('{"asr_text": "I am absolutely furious!"')
+
+
+def test_clean_stream_options_match_public_contract() -> None:
+    options = clean_stream.parse_options(
+        {
+            "language": "zh-cn",
+            "cleanup": {"level": "unknown"},
+            "hotwords": {"custom": ["Amphion", "", "Amphion"]},
+        }
     )
+    assert options.language == "zh-cn"
+    assert options.cleanup_level == "light"
+    assert options.custom == ["Amphion"]
+
+    try:
+        clean_stream.parse_options({"hotwords": {"custom": ["x" * 65]}})
+    except ValueError as exc:
+        assert str(exc) == "each hotwords.custom item must be at most 64 characters."
+    else:  # pragma: no cover - documents the public rejection contract
+        raise AssertionError("overlong custom hotword was accepted")
 
 
 def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
+    refine_calls = []
+
     class FakeSegmentingStream:
         def __init__(self, *, enable_partial):
             assert enable_partial is True
@@ -167,6 +187,7 @@ def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
         return {"mode": "sec", "label": "happy", "text": "语气轻快"}
 
     async def fake_refine(text, options, emotion):
+        refine_calls.append(text)
         assert options.glossary
         assert emotion["mode"] == "sec"
         return "欢迎使用 Amphion。"
@@ -194,6 +215,9 @@ def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
             assert ws.receive_json()["type"] == "transcription.delta"
             emotion = ws.receive_json()
             assert emotion["type"] == "emotion.bucket"
+            assert emotion["bucket_id"] == 0
+            assert emotion["segment_range"] == {"start": 0, "end": 0}
+            assert emotion["duration_seconds"] == 2.0
             assert emotion["emotion"]["mode"] == "sec"
             assert ws.receive_json()["type"] == "postprocess.delta"
             # Segment final/refine arrives while the session is still recording.
@@ -203,6 +227,68 @@ def test_clean_stream_full_enhancement_flow(monkeypatch) -> None:
             assert done["text"] == "欢迎使用 Amphion"
             assert done["cleaned_text"] == "欢迎使用 Amphion。"
             assert done["cleanup_status"] == "completed"
+            assert done["emotion_bucket_count"] == 1
+            assert done["cleanup_level"] == "light"
+            assert "translate_mode" not in done
+    assert refine_calls == ["欢迎使用 Amphion", "欢迎使用 Amphion"]
+
+
+def test_clean_stream_translates_full_session_once(monkeypatch) -> None:
+    class FakeSegmentingStream:
+        def __init__(self, *, enable_partial):
+            assert enable_partial is True
+
+        def configure(self, cfg):
+            return None
+
+        def feed(self, pcm):
+            samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+            return [clean_stream.SegmentReady(pcm=samples)]
+
+        def flush(self, *, force):
+            return []
+
+    transcripts = iter(["hello", "world"])
+    refine_calls = []
+
+    async def fake_asr(pcm, options):
+        return next(transcripts)
+
+    async def fake_refine(text, options, emotion):
+        refine_calls.append(text)
+        assert options.target_language == "zh"
+        assert emotion is None
+        return "你好，世界"
+
+    monkeypatch.setattr(clean_stream, "transcribe_qwen", fake_asr)
+    monkeypatch.setattr(clean_stream, "refine_text", fake_refine)
+    monkeypatch.setattr(clean_stream, "VadSegmentedStream", FakeSegmentingStream)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/asr/v1/clean-stream") as ws:
+            ws.receive_json()
+            ws.send_json(
+                {
+                    "type": "session.update",
+                    "language": "en",
+                    "translate_mode": True,
+                    "target_language": "zh",
+                }
+            )
+            updated = ws.receive_json()
+            assert updated["target_language"] == "zh"
+            for _ in range(2):
+                ws.send_json({"type": "input_audio_buffer.append", "audio": _tone(0.5)})
+                assert ws.receive_json()["type"] == "transcription.delta"
+            ws.send_json({"type": "input_audio_buffer.commit", "final": True})
+            done = ws.receive_json()
+
+    assert refine_calls == ["hello world"]
+    assert done["text"] == "hello world"
+    assert done["translated_text"] == "你好，世界"
+    assert done["translate_mode"] is True
+    assert done["target_language"] == "zh"
+    assert "cleanup_level" not in done
 
 
 def test_clean_stream_is_auth_free_and_rejects_silence() -> None:

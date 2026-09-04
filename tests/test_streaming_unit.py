@@ -1157,6 +1157,60 @@ async def test_asr_final_preserves_segment_id(monkeypatch):
     assert isinstance(sent[0]["audio_b64"], str) and sent[0]["audio_b64"]
 
 
+@pytest.mark.asyncio
+async def test_qwen_primary_refines_hotwords_before_streaming_final(monkeypatch):
+    async def fake_query_audio_model(*_args, **_kwargs):
+        return {
+            "transcription": "欢迎使用安费恩",
+            "detected_language": "zh",
+            "effective_hotwords": ["Amphion"],
+        }
+
+    captured: dict[str, object] = {}
+
+    async def fake_refine(text, *, language, hotwords):
+        captured.update(text=text, language=language, hotwords=hotwords)
+        return "欢迎使用 Amphion"
+
+    monkeypatch.setattr(asr_task_mod, "query_audio_model", fake_query_audio_model)
+    monkeypatch.setattr(AsrTaskEngine, "_refine_qwen_hotwords", staticmethod(fake_refine))
+
+    sent: list[dict] = []
+
+    async def _send_json(payload):
+        sent.append(payload)
+        return True
+
+    cfg = load_config().override(
+        vllm_prompt_template="qwen3_asr",
+        enable_primary_asr=True,
+        enable_secondary_asr=False,
+        enable_dual_asr_fusion=False,
+        asr_segment_voice_gate_enabled=False,
+        asr_segment_voice_filter_enabled=False,
+    )
+    ctx = SessionContext(
+        cfg=cfg,
+        language="zh",
+        src_lang="Chinese",
+        hotwords=["Amphion"],
+        send_json=_send_json,
+    )
+
+    ok = await AsrTaskEngine().handle_segment(
+        SegmentReady(pcm=np.ones(1600, dtype=np.float32) * 0.05, id="qwen-1"),
+        ctx,
+    )
+
+    assert ok is True
+    assert captured == {
+        "text": "欢迎使用安费恩",
+        "language": "zh",
+        "hotwords": ["Amphion"],
+    }
+    assert sent[0]["text"] == "欢迎使用 Amphion"
+
+
 @pytest.mark.parametrize("segment_id", ["vad-7", "k2-7"])
 @pytest.mark.asyncio
 async def test_asr_diarization_splits_vad_and_k2_segments_in_order(monkeypatch, segment_id):

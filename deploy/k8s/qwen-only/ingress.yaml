@@ -1,0 +1,68 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: audiollm-public
+  namespace: audiollm
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 512m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - audiollm.example.com
+      secretName: audiollm-tls
+  rules:
+    - host: audiollm.example.com
+      http:
+        paths:
+          - path: /asr/v1/clean-stream
+            pathType: Exact
+            backend:
+              service:
+                name: audiollm-server
+                port:
+                  name: http
+          - path: /transcribe-streaming
+            pathType: Exact
+            backend:
+              service:
+                name: audiollm-server
+                port:
+                  name: http
+          - path: /emotion-segmented-streaming
+            pathType: Exact
+            backend:
+              service:
+                name: audiollm-server
+                port:
+                  name: http
+          - path: /api/asr/transcriptions
+            pathType: Prefix
+            backend:
+              service:
+                name: audiollm-server
+                port:
+                  name: http
+          - path: /api/emotion/jobs
+            pathType: Prefix
+            backend:
+              service:
+                name: audiollm-server
+                port:
+                  name: http
+          - path: /healthz
+            pathType: Exact
+            backend:
+              service:
+                name: audiollm-server
+                port:
+                  name: http
+          - path: /readyz
+            pathType: Exact
+            backend:
+              service:
+                name: audiollm-server
+                port:
+                  name: http

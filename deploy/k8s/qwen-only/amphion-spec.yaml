@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: amphion-spec
+  namespace: audiollm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: amphion-spec
+  template:
+    metadata:
+      labels:
+        app: amphion-spec
+    spec:
+      initContainers:
+        - name: fetch-model
+          image: python:3.10.15-slim-bookworm
+          command:
+            - python
+            - /scripts/fetch_model.py
+          envFrom:
+            - secretRef:
+                name: audiollm-model-source
+          volumeMounts:
+            - name: model
+              mountPath: /models/amphion-spec
+            - name: fetch-script
+              mountPath: /scripts
+      containers:
+        - name: amphion-spec
+          image: registry.example.com/audiollm/amphion-spec-vllm:0.1.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - /models/amphion-spec
+            - --served-model-name
+            - AmphionSPEC
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+            - --trust-remote-code
+            - --limit-mm-per-prompt
+            - '{"audio":2}'
+            - --gpu-memory-utilization
+            - "0.70"
+            - --max-model-len
+            - "16384"
+          ports:
+            - name: http
+              containerPort: 8000
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: 32Gi
+              nvidia.com/gpu: "1"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 120
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          volumeMounts:
+            - name: model
+              mountPath: /models/amphion-spec
+              readOnly: true
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: model
+          persistentVolumeClaim:
+            claimName: amphion-spec-model
+        - name: fetch-script
+          configMap:
+            name: amphion-spec-fetch-script
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: amphion-spec
+  namespace: audiollm
+spec:
+  selector:
+    app: amphion-spec
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

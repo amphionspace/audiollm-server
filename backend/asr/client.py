@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import logging
@@ -15,6 +16,13 @@ from .prompt_templates import build_primary_messages as _build_primary_messages
 from .recall import recall_audio
 
 logger = logging.getLogger(__name__)
+
+_QWEN_LANGUAGE_CODES = {
+    "chinese": "zh",
+    "english": "en",
+    "indonesian": "id",
+    "thai": "th",
+}
 
 _CHINESE_WORD_RE = re.compile(r"^[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+$")
 
@@ -347,11 +355,49 @@ async def _post_chat(
     return parse_model_output(raw_text)
 
 
+async def _post_transcription(
+    audio_wav_base64: str,
+    *,
+    language: str,
+    base_url: str,
+    model_name: str,
+    timeout: float,
+) -> ASRResult:
+    """Call Qwen3-ASR's OpenAI-compatible transcription endpoint."""
+    data = {"model": model_name}
+    normalized_language = str(language or "").strip()
+    normalized_language = _QWEN_LANGUAGE_CODES.get(
+        normalized_language.casefold(), normalized_language.lower()
+    )
+    if normalized_language.lower() not in {"", "n/a", "na", "auto", "unknown"}:
+        data["language"] = normalized_language
+    response = await get_client().post(
+        f"{base_url.rstrip('/')}/v1/audio/transcriptions",
+        data=data,
+        files={
+            "file": (
+                "audio.wav",
+                base64.b64decode(audio_wav_base64, validate=False),
+                "audio/wav",
+            )
+        },
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    raw_text = str(payload.get("text") or "")
+    result = parse_model_output(raw_text)
+    detected_language = payload.get("language")
+    if detected_language:
+        result["detected_language"] = str(detected_language)
+    return result
+
+
 async def query_audio_model(
     audio_wav_base64: str,
     hotwords: list[str] | None = None,
     *,
-    src_lang: str = "N/A",  # accepted for callsite compatibility, ignored
+    src_lang: str = "N/A",
     audio_pcm: np.ndarray | None = None,
     audio_sample_rate: int = SAMPLE_RATE,
     enrollment_wav_base64: str | None = None,
@@ -368,12 +414,10 @@ async def query_audio_model(
 ) -> ASRResult:
     """Primary ASR call.
 
-    ``src_lang`` is intentionally not forwarded into the prompt. The
-    primary model's prompt format is selected by ``prompt_template`` (or
-    the configured default) so Amphion 4B and 1.7B can coexist without
-    duplicating call sites.
+    The primary model's request format is selected by ``prompt_template``.
+    Amphion models use chat completions; official Qwen3-ASR uses the OpenAI
+    transcription endpoint so a requested source language can be forwarded.
     """
-    _ = src_lang  # noqa: F841 — preserved for compatibility, see docstring
     cfg = runtime_config or default_config
     template = prompt_template or cfg.vllm_prompt_template
     resolved_hotword_pool_id = hotword_pool_id
@@ -529,12 +573,21 @@ async def query_audio_model(
     request_model_name = model_name or cfg.vllm_model_name
     request_timeout = timeout if timeout is not None else cfg.asr_request_timeout
     try:
-        result = await _post_chat(
-            messages,
-            base_url=request_base_url,
-            model_name=request_model_name,
-            timeout=request_timeout,
-        )
+        if template == "qwen3_asr":
+            result = await _post_transcription(
+                audio_wav_base64,
+                language=src_lang,
+                base_url=request_base_url,
+                model_name=request_model_name,
+                timeout=request_timeout,
+            )
+        else:
+            result = await _post_chat(
+                messages,
+                base_url=request_base_url,
+                model_name=request_model_name,
+                timeout=request_timeout,
+            )
     except Exception:
         if not audio_embeds_b64:
             raise
@@ -555,7 +608,7 @@ async def query_audio_model(
             model_name=request_model_name,
             timeout=request_timeout,
         )
-    if effective_hotwords:
+    if effective_hotwords and template != "qwen3_asr":
         result["reported_hotwords"] = effective_hotwords
     if is_final_path:
         result["effective_hotwords"] = list(recalled_hotwords)

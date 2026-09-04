@@ -160,6 +160,28 @@ def test_amphion_asr_17b_task1_plain_asr():
     ]
 
 
+def test_qwen3_asr_uses_audio_only_and_ignores_unsupported_prompt_features():
+    msgs = build_primary_messages(
+        "TARGET_B64",
+        hotwords=["Amphion"],
+        enrollment_wav_base64="ENROLL_B64",
+        audio_embeds_b64="EMBEDS_B64",
+        audio_embeds_uuid="uuid",
+        template="qwen3_asr",
+    )
+    assert msgs == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "TARGET_B64", "format": "wav"},
+                }
+            ],
+        }
+    ]
+
+
 def test_amphion_asr_17b_task2_asr_hotwords():
     msgs = build_primary_messages(
         "TARGET_B64",

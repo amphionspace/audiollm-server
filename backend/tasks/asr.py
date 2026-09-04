@@ -186,6 +186,12 @@ class AsrTaskEngine(BaseTaskEngine):
             hw_snapshot,
         )
         returned_effective_hotwords = self._rag_recalled_hotwords_for_final(primary_result)
+        if text and cfg.vllm_prompt_template == "qwen3_asr" and effective_hotwords:
+            text = await self._refine_qwen_hotwords(
+                text,
+                language=ctx.language,
+                hotwords=effective_hotwords,
+            )
         hotword_hits = hotword_hits_in_text(effective_hotwords, text)
 
         elapsed = time.monotonic() - t0
@@ -409,6 +415,41 @@ class AsrTaskEngine(BaseTaskEngine):
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _refine_qwen_hotwords(
+        text: str,
+        *,
+        language: str,
+        hotwords: list[str],
+    ) -> str:
+        """Apply requested/recalled hotwords after Qwen3-ASR recognition.
+
+        Qwen3-ASR deliberately has no prompt-hotword support. The public
+        streaming contract still accepts hotwords, so the Qwen-only profile
+        performs a conservative, fail-open correction before emitting final.
+        """
+        from ..clean_stream import SessionOptions, evaluate_cleanup_result, refine_text
+
+        options = SessionOptions(
+            language=language or "auto",
+            cleanup_level="light",
+            custom=list(hotwords),
+        )
+        try:
+            refined = await refine_text(text, options, None)
+            accepted, reason = evaluate_cleanup_result(
+                text,
+                refined,
+                "light",
+                options.glossary,
+            )
+            if accepted:
+                return refined
+            logger.warning("Qwen streaming hotword refinement rejected: %s", reason)
+        except Exception as exc:  # noqa: BLE001 - raw ASR must remain usable
+            logger.warning("Qwen streaming hotword refinement failed: %s", exc)
+        return text
 
     @staticmethod
     def _result_text(result: object) -> str:

@@ -310,7 +310,7 @@ SERVICE=my-demo scripts/restart_service.sh   # 指定其他 systemd 服务名
 |---|---|---|---|
 | `vllm_base_url` | string | `http://localhost:8009` | 主 ASR 模型的服务地址 |
 | `vllm_model_name` | string | `AmphionASR-1.7B` | 主 ASR 模型名称 |
-| `vllm_prompt_template` | string | `amphion_asr_1.7b` | 主 ASR prompt 模板；4.3B 使用 `amphion_asr`，1.7B 使用 `amphion_asr_1.7b`。服务端配置，不可客户端覆写 |
+| `vllm_prompt_template` | string | `amphion_asr_1.7b` | 主 ASR 请求模板；Amphion 4.3B 使用 `amphion_asr`，Amphion 1.7B 使用 `amphion_asr_1.7b`，官方 Qwen3-ASR 使用 `qwen3_asr`。服务端配置，不可客户端覆写 |
 | `astv3_vllm_base_url` | string | `""` | 仅 `/tuling/ast/v3` 端点使用的主模型地址；当前留空，回退全局 `vllm_base_url`（即 `http://localhost:8009`）。服务端配置，不可客户端覆写 |
 | `astv3_vllm_model_name` | string | `""` | 仅 `/tuling/ast/v3` 端点使用的主模型名称；当前留空，回退全局 `vllm_model_name`（即 `AmphionASR-1.7B`）。服务端配置，不可客户端覆写 |
 | `astv3_vllm_prompt_template` | string | `""` | 仅 `/tuling/ast/v3` 端点使用的主模型 prompt 模板；当前留空，回退全局 `vllm_prompt_template`。服务端配置，不可客户端覆写 |

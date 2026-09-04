@@ -19,7 +19,9 @@ _DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config.yaml"
 
 HOP_SIZE = 160  # 10ms at 16kHz, TEN VAD recommended
 SAMPLE_RATE = 16000
-VALID_PRIMARY_PROMPT_TEMPLATES: frozenset[str] = frozenset({"amphion_asr", "amphion_asr_1.7b"})
+VALID_PRIMARY_PROMPT_TEMPLATES: frozenset[str] = frozenset(
+    {"amphion_asr", "amphion_asr_1.7b", "qwen3_asr"}
+)
 
 # ${VAR} 环境变量插值; 未设置 -> 空串(import 期不因缺密钥而崩, 调用时才暴露)。
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
