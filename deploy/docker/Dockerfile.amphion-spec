@@ -1,4 +1,5 @@
-FROM vllm/vllm-openai:v0.18.0
+ARG VLLM_IMAGE=vllm/vllm-openai:v0.18.0
+FROM ${VLLM_IMAGE}
 
 COPY deploy/plugins/amphion_spec_vllm /opt/amphion-spec-vllm
 RUN pip install --no-cache-dir --no-deps --no-build-isolation /opt/amphion-spec-vllm
