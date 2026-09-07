@@ -1583,15 +1583,30 @@ def test_emotion_prompt_constants_match_amphion():
         normalize_mode("???")
 
 
-def test_sec_language_translation_detection():
-    from backend.emotion.client import _needs_sec_language_translation
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "language,summary",
+    [
+        ("zh", "The speaker sounds angry."),
+        ("zh", "说话人感到 distress。"),
+        ("en", "说话人听起来很生气。"),
+    ],
+)
+async def test_sec_returns_model_output_without_refine(monkeypatch, language, summary):
+    from unittest.mock import AsyncMock, Mock
 
-    assert _needs_sec_language_translation("The speaker sounds angry.", "zh") is True
-    assert _needs_sec_language_translation("说话人听起来很生气。", "zh") is False
-    assert _needs_sec_language_translation("说话人感到 distress。", "zh") is True
-    assert _needs_sec_language_translation("说话人听起来很生气。", "en") is True
-    assert _needs_sec_language_translation("The speaker sounds angry.", "en") is False
-    assert _needs_sec_language_translation("The speaker sounds angry.", "auto") is False
+    from backend.emotion.client import query_emotion_model
+
+    response = Mock()
+    response.json.return_value = {"choices": [{"message": {"content": summary}}]}
+    client = Mock()
+    client.post = AsyncMock(return_value=response)
+    monkeypatch.setattr("backend.emotion.client.get_client", lambda: client)
+
+    result = await query_emotion_model("audio", mode="sec", language=language)
+
+    assert result["text"] == summary
+    client.post.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

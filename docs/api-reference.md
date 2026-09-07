@@ -117,9 +117,9 @@ AST v3 角色/声纹路由速览：
 | GET | `/api/emotion/jobs/{job_id}` | 查询情感任务状态与结果 | — |
 | POST | `/api/audio/analyze` | 非实时聚合分析：ASR 原始结果、文本清洗、情感标签和情感描述 | `audio`、`language`、`hotwords`、`enrollment_id` |
 
-情感接口的 `language` 对 `sec` 表示描述文本的输出语言：`zh` 强制简体中文，
-`en` 强制英文；AmphionSPEC 未遵守语言提示时，服务端使用已配置的
-`speech_refine` LLM 翻译兜底。`ser` 固定返回分类标签，不受该字段影响。
+情感接口的 `language` 对 `sec` 表示描述文本的输出语言提示：`zh` 提示使用简体中文，
+`en` 提示使用英文；实际语言由 AmphionSPEC 输出决定，服务端不做额外翻译，
+也不依赖 `speech_refine` 或其 API Key。`ser` 固定返回分类标签，不受该字段影响。
 
 ## WebSocket 调用流程
 

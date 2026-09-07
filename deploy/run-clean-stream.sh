@@ -5,7 +5,7 @@ set -euo pipefail
 # shell config; do not execute unrelated interactive shell setup.
 while IFS= read -r assignment; do
     case "$assignment" in
-        "export ARK_APIKEY="*) eval "$assignment" ;;
+        "export REFINE_API_KEY="*) eval "$assignment" ;;
     esac
 done < /home/ubuntu/.bashrc
 

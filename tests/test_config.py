@@ -402,6 +402,15 @@ def test_resolve_real_tuling_primary_only() -> None:
     assert cfg.enable_dual_asr_fusion is False
 
 
+@pytest.mark.parametrize("config_path", ["config.yaml", "deploy/k8s/qwen-only/config.yaml"])
+def test_refine_uses_shared_api_key(monkeypatch, config_path: str) -> None:
+    monkeypatch.setenv("REFINE_API_KEY", "shared-refine-key")
+    monkeypatch.setenv("ARK_APIKEY", "unused-old-key")
+    parsed = load_parsed(ROOT / config_path)
+    upstream = parsed.upstreams[parsed.services["speech_refine"]]
+    assert upstream.api_key == "shared-refine-key"
+
+
 def test_get_service_upstream() -> None:
     assert get_service_upstream("text_cleanup").name == "dashscope_cleanup"
     assert get_service_upstream("speech_refine").name == "volcano_cleanup"

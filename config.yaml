@@ -43,7 +43,7 @@ upstreams:
   volcano_cleanup:
     base_url: https://ark.cn-beijing.volces.com/api/v3
     model_name: doubao-seed-2-0-lite-260215
-    api_key: ${ARK_APIKEY}
+    api_key: ${REFINE_API_KEY}
     timeout: 30
     max_tokens: 1024
   dashscope_cleanup:
