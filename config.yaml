@@ -25,7 +25,7 @@ upstreams:
     prompt_template: amphion_asr_1.7b
     timeout: 120
   qwen_asr:
-    base_url: http://localhost:8001
+    base_url: http://localhost:8010
     model_name: Qwen/Qwen3-ASR-1.7B
     timeout: 120
   qwen3_clean_asr:
@@ -189,20 +189,20 @@ services:
   recall_management: rag_asr_management
   text_cleanup: dashscope_cleanup
   speech_refine: volcano_cleanup
-  clean_stream_asr: qwen3_clean_asr
+  clean_stream_asr: qwen_asr
 
 # REST/HTTP 路由的上游绑定: upstreams 是所有 REST 接口的共享默认,
 # routes.<name> 是单接口覆写(省略 = 全部跟随共享默认与 defaults 全局开关)。
 rest:
   upstreams:                     # 共享绑定(/api/asr/upload、/api/audio/analyze、情感 jobs)
-    primary: amphion_asr
+    primary: qwen_asr
     secondary: qwen_asr
     emotion: amphion_spec
     emotion_spec: amphion_spec
   routes:
     transcribe:                  # 长音频离线转写 (POST /api/asr/transcriptions) 专属推理配置
       upstreams:
-        primary: amphion_asr     # 转写主模型(换模型改这里, 不影响 upload/analyze)
+        primary: qwen_asr     # 转写主模型(换模型改这里, 不影响 upload/analyze)
         secondary: qwen_asr      # 仅 enable_dual_asr_fusion=true 时参与
       enable_dual_asr_fusion: false  # 转写是否双模型融合。离线无延迟压力, 质量优先可改 true
                                      # (每段 2 个 vLLM 请求, 吞吐约减半, 见 benchmark 文档)
@@ -218,12 +218,12 @@ endpoints:
   - path: /transcribe-streaming
     protocol: native
     task: asr
-    upstreams: { primary: amphion_asr, secondary: qwen_asr }
+    upstreams: { primary: qwen_asr, secondary: qwen_asr }
     client_overridable: true
   - path: /tuling/ast/v3
     protocol: astv3
     task: asr
-    upstreams: { primary: amphion_asr }     # 只声明 primary => primary-only
+    upstreams: { primary: qwen_asr }     # 只声明 primary => primary-only
     lock: { enable_secondary_asr: false }   # 硬锁定: 客户端不可撤销
   - path: /emotion-segmented-streaming
     protocol: native
