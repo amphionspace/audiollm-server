@@ -110,6 +110,25 @@ def test_env_unset_interpolates_empty(tmp_path: Path, monkeypatch: pytest.Monkey
     assert parsed.upstreams["clean"].api_key == ""
 
 
+@pytest.mark.parametrize("process_key", [None, "process-key", ""])
+def test_refine_key_from_project_dotenv(tmp_path, monkeypatch, process_key) -> None:
+    import backend.config as config
+
+    monkeypatch.setattr(config, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("REFINE_API_KEY", process_key or "")
+    if process_key is None:
+        monkeypatch.delenv("REFINE_API_KEY")
+    (tmp_path / ".env").write_text("REFINE_API_KEY=dotenv-key\n", encoding="utf-8")
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    monkeypatch.chdir(other_dir)
+
+    parsed = load_parsed(ROOT / "config.yaml")
+    upstream = get_service_upstream("speech_refine", parsed)
+    assert upstream is not None
+    assert upstream.api_key == ("dotenv-key" if process_key is None else process_key)
+
+
 def test_config_path_env_overrides_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = _write_yaml(tmp_path, _minimal())
     monkeypatch.setenv("CONFIG_PATH", str(path))

@@ -72,6 +72,12 @@ vim config.yaml  # upstreams.hotword_llm
 bash start.sh
 ```
 
+直接通过 `uvicorn` / Python 启动后端时，也会自动读取项目根目录 `.env`。
+使用默认 `config.yaml` 的增强 ASR 文本精修功能时，在该文件中填写
+`REFINE_API_KEY=你的火山方舟真实API密钥`，无需手动 `source .env`。
+已有进程环境变量优先（包括空值）；修改 `.env` 后需重启后端。
+如果之前在 shell 中导出了空的 `REFINE_API_KEY`，先执行 `unset REFINE_API_KEY` 再启动。
+
 浏览器打开 `http://172.16.0.3:8082`（systemd 部署）或 `https://172.16.0.3:8443`（`bash start.sh` 自签 HTTPS）进入实时 ASR Demo，另一个 Demo 入口：
 
 | 页面 | 路径 | 说明 |

@@ -333,8 +333,12 @@ def evaluate_cleanup_result(
 
 async def refine_text(text: str, options: SessionOptions, emotion: dict[str, Any] | None) -> str:
     upstream = get_service_upstream("speech_refine")
-    if upstream is None or not upstream.api_key:
-        raise RuntimeError("text_cleanup upstream is not configured")
+    if upstream is None:
+        raise RuntimeError("speech_refine upstream is not configured: check services.speech_refine")
+    if not upstream.api_key:
+        raise RuntimeError(
+            "speech_refine API key is missing: set REFINE_API_KEY in .env or environment"
+        )
     payload: dict[str, Any] = {
         "model": upstream.model_name,
         "messages": _refine_prompt(text, options, emotion),

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 
 from .recall_user import DEFAULT_HOTWORD_POOL_ID, normalize_hotword_pool_id
 
@@ -888,8 +889,10 @@ def _parse(raw: dict[str, Any]) -> ParsedConfig:
 def load_parsed(path: Path | None = None) -> ParsedConfig:
     """Parse the full config.yaml (registries + global Config).
 
+    Project .env supplies missing environment variables; process values win.
     ``CONFIG_PATH`` env overrides the default path when no explicit path is given.
     """
+    load_dotenv(_PROJECT_ROOT / ".env", override=False)
     if path is None:
         env_path = os.getenv("CONFIG_PATH", "").strip()
         path = Path(env_path) if env_path else _DEFAULT_CONFIG_PATH
