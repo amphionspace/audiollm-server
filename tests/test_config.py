@@ -202,11 +202,11 @@ def test_text_cleanup_bridge_appends_v1(tmp_path: Path) -> None:
 
 def test_shipped_config_projects_rest_bindings() -> None:
     cfg = load_config()  # reads the shipped config.yaml
-    assert cfg.vllm_base_url == "http://localhost:8009"
-    assert cfg.vllm_model_name == "AmphionASR-1.7B"
-    assert cfg.vllm_prompt_template == "amphion_asr_1.7b"
+    assert cfg.vllm_base_url == "http://localhost:8010"
+    assert cfg.vllm_model_name == "Qwen/Qwen3-ASR-1.7B"
+    assert cfg.vllm_prompt_template == "amphion_asr"
     assert cfg.vllm_prompt_template in VALID_PRIMARY_PROMPT_TEMPLATES
-    assert cfg.secondary_vllm_base_url == "http://localhost:8001"
+    assert cfg.secondary_vllm_base_url == "http://localhost:8010"
     assert cfg.emotion_vllm_base_url == "http://localhost:9001"
     assert cfg.emotion_vllm_model_name == "AmphionSPEC"
     assert cfg.emotion_spec_vllm_base_url == "http://localhost:9001"
@@ -415,8 +415,8 @@ def test_resolve_policy_soft_applies(tmp_path: Path) -> None:
 def test_resolve_real_tuling_primary_only() -> None:
     spec = next(e for e in ENDPOINTS if e.path == "/tuling/ast/v3")
     cfg = resolve_endpoint(spec)
-    assert cfg.vllm_base_url == "http://localhost:8009"  # amphion_asr (primary)
-    assert cfg.vllm_prompt_template == "amphion_asr_1.7b"
+    assert cfg.vllm_base_url == "http://localhost:8010"  # qwen_asr (primary)
+    assert cfg.vllm_prompt_template == "amphion_asr"
     assert cfg.enable_secondary_asr is False  # lock + no secondary binding
     assert cfg.enable_dual_asr_fusion is False
 
@@ -435,8 +435,8 @@ def test_get_service_upstream() -> None:
     assert get_service_upstream("speech_refine").name == "volcano_cleanup"
     clean_asr = get_service_upstream("clean_stream_asr")
     assert clean_asr is not None
-    assert clean_asr.name == "qwen3_clean_asr"
-    assert clean_asr.base_url == "http://localhost:8011"
+    assert clean_asr.name == "qwen_asr"
+    assert clean_asr.base_url == "http://localhost:8010"
     assert clean_asr.model_name == "Qwen/Qwen3-ASR-1.7B"
     assert get_service_upstream("hotword").name == "hotword_llm"
     assert get_service_upstream("recall").name == "triton_recall"
