@@ -1,17 +1,17 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: audiollm-server
+  name: audiollm-server-py
   namespace: audiollm
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: audiollm-server
+      app: audiollm-server-py
   template:
     metadata:
       labels:
-        app: audiollm-server
+        app: audiollm-server-py
     spec:
       containers:
         - name: gateway
@@ -60,11 +60,11 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: audiollm-server
+  name: audiollm-server-py
   namespace: audiollm
 spec:
   selector:
-    app: audiollm-server
+    app: audiollm-server-py
   ports:
     - name: http
       port: 80

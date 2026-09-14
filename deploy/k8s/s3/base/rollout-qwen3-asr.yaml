@@ -1,0 +1,143 @@
+# ============================================================
+# Qwen3-ASR vLLM —— 独立 GPU Pod（3-Pod 架构之二）
+#
+#   initContainer model-downloader : s5cmd 只拉 qwen3-asr 模型
+#   container qwen3-asr            : vLLM 端口 8000, 显存 0.15
+#
+# GPU：请求 nvidia.com/gpu: 1，与 amphion-spec-vllm 通过 GPU Operator
+#     Time-Slicing 共享同一张 RTX PRO 4500。
+# 错峰：启动时先等 amphion-spec-vllm 的 /health 就绪再加载模型，
+#       避免两个 vLLM 同时做 CUDA 显存 profiling。
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: qwen3-asr-vllm
+  namespace: amphion-api
+spec:
+  replicas: 1
+  strategy:
+    canary:
+      # GPU 显存约束（Time-Slicing 仅 2 单元，无法跑 canary 双副本）：
+      # 空 steps = 立即全量；maxSurge 0 + maxUnavailable 1 = 先删旧再建新，不超卖
+      maxSurge: 0
+      maxUnavailable: 1
+      steps: []
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: qwen3-asr-vllm
+  template:
+    metadata:
+      labels:
+        app: qwen3-asr-vllm
+    spec:
+      terminationGracePeriodSeconds: 300
+      tolerations:
+        - key: app
+          operator: Equal
+          value: model
+          effect: NoSchedule
+      initContainers:
+        - name: model-downloader
+          image: amazon/aws-cli:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: audiollm-s3-config
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: audiollm-s3
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: audiollm-s3
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audiollm-s3
+                  key: AWS_SESSION_TOKEN
+                  optional: true
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              src="s3://${S3_BUCKET}/${S3_QWEN_PREFIX}/"
+              dest="/models/qwen3-asr-1.7b"
+              echo "downloading ${src} -> ${dest}"
+              if [ -n "${S3_ENDPOINT}" ]; then
+                aws --endpoint-url "${S3_ENDPOINT}" s3 sync "${src}" "${dest}/" --no-progress
+              else
+                aws s3 sync "${src}" "${dest}/" --no-progress
+              fi
+              find "${dest}" -name '*.safetensors*' | head -1 >/dev/null
+              echo "qwen3-asr model downloaded"
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      containers:
+        - name: qwen3-asr
+          image: vllm/vllm-openai:v0.18.0
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "waiting for amphion-spec-vllm /health ..."
+              until python3 -c "import urllib.request; urllib.request.urlopen('http://amphion-spec-vllm:8001/health', timeout=2)" 2>/dev/null; do
+                sleep 5
+              done
+              echo "amphion-spec ready, starting vllm"
+              exec vllm serve /models/qwen3-asr-1.7b \
+                --served-model-name Qwen/Qwen3-ASR-1.7B \
+                --host 0.0.0.0 \
+                --port 8000 \
+                --gpu-memory-utilization 0.30 \
+                --max-model-len 32768 --enforce-eager
+          ports:
+            - name: qwen-http
+              containerPort: 8000
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: qwen-http
+            failureThreshold: 240
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: qwen-http
+            periodSeconds: 10
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: audiollm-models
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi

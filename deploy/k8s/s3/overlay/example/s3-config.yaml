@@ -1,0 +1,15 @@
+# ============================================================
+# 覆盖 S3 模型源参数 —— 拿到 S3 地址后改这里
+# （bucket / 前缀 / endpoint / region）
+# ============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: audiollm-s3-config
+  namespace: amphion-api
+data:
+  S3_ENDPOINT: ""
+  S3_REGION: "us-west-2"
+  S3_BUCKET: "amphion-models"
+  S3_QWEN_PREFIX: "qwen3-asr-1.7b-v1"
+  S3_SPEC_PREFIX: "amphion-spec-v1"

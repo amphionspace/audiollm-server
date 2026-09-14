@@ -1,0 +1,106 @@
+# ============================================================
+# audiollm-server 发布 —— main 分支构建并推送 ECR（参考 apihub/release.yml）
+# 触发：push 到 main（涉及 backend/Dockerfile/deploy 等）
+# 产物：两个 amd64 镜像推送到 ECR（tag: git-<sha8>）
+#   amphion/audiollm-server                    （gateway）
+#   amphion/audiollm-amphion-spec-vllm         （spec vLLM）
+# qwen3-asr vLLM 使用官方 vllm/vllm-openai 镜像，不在此构建
+# 生产部署：手动运行 deploy-prod-canary.yml
+# ============================================================
+name: Build and publish audiollm-server
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Dockerfile"
+      - "deploy/docker/**"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: audiollm-main-release
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REGISTRY: 410567494174.dkr.ecr.us-west-2.amazonaws.com
+  ECR_REPOSITORY_SERVER: amphion/audiollm-server
+  ECR_REPOSITORY_SPEC: amphion/audiollm-amphion-spec-vllm
+
+jobs:
+  build-and-publish:
+    name: Build and push images
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sign in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create image tag
+        id: image
+        shell: bash
+        run: |
+          tag="git-${GITHUB_SHA:0:8}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_SERVER }}:${{ steps.image.outputs.tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.environment=production
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push spec vllm image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.amphion-spec-s3
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_SPEC }}:${{ steps.image.outputs.tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.environment=production
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Publish summary
+        env:
+          TAG: ${{ steps.image.outputs.tag }}
+        run: |
+          echo "### audiollm-server 镜像已发布" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- gateway: \`${ECR_REGISTRY}/${ECR_REPOSITORY_SERVER}:${TAG}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- spec-vllm: \`${ECR_REGISTRY}/${ECR_REPOSITORY_SPEC}:${TAG}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "生产灰度：手动运行 **Deploy to production (canary)**，输入 tag \`${TAG}\`。" >> "${GITHUB_STEP_SUMMARY}"

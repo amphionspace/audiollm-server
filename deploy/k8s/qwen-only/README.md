@@ -137,7 +137,7 @@ Gateway 会在其后追加 `/chat/completions`。
 kubectl apply -k deploy/k8s/qwen-only
 kubectl -n audiollm rollout status deployment/qwen3-asr --timeout=15m
 kubectl -n audiollm rollout status deployment/amphion-spec --timeout=15m
-kubectl -n audiollm rollout status deployment/audiollm-server --timeout=5m
+kubectl -n audiollm rollout status deployment/audiollm-server-py --timeout=5m
 kubectl -n audiollm get pods,svc,ingress
 ```
 

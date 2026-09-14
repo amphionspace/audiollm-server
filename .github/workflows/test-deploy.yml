@@ -1,0 +1,173 @@
+# ============================================================
+# audiollm-server 测试环境部署（参考 apihub/test-deploy.yml）
+# 触发：push / PR 到 test 分支
+# 流程：pytest（跳过 gpu 标记）-> 构建 amd64 镜像 -> ECR
+#       -> patch 两个 Rollout（gateway + spec-vllm）-> 等 Healthy
+# qwen3-asr vLLM 使用官方镜像，代码变更走 PR 合入 test 后由
+# kustomize/rollout 配置更新，本 workflow 不重复构建。
+# ============================================================
+name: Build and deploy audiollm-server to test
+
+on:
+  pull_request:
+    branches:
+      - test
+  push:
+    branches:
+      - test
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: audiollm-test-deploy
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REGISTRY: 410567494174.dkr.ecr.us-west-2.amazonaws.com
+  ECR_REPOSITORY_SERVER: amphion/audiollm-server
+  ECR_REPOSITORY_SPEC: amphion/audiollm-amphion-spec-vllm
+  EKS_CLUSTER_NAME: amphion-test
+  EKS_REGION: us-west-2
+  DEPLOY_NAMESPACE: amphion-api
+
+jobs:
+  verify:
+    name: Verify test
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv sync --frozen --no-dev
+
+      - name: Run tests (skip gpu)
+        run: uv run pytest -m "not gpu" -q
+
+  deploy:
+    name: Build image and deploy to test
+    needs: verify
+    if: |
+      always() &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (needs.verify.result == 'success' || needs.verify.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sign in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create image tag
+        id: image
+        shell: bash
+        run: |
+          tag="test-git-${GITHUB_SHA:0:8}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_SERVER }}:${{ steps.image.outputs.tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.environment=test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push spec vllm image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.amphion-spec-s3
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_SPEC }}:${{ steps.image.outputs.tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.environment=test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${EKS_REGION}"
+
+      - name: Patch gateway rollout
+        env:
+          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_SERVER }}:${{ steps.image.outputs.tag }}
+        run: |
+          kubectl patch rollout audiollm-server -n "${DEPLOY_NAMESPACE}" \
+            --type='json' \
+            -p='[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"'"${IMAGE_URI}"'"}]'
+          echo "Rollout updated: audiollm-server -> ${IMAGE_URI}"
+
+      - name: Patch spec-vllm rollout
+        env:
+          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_SPEC }}:${{ steps.image.outputs.tag }}
+        run: |
+          kubectl patch rollout amphion-spec-vllm -n "${DEPLOY_NAMESPACE}" \
+            --type='json' \
+            -p='[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"'"${IMAGE_URI}"'"}]'
+          echo "Rollout updated: amphion-spec-vllm -> ${IMAGE_URI}"
+
+      - name: Wait for rollouts to be Healthy
+        run: |
+          for rollout in audiollm-server amphion-spec-vllm; do
+            echo "Waiting for rollout ${rollout} ..."
+            for i in $(seq 1 60); do
+              phase=$(kubectl get rollout "${rollout}" -n "${DEPLOY_NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+              if [ "$phase" = "Healthy" ]; then
+                echo "Rollout ${rollout} is Healthy!"
+                break
+              fi
+              if [ "$i" = "60" ]; then
+                echo "ERROR: Timeout waiting for ${rollout}"
+                kubectl describe rollout "${rollout}" -n "${DEPLOY_NAMESPACE}" | tail -30
+                exit 1
+              fi
+              echo "  [$i/60] phase=$phase, waiting..."
+              sleep 5
+            done
+          done
+
+      - name: Publish deploy summary
+        env:
+          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_SERVER }}:${{ steps.image.outputs.tag }}
+        run: |
+          echo "### audiollm-server deployed to test" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Image: \`${IMAGE_URI}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Namespace: \`${DEPLOY_NAMESPACE}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "测试环境已通过 Argo Rollouts 完成部署。vLLM 服务为集群内访问（ClusterIP）。" >> "${GITHUB_STEP_SUMMARY}"

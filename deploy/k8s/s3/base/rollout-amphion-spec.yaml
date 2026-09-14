@@ -1,0 +1,145 @@
+# ============================================================
+# AmphionSPEC vLLM —— 独立 GPU Pod（3-Pod 架构之一）
+#
+#   initContainer model-downloader : s5cmd 只拉 amphion-spec 模型
+#   container amphion-spec         : vLLM 端口 8001, 显存 0.10
+#
+# GPU：请求 nvidia.com/gpu: 1。集群单卡（RTX PRO 4500 32GB），
+#     通过 GPU Operator Time-Slicing 把 1 张卡暴露为多个单元，
+#     qwen3-asr 与 amphion-spec 两个 vLLM pod 各取一个单元共享同一张卡。
+# 显存划分靠 vLLM --gpu-memory-utilization（两个模型合计占用需 < 32GB）
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: amphion-spec-vllm
+  namespace: amphion-api
+spec:
+  replicas: 1
+  strategy:
+    canary:
+      # GPU 显存约束（Time-Slicing 仅 2 单元，无法跑 canary 双副本）：
+      # 空 steps = 立即全量；maxSurge 0 + maxUnavailable 1 = 先删旧再建新，不超卖
+      maxSurge: 0
+      maxUnavailable: 1
+      steps: []
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: amphion-spec-vllm
+  template:
+    metadata:
+      labels:
+        app: amphion-spec-vllm
+    spec:
+      terminationGracePeriodSeconds: 300
+      tolerations:
+        - key: app
+          operator: Equal
+          value: model
+          effect: NoSchedule
+      initContainers:
+        - name: model-downloader
+          image: amazon/aws-cli:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: audiollm-s3-config
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: audiollm-s3
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: audiollm-s3
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: audiollm-s3
+                  key: AWS_SESSION_TOKEN
+                  optional: true
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              src="s3://${S3_BUCKET}/${S3_SPEC_PREFIX}/"
+              dest="/models/amphion-spec"
+              echo "downloading ${src} -> ${dest}"
+              if [ -n "${S3_ENDPOINT}" ]; then
+                aws --endpoint-url "${S3_ENDPOINT}" s3 sync "${src}" "${dest}/" --no-progress
+              else
+                aws s3 sync "${src}" "${dest}/" --no-progress
+              fi
+              find "${dest}" -name '*.safetensors*' | head -1 >/dev/null
+              echo "amphion-spec model downloaded"
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: models
+              mountPath: /models
+      containers:
+        - name: amphion-spec
+          image: registry.example.com/audiollm/amphion-spec-vllm-s3:0.1.0
+          imagePullPolicy: Always
+          args:
+            - /models/amphion-spec
+            - --served-model-name
+            - AmphionSPEC
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8001"
+            - --trust-remote-code
+            - --limit-mm-per-prompt
+            - '{"audio":2}'
+            - --gpu-memory-utilization
+            - "0.25"
+            - --max-model-len
+            - "16384"
+            - --enforce-eager
+          ports:
+            - name: spec-http
+              containerPort: 8001
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: 16Gi
+              nvidia.com/gpu: "1"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: spec-http
+            failureThreshold: 240
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: spec-http
+            periodSeconds: 10
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: audiollm-models
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi

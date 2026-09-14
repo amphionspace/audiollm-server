@@ -1,0 +1,47 @@
+# g7 节点组 userdata（MIME multipart）— 挂到 EKS 节点组"高级设置 → 用户数据"
+# 作用：新节点启动时自动把 NVIDIA 驱动切换为 open kernel modules（RTX PRO 4500 必需）
+# 适用：amphion-test / amphion-prod 的 amphion-gpu 节点组（AL2023_x86_64_NVIDIA）
+# 挂载方式：AWS 控制台（节点组 → 编辑 → 高级设置 → 用户数据 粘贴本文件内容）
+#          或 CLI: aws eks update-nodegroup-config --cluster-name <集群> --nodegroup-name amphion-gpu \
+#                  --update-config '{"userData":"<base64>"}'
+# 注意：userdata 只对【新建/替换】的节点生效；现有节点需手动执行 g7-open-driver-fix.sh
+Content-Type: multipart/mixed; boundary="==EKSBOUNDARY=="
+MIME-Version: 1.0
+
+--==EKSBOUNDARY==
+Content-Type: text/x-shellscript; charset="us-ascii"
+
+#!/bin/bash
+set -x
+KVER=$(uname -r)
+exec > >(tee -a /var/log/g7-open-driver-fix.log) 2>&1
+
+echo "[$(date)] g7 open driver bootstrap: kernel=$KVER"
+
+# 1. 卸载闭源内核模块，安装 open 内核模块（同版本，与 AMI 用户态驱动配套）
+dnf install -y --allowerasing kmod-nvidia-open-dkms
+
+# 2. 手动编译 open 内核模块（AMI 自带 /usr/src/kernels/<KVER> 源码树；不用 dkms 规避解析 bug）
+cd /usr/src/nvidia-580.178.04 || exit 1
+make -j"$(nproc)" KERNEL_UNAME="$KVER" IGNORE_PREEMPT_RT_PRESENCE=1 IGNORE_XEN_PRESENCE=1 modules
+
+# 3. 安装模块 + depmod
+for m in nvidia nvidia-modeset nvidia-drm nvidia-uvm nvidia-peermem; do
+  cp -v "kernel-open/$m.ko" "/usr/lib/modules/$KVER/extra/$m.ko"
+done
+depmod -a
+
+# 4. 开机自动加载 open 模块
+printf 'nvidia\nnvidia-modeset\nnvidia-uvm\nnvidia-drm\n' > /etc/modules-load.d/nvidia.conf
+
+# 5. 立即切换（若模块被占用则等待重启由 modules-load 加载）
+rmmod nvidia_uvm 2>/dev/null || true
+rmmod nvidia_drm 2>/dev/null || true
+rmmod nvidia_modeset 2>/dev/null || true
+rmmod nvidia 2>/dev/null || true
+modprobe nvidia && modprobe nvidia-modeset && modprobe nvidia-uvm && modprobe nvidia-drm
+
+nvidia-smi | head -10 || true
+echo "[$(date)] g7 open driver bootstrap done"
+
+--==EKSBOUNDARY==--

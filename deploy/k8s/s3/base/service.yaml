@@ -1,0 +1,57 @@
+# ============================================================
+# audiollm 内部 Service —— 三个独立 Pod 的 ClusterIP 服务
+# 仅集群内部访问（无 Ingress / LoadBalancer）
+#   qwen3-asr-vllm    :8000
+#   amphion-spec-vllm :8001
+#   audiollm-server-py   :80 -> 8080（gateway 入口）
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen3-asr-vllm
+  namespace: amphion-api
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: qwen3-asr-vllm
+  ports:
+    - name: qwen-http
+      port: 8000
+      targetPort: qwen-http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: amphion-spec-vllm
+  namespace: amphion-api
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8001"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: amphion-spec-vllm
+  ports:
+    - name: spec-http
+      port: 8001
+      targetPort: spec-http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: audiollm-server-py
+  namespace: amphion-api
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "80"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: audiollm-server-py
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

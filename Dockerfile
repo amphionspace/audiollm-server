@@ -7,8 +7,9 @@ RUN sed -i \
         -e "s|http://deb.debian.org/debian-security|${APT_SECURITY_MIRROR}|g" \
         -e "s|http://deb.debian.org/debian|${APT_DEBIAN_MIRROR}|g" \
         /etc/apt/sources.list.d/debian.sources \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg libc++1 \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ffmpeg libc++1 \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends make gcc g++ python3-dev libev-dev libffi-dev autoconf automake libtool pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

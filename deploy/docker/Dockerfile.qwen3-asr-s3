@@ -1,0 +1,24 @@
+# ============================================================
+# Qwen3-ASR vLLM 镜像（S3 模型版）
+# 与 Dockerfile.qwen3-asr 的区别：不再 COPY 本地模型进镜像，
+# 模型权重由 K8s initContainer 从 S3 下载后挂载到 /models。
+# 镜像只提供 vLLM 运行时 + 音频支持（对齐线上 runpod .venv：
+# soundfile + librosa；官方 vllm-openai 镜像缺这些）。
+#
+# 构建：
+#   docker buildx build --platform linux/amd64 \
+#     -f deploy/docker/Dockerfile.qwen3-asr-s3 \
+#     -t REGISTRY/amphion/audiollm-qwen3-asr-vllm:0.1.0 \
+#     --push .
+# ============================================================
+ARG VLLM_IMAGE=vllm/vllm-openai:v0.18.0
+FROM ${VLLM_IMAGE}
+
+# Qwen3-ASR 为语音模型：soundfile 需要系统库 libsndfile1；ffmpeg 供音频解码兜底
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libsndfile1 \
+        ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir "soundfile" "librosa"
+
+ENTRYPOINT ["vllm", "serve"]

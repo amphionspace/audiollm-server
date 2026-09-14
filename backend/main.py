@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -95,6 +96,7 @@ logger = logging.getLogger(__name__)
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 READINESS_TIMEOUT_SEC = 2.0
+START_TIME = time.time()
 
 
 @asynccontextmanager
@@ -308,6 +310,23 @@ def _collect_openai_upstreams(parsed) -> list[tuple[str, Upstream]]:
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+async def metrics():
+    uptime_seconds = time.time() - START_TIME
+    lines = [
+        "# HELP audiollm_up AudioLLM server process health.",
+        "# TYPE audiollm_up gauge",
+        "audiollm_up 1",
+        "# HELP audiollm_uptime_seconds AudioLLM server process uptime.",
+        "# TYPE audiollm_uptime_seconds counter",
+        f"audiollm_uptime_seconds {uptime_seconds:.3f}",
+    ]
+    return Response(
+        content="\n".join(lines) + "\n",
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.get("/readyz")

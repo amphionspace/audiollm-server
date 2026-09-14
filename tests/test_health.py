@@ -15,6 +15,17 @@ def test_healthz_returns_liveness_status():
     assert resp.json() == {"status": "ok"}
 
 
+def test_metrics_returns_prometheus_text():
+    client = TestClient(app)
+
+    resp = client.get("/metrics")
+
+    assert resp.status_code == 200
+    assert "text/plain" in resp.headers["content-type"]
+    assert "audiollm_up 1" in resp.text
+    assert "audiollm_uptime_seconds" in resp.text
+
+
 def test_readyz_returns_ok_when_configured_upstreams_are_ready(monkeypatch):
     openai_checks: list[str] = []
 

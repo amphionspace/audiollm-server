@@ -1,0 +1,23 @@
+# ============================================================
+# 示例 overlay：以 base 为基础，覆盖环境相关的差异项
+# 用法（参考 apihub 的 base + overlay 分层）：
+#   kubectl apply -k deploy/k8s/s3/overlay/example
+# 或者 kustomize build deploy/k8s/s3/overlay/example | kubectl apply -f -
+# ============================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: amphion-api
+resources:
+  - ../../base
+images:
+  - name: registry.example.com/audiollm/server
+    newName: 410567494174.dkr.ecr.us-west-2.amazonaws.com/amphion/audiollm-server
+    newTag: monitoring-20260911-1
+  - name: registry.example.com/audiollm/amphion-spec-vllm-s3
+    newName: 410567494174.dkr.ecr.us-west-2.amazonaws.com/amphion/audiollm-amphion-spec-vllm
+    newTag: 0.1.0
+  - name: vllm/vllm-openai:v0.18.0
+    newName: 410567494174.dkr.ecr.us-west-2.amazonaws.com/amphion/audiollm-qwen3-asr-vllm
+    newTag: 0.1.0
+patches:
+  - path: s3-config.yaml

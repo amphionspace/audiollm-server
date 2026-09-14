@@ -21,48 +21,48 @@ spec:
             pathType: Exact
             backend:
               service:
-                name: audiollm-server
+                name: audiollm-server-py
                 port:
                   name: http
           - path: /transcribe-streaming
             pathType: Exact
             backend:
               service:
-                name: audiollm-server
+                name: audiollm-server-py
                 port:
                   name: http
           - path: /emotion-segmented-streaming
             pathType: Exact
             backend:
               service:
-                name: audiollm-server
+                name: audiollm-server-py
                 port:
                   name: http
           - path: /api/asr/transcriptions
             pathType: Prefix
             backend:
               service:
-                name: audiollm-server
+                name: audiollm-server-py
                 port:
                   name: http
           - path: /api/emotion/jobs
             pathType: Prefix
             backend:
               service:
-                name: audiollm-server
+                name: audiollm-server-py
                 port:
                   name: http
           - path: /healthz
             pathType: Exact
             backend:
               service:
-                name: audiollm-server
+                name: audiollm-server-py
                 port:
                   name: http
           - path: /readyz
             pathType: Exact
             backend:
               service:
-                name: audiollm-server
+                name: audiollm-server-py
                 port:
                   name: http

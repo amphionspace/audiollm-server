@@ -1,0 +1,17 @@
+# ============================================================
+# 模型缓存 PVC —— initContainer 从 S3 下载一次，Pod 重建/升级
+# 后不再重复拉取几 GB 权重。单卡单 pod，两个模型共用一个卷。
+# 若集群没有默认 StorageClass，请把 storageClassName 改为实际值。
+# ============================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: audiollm-models
+  namespace: amphion-api
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: gp3

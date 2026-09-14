@@ -1,0 +1,102 @@
+# ============================================================
+# Gateway（audiollm-server-py）—— 独立 CPU Pod（3-Pod 架构之三）
+#
+#   container gateway : uvicorn 8080，不请求 GPU，调度到 CPU 节点
+#   启动时等两个 vLLM（qwen3-asr-vllm:8000 / amphion-spec-vllm:8001）
+#   健康后再拉起 uvicorn
+#
+# 与 vLLM 的通信走 ClusterIP Service（同 namespace 内 DNS），
+# 不再使用 localhost。
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: audiollm-server-py
+  namespace: amphion-api
+spec:
+  replicas: 1
+  strategy:
+    canary:
+      # 无 Ingress（仅集群内部访问），Argo 无法做流量灰度：
+      # setWeight/setCanaryScale 均要求 trafficRouting，因此用安全滚动
+      # （maxSurge 0 + maxUnavailable 1 = 先删旧再建新，不超卖）。
+      # 将来如需真正灰度，先接入 ALB/NLB Ingress 再改回 canary steps。
+      maxSurge: 0
+      maxUnavailable: 1
+      steps: []
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: audiollm-server-py
+  template:
+    metadata:
+      labels:
+        app: audiollm-server-py
+    spec:
+      # 注意：gateway 不设置 GPU toleration —— 不调度到带 app=model:NoSchedule 污点的 GPU 节点
+      # amd64 CPU 节点（cpu-amd64 节点组，t3a.medium）
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      terminationGracePeriodSeconds: 300
+      containers:
+        - name: gateway
+          image: 410567494174.dkr.ecr.us-west-2.amazonaws.com/amphion/audiollm-server:test-amd64-20260913
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "waiting for vllm backends ..."
+              until python3 -c "
+              import urllib.request
+              for u in ('http://qwen3-asr-vllm:8000/health', 'http://amphion-spec-vllm:8001/health'):
+                  urllib.request.urlopen(u, timeout=2)
+              " 2>/dev/null; do
+                sleep 5
+              done
+              echo "vllm backends ready, starting uvicorn"
+              exec uvicorn backend.main:app --host 0.0.0.0 --port 8080
+          env:
+            - name: CONFIG_PATH
+              value: /etc/audiollm/config.yaml
+            - name: QWEN3_ASR_BASE_URL
+              value: http://qwen3-asr-vllm:8000
+            - name: AMPHION_SPEC_BASE_URL
+              value: http://amphion-spec-vllm:8001
+          envFrom:
+            - secretRef:
+                name: audiollm-refine
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: "1"
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            failureThreshold: 240
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/audiollm
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: audiollm-qwen-only-config

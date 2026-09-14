@@ -1,0 +1,71 @@
+# ============================================================
+# audiollm-server PR 检查（参考 apihub/pull-request.yml）
+# 触发：PR 到 main / test
+# 内容：pytest（跳过 gpu 标记）+ amd64 镜像构建验证（不推送）
+# ============================================================
+name: audiollm-server pull request checks
+
+on:
+  pull_request:
+    branches:
+      - main
+      - test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audiollm-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  python-checks:
+    name: Format, test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv sync --frozen --no-dev
+
+      - name: Run tests (skip gpu)
+        run: uv run pytest -m "not gpu" -q
+
+  container-build:
+    name: Build containers
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: false
+
+      - name: Build spec vllm image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.amphion-spec-s3
+          platforms: linux/amd64
+          push: false
+          load: false

@@ -1,0 +1,28 @@
+# ============================================================
+# AmphionSPEC vLLM 镜像（S3 模型版）
+# 与 Dockerfile.amphion-spec 的区别：不再 COPY 本地模型进镜像，
+# 模型权重由 K8s initContainer 从 S3 下载后挂载到 /models。
+# 本镜像只负责装 amphion_spec_vllm plugin，模型路径由 deployment args 指定。
+# 音频支持：AmphionSPEC 走 vLLM multimodal 框架，音频文件由 vLLM parser
+# 用 soundfile 读取，需与线上 runpod .venv 一致（soundfile + librosa）。
+#
+# 构建：
+#   docker buildx build --platform linux/amd64 \
+#     -f deploy/docker/Dockerfile.amphion-spec-s3 \
+#     -t 410567494174.dkr.ecr.us-west-2.amazonaws.com/amphion/audiollm-amphion-spec-vllm:0.1.0 \
+#     --push .
+# ============================================================
+ARG VLLM_IMAGE=vllm/vllm-openai:v0.18.0
+FROM ${VLLM_IMAGE}
+
+# soundfile 需要系统库 libsndfile1；ffmpeg 供音频解码兜底
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libsndfile1 \
+        ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir "soundfile" "librosa"
+
+COPY deploy/plugins/amphion_spec_vllm /opt/amphion-spec-vllm
+RUN pip install --no-cache-dir --no-deps --no-build-isolation /opt/amphion-spec-vllm
+
+ENTRYPOINT ["vllm", "serve"]

@@ -1,0 +1,24 @@
+# ============================================================
+# S3 模型源配置 —— 模型权重从 S3 下载，不打进镜像
+# ============================================================
+# 拿到 S3 地址后只需改这里（或 overlay 里覆盖）：
+#   S3_ENDPOINT  自定义 S3 endpoint（MinIO/兼容服务）；使用 AWS S3 时留空
+#   S3_REGION    桶所在区域（AWS S3 必填；部分兼容服务可留空）
+#   S3_BUCKET    模型桶名
+#   S3_QWEN_PREFIX  qwen3-asr 模型在桶内的前缀（不含结尾斜杠，会同步整个目录）
+#   S3_SPEC_PREFIX  amphion-spec 模型在桶内的前缀
+#
+# 例如模型位于 s3://your-model-bucket/models/qwen3-asr-1.7b/ 时：
+#   S3_BUCKET=your-model-bucket
+#   S3_QWEN_PREFIX=models/qwen3-asr-1.7b
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: audiollm-s3-config
+  namespace: amphion-api
+data:
+  S3_ENDPOINT: ""
+  S3_REGION: "us-east-1"
+  S3_BUCKET: "your-model-bucket"
+  S3_QWEN_PREFIX: "models/qwen3-asr-1.7b"
+  S3_SPEC_PREFIX: "models/amphion-spec"

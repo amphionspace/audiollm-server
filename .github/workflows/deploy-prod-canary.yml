@@ -1,0 +1,98 @@
+# ============================================================
+# audiollm-server 生产灰度部署（参考 apihub/deploy-prod-canary.yml）
+# 手动触发：release.yml 发布镜像后，输入 image_tag 触发灰度
+# 策略：
+#   - audiollm-server（gateway）：canary 1 pod -> 手动 promote -> 全量
+#   - amphion-spec-vllm：GPU 显存约束（Time-Slicing 2 单元），
+#     配置为 maxSurge 0 + maxUnavailable 1 的安全滚动（无中间 canary）
+# 灰度进度在 Argo Rollouts Dashboard 观测，Promote 由人工点击推进。
+# ============================================================
+name: Deploy audiollm-server to production (canary)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: '镜像 tag（如 git-xxxxxxxx）'
+        required: true
+        default: 'git-5365a91b'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: audiollm-prod-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REGISTRY: 410567494174.dkr.ecr.us-west-2.amazonaws.com
+  ECR_REPOSITORY_SERVER: amphion/audiollm-server
+  ECR_REPOSITORY_SPEC: amphion/audiollm-amphion-spec-vllm
+  EKS_CLUSTER_NAME: amphion-prod
+  EKS_REGION: us-west-2
+  DEPLOY_NAMESPACE: amphion-api
+
+jobs:
+  deploy:
+    name: Trigger canary rollout
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig --name "${EKS_CLUSTER_NAME}" --region "${EKS_REGION}"
+
+      - name: Patch gateway rollout (canary)
+        env:
+          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_SERVER }}:${{ github.event.inputs.image_tag }}
+        run: |
+          kubectl patch rollout audiollm-server -n "${DEPLOY_NAMESPACE}" \
+            --type='json' \
+            -p='[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"'"${IMAGE_URI}"'"}]'
+          echo "Canary rollout triggered: audiollm-server -> ${IMAGE_URI}"
+
+      - name: Patch spec-vllm rollout (safe rollout)
+        env:
+          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_SPEC }}:${{ github.event.inputs.image_tag }}
+        run: |
+          kubectl patch rollout amphion-spec-vllm -n "${DEPLOY_NAMESPACE}" \
+            --type='json' \
+            -p='[{"op":"replace","path":"/spec/template/spec/containers/0/image","value":"'"${IMAGE_URI}"'"}]'
+          echo "Rollout updated: amphion-spec-vllm -> ${IMAGE_URI}"
+
+      - name: Wait for canary revision
+        run: |
+          for i in $(seq 1 36); do
+            hash=$(kubectl get rollout audiollm-server -n "${DEPLOY_NAMESPACE}" -o jsonpath='{.status.canary.podTemplateHash}' 2>/dev/null || echo "")
+            if [ -n "$hash" ]; then
+              echo "Canary revision created: ${hash}"
+              kubectl get rollout audiollm-server -n "${DEPLOY_NAMESPACE}" -o wide
+              exit 0
+            fi
+            echo "  [$i/36] waiting for canary revision..."
+            sleep 5
+          done
+          echo "ERROR: timeout waiting for canary revision"
+          exit 1
+
+      - name: Publish summary
+        env:
+          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY_SERVER }}:${{ github.event.inputs.image_tag }}
+        run: |
+          echo "### audiollm-server 生产 canary 已触发" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Image: \`${IMAGE_URI}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Namespace: \`${DEPLOY_NAMESPACE}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "**下一步**：打开 Argo Rollouts Dashboard 观察 canary 指标，确认无误后点击 **Promote** 推进全量。" >> "${GITHUB_STEP_SUMMARY}"
+          echo "注意：amphion-spec-vllm 为 GPU 安全滚动（无中间 canary），自动全量。" >> "${GITHUB_STEP_SUMMARY}"

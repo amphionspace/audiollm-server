@@ -1,0 +1,90 @@
+# 全局 DaemonSet 容忍（driver/device-plugin/dcgm/gfd/validator 共用）：
+# 所有 GPU 组件容器都要能调度到带污点 app=model:NoSchedule 的 GPU 节点
+daemonsets:
+  tolerations:
+    - key: "app"
+      operator: "Equal"
+      value: "model"
+      effect: "NoSchedule"
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+
+# GPU Operator values — amphion 集群通用配置（amphion-test / amphion-prod，g7/RTX PRO 4500 Blackwell）
+# 安装：helm repo add nvidia https://helm.ngc.nvidia.com/nvidia && helm repo update
+#      helm install gpu-operator nvidia/gpu-operator -n gpu-operator --create-namespace -f gpu-operator-values.yaml
+# 关键点：kernelModuleType: open —— Blackwell 必需（闭源模块无法初始化 RTX PRO 4500）
+#         driver.version 595.91.07（chart 默认 tag 存在；driver 容器会同时部署同版本用户态库）
+#         toolkit 保留 AMI 自带；全局 daemonsets.tolerations 含 app=model:NoSchedule
+# 注意：helm upgrade 会重建 NFD worker（无 app 容忍 → 上不了 GPU 节点），
+#       upgrade 后必须补：kubectl -n gpu-operator patch ds gpu-operator-node-feature-discovery-worker \
+#         --type=json -p '[{"op":"add","path":"/spec/template/spec/tolerations/-","value":{"key":"app","operator":"Equal","value":"api","effect":"NoSchedule"}}]'
+
+driver:
+  enabled: false  # nvcr.io 无 amzn2023 driver 镜像；驱动由 EKS GPU AMI + 节点组 userdata 管理（open kernel modules）  # chart 默认；580.178.04-amzn2023 在 nvcr.io 不存在
+  kernelModuleType: open
+  tolerations:
+    - key: "app"
+      operator: "Equal"
+      value: "model"
+      effect: "NoSchedule"
+
+toolkit:
+  enabled: false
+
+devicePlugin:
+  enabled: true
+  # Time-Slicing：1 张卡暴露 2 个可调度单元（两个 vLLM pod 共享一张 RTX PRO 4500）
+  # 注意：时间片只切算力不切显存，两个模型合计显存占用须 < 32GB
+  config:
+    name: device-plugin-config
+    create: true
+    data:
+      default: |-
+        version: v1
+        sharing:
+          timeSlicing:
+            resources:
+            - name: nvidia.com/gpu
+              replicas: 2
+  tolerations:
+    - key: "app"
+      operator: "Equal"
+      value: "model"
+      effect: "NoSchedule"
+
+dcgm:
+  enabled: true
+  tolerations:
+    - key: "app"
+      operator: "Equal"
+      value: "model"
+      effect: "NoSchedule"
+
+gfd:
+  enabled: true
+  tolerations:
+    - key: "app"
+      operator: "Equal"
+      value: "model"
+      effect: "NoSchedule"
+
+migManager:
+  enabled: false
+
+nfd:
+  enabled: true
+  worker:
+    tolerations:
+      - key: "app"
+        operator: "Equal"
+        value: "model"
+        effect: "NoSchedule"
+  master:
+    tolerations:
+      - key: "app"
+        operator: "Equal"
+        value: "model"
+        effect: "NoSchedule"
+
+imagePullPolicy: IfNotPresent

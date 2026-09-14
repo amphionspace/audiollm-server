@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - pvc.yaml
+  - rollout-amphion-spec.yaml
+  - rollout-qwen3-asr.yaml
+  - rollout-audiollm-server-py.yaml
+  - service.yaml
+  - ingress.yaml
+  # ingress.yaml：AWS ALB 对外暴露（test 环境 internet-facing，见文件内注释）
+  # 注意：base 已切换到 Argo Rollouts（rollout-*.yaml），
+  # 旧的 deployment-*.yaml 已删除；同名字的 Deployment 需在升级时先行删除
+  #   kubectl delete deploy audiollm-server-py amphion-spec-vllm qwen3-asr-vllm -n amphion-api
+configMapGenerator:
+  - name: audiollm-qwen-only-config
+    namespace: amphion-api
+    files:
+      - config.yaml
+generatorOptions:
+  disableNameSuffixHash: true

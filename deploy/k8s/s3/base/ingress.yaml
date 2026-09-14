@@ -1,0 +1,29 @@
+# ============================================================
+# audiollm 对外 Ingress —— AWS ALB（test 环境）
+# 经 AWS Load Balancer Controller 创建公网 ALB，HTTP:80 转发到
+# audiollm-server-py Service（ClusterIP）。访问地址为 ALB DNS
+# （控制台/ingress 状态里可见，形如 k8s-amphionapi-xxx-xxx.elb.us-west-2.amazonaws.com）。
+# 生产如需收紧：加 host/域名 + TLS（alb.ingress.kubernetes.io/certificate-arn）。
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: audiollm-server-py-public
+  namespace: amphion-api
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: audiollm-server-py
+                port:
+                  number: 80
